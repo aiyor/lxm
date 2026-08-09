@@ -1,0 +1,17 @@
+schema: lxm/config/v2
+base: true
+user: dev
+wait:
+  cloud_init: 10m
+  required: true
+mounts:
+  - source: /srv/shared
+    path: /mnt/shared
+networks:
+  - name: eth0
+    ipv4: 10.0.0.5
+    parent: lxdbr0
+recipes:
+  - run_as: root
+    scripts:
+      - recipes/common.sh

@@ -1,0 +1,21 @@
+schema: lxm/config/v2
+include:
+  - _base.yaml
+name: dev-station
+status: present
+state: running
+image: ubuntu:22.04
+groups: [dev]
+user: ubuntu
+sudo: false
+inject_ssh_keys: true
+mounts:
+  - source: /tmp/projects
+    path: /var/www/html
+networks:
+  - name: eth0
+    ipv4: 10.10.10.50
+    parent: lxdbr0
+wait:
+  cloud_init: 5m
+  required: true

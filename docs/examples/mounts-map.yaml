@@ -1,0 +1,14 @@
+schema: lxm/config/v2
+name: mounts-map
+status: present
+image: ubuntu:24.04
+user: dev
+mounts:
+  /var/log: /tmp/host-logs
+  /var/data:
+    source: /tmp/map-data
+    path: /var/data
+    readonly: true
+
+sudo: false
+inject_ssh_keys: false

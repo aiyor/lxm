@@ -1,0 +1,20 @@
+schema: lxm/config/v2
+name: cloud-init-demo
+status: present
+image: ubuntu:24.04
+user: dev
+groups: [demo]
+cloud-init-include:
+  - cloud-init/base-cloud-config.yaml
+cloud-init: |
+  packages:
+    - ripgrep
+    - jq
+network-config: |
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: true
+
+sudo: false
+inject_ssh_keys: false

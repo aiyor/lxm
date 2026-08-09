@@ -1,0 +1,23 @@
+schema: lxm/config/v2
+include:
+  - _inheritance-base.yaml
+name: inheritance-demo
+status: present
+image: ubuntu:24.04
+groups: [demo]
+remove:
+  mounts:
+    - /mnt/shared
+  recipes:
+    - recipes/common.sh
+replace:
+  networks:
+    - name: eth0
+      ipv4: 10.0.0.50
+      parent: lxdbr0
+wait:
+  cloud_init: 5m
+  required: false
+
+sudo: false
+inject_ssh_keys: false

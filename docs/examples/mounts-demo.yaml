@@ -1,0 +1,17 @@
+schema: lxm/config/v2
+name: mounts-demo
+status: present
+image: ubuntu:24.04
+user: dev
+mounts:
+  - "/tmp/data:/var/data:rw"
+  - source: /tmp/readonly
+    path: /var/readonly
+    readonly: true
+  - source: /tmp/recursive
+    path: /var/recursive
+    recursive: true
+  - "/tmp/mixed:/var/mixed"
+
+sudo: false
+inject_ssh_keys: false

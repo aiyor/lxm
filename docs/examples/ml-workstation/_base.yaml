@@ -1,0 +1,6 @@
+schema: lxm/config/v2
+base: true
+user: ml
+wait:
+  cloud_init: 10m
+  network: 60s

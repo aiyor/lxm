@@ -1,0 +1,135 @@
+# lxm v2 Manifest Specification
+
+## 1. Overview & Schema Boundary
+
+`lxm v2` manifests are declarative YAML documents defining desired LXD container fleet configurations. Manifest authoring is validated against two CUE schema definitions residing in `internal/config/schemas/v2.cue`:
+
+1. **`#LXM_AUTHORING`**: The human authoring surface. Supports flexible shorthands, file-local variables (`vars:`), tilde expansion (`~`), and inheritance directives (`include`, `remove`, `replace`). Used for pre-compilation validation.
+2. **`#LXM_RESOLVED`**: The strict, closed schema enforced on compiled manifests. Rejects all shorthands, directives, and unrecognized fields. Serves as the authoritative security gate enforcing clean mount destinations (`#CleanMountPath`) and absolute source paths (`source: =~"^/"`).
+
+---
+
+## 2. The 6-Step Compilation Pipeline
+
+Manifest compilation converts raw YAML files into immutable `Manifest` objects through six sequential phases:
+
+```mermaid
+flowchart LR
+    Step1["1. Parse YAML & Track Presence"] --> Step2["2. Normalize Shorthands & Defaults"]
+    Step2 --> Step3["3. Merge Inheritance & Directives"]
+    Step3 --> Step4["4. Anchored Regex Templating"]
+    Step4 --> Step5["5. CUE Validation (#LXM_RESOLVED)"]
+    Step5 --> Step6["6. Materialize Immutable Manifest"]
+```
+
+1. **Parse & Presence Tracking**: Parses YAML into `yaml.Node` trees while recording explicit key presence for presence-wins scalar merging.
+2. **Normalize Shorthands & Defaults**: Normalizes mount authoring styles into `#MountObjResolved` structures, expands `wait` boolean shorthands into struct objects, and materializes default values.
+3. **Merge Inheritance & Directives**: Resolves `include` / `base` manifests. Merges scalar values via presence-wins rules, recursive structs, and applies `remove` / `replace` list directives.
+4. **Anchored Regex Templating**: Executes anchored regex parameter substitution for `{{ .Env.VAR }}`, `{{ .Vars.VAR }}`, `{{ .Group }}`, and `{{ .Name }}`. Unbound environment variables trigger **exit code 3**.
+5. **CUE Validation**: Validates the merged structure against the strict `#LXM_RESOLVED` CUE schema.
+6. **Immutable Manifest**: Instantiates an immutable `Manifest` struct ready for reconciler diff computation.
+
+---
+
+## 3. Merge & Inheritance Semantics
+
+### 3.1 Presence-Wins Scalar Merging
+Scalar fields (e.g. `user`, `image`, `profiles`, `state`) merge according to node-level presence:
+* **Omitted Field**: Inherits the base manifest value.
+* **Explicitly Set Field**: Overrides the base manifest value, even when set to an explicit zero value (e.g. `user: ""` explicitly clears an inherited user).
+
+### 3.2 Network Schema (`#NetworkObj`)
+Network interfaces are declared using the `#NetworkObj` schema:
+```yaml
+networks:
+  - name: eth0
+    ipv4: 10.10.10.50
+    parent: lxdbr0
+```
+Fields allowed: `name` (required string), `ipv4` (optional IPv4 address string), `parent` (optional network bridge name string).
+
+### 3.3 List Directives (`remove` and `replace`)
+List fields (`mounts`, `networks`, `recipes`) concatenate by default. Inheritance behavior can be modified using directives:
+
+```yaml
+remove:
+  mounts: ["/var/data"]
+  recipes: ["recipes/db/install.sh"]
+replace:
+  networks:
+    - name: eth0
+      ipv4: 10.10.10.50
+      parent: lxdbr0
+```
+
+* **`remove` Matching**: `remove.mounts` matches by normalized destination path (`filepath.Clean`), `remove.networks` matches by network interface `name`, and `remove.recipes` matches by exact resolved script path or recipe metadata `name`. Non-matching `remove` directives fail compilation with **exit code 3**.
+* **`replace` Directive**: Completely replaces inherited list items with the newly declared items.
+
+---
+
+## 4. Mount Authoring & Security Rules
+
+`lxm` supports four mount authoring styles, all of which normalize into canonical `#MountObjResolved` representations:
+
+### 4.1 Authoring Styles
+```yaml
+# Style 1: String shorthand (host:container[:ro|rw])
+mounts:
+  - "/tmp/host-data:/var/data:rw"
+
+# Style 2: Map shorthand (container: host)
+mounts:
+  /var/log: /tmp/host-logs
+
+# Style 3: LXD-native object
+mounts:
+  - source: /tmp/host-data
+    path: /var/data
+    readonly: true
+
+# Style 4: Mixed list
+mounts:
+  - "/tmp/host-data:/var/data"
+  - source: /tmp/host-config
+    path: /etc/app
+```
+
+### 4.2 Security Constraints (`#CleanMountPath`)
+* **Absolute Source Paths**: Mount `source` paths must be absolute (`source: =~"^/"`).
+* **Clean Mount Destinations**: Mount `path` destinations matching `/`, `/proc`, `/sys`, `/dev` are rejected during compilation (**exit code 3**).
+* **Automatic ID Mapping**: Host mounts automatically enforce `shift=true` user ID mapping.
+
+---
+
+## 5. Container Power State & Status Rules
+
+Declarative container status and power state are governed by `status` and `state`:
+
+```yaml
+schema: lxm/config/v2
+name: dev-station
+image: ubuntu:22.04
+status: present    # present (default) | absent
+state: running     # running (default) | stopped
+```
+
+* **Default Power State**: Containers with `status: present` default to power state `running` (`Step.Action: "start"`).
+* **Explicit Stopped State**: Setting `state: stopped` renders a power state stop transition (`Step.Action: "stop"`).
+* **Absent Status Invariant**: Declaring `status: absent` combined with an explicit `state` fails compilation (**exit code 3**). `image?` is optional under `status: absent`.
+
+---
+
+## 6. Wait & Readiness Configuration
+
+Container readiness gates are configured via `wait`:
+
+```yaml
+wait:
+  cloud_init: 10m
+  network: 60s
+  poll: 5s
+  required: true    # fail-closed (default: true)
+```
+
+* **Boolean Shorthand**: Setting `wait: false` normalizes to `{required: false}`, converting readiness timeouts into soft warnings.
+* **Fail-Closed Default**: `wait.required: true` (default) causes readiness timeouts to fail execution with **exit code 7** and skip recipe execution.

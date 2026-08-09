@@ -1,0 +1,27 @@
+# Build artifacts
+*.o
+*.a
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Binaries
+*.exe
+*.dll
+*.so
+/bin
+/lxm
+*.out
+cov.out
+.lxm/
+
+# MkDocs build output
+/site/
+
+# Python tooling
+__pycache__/
+*.pyc
+**/.agents
+**/.logs
+

@@ -1,0 +1,32 @@
+schema: lxm/config/v2
+include:
+  - _base.yaml
+name: ml-workstation
+status: present
+state: running
+image: ubuntu-24.04
+groups: [ml]
+user: ml
+sudo: true
+inject_ssh_keys: true
+mounts:
+  - source: /tmp/ml/data
+    path: /mnt/data
+  - source: /tmp/ml/models
+    path: /mnt/models
+  - source: /tmp/ml/code
+    path: /mnt/code
+  - source: /tmp/ml/notebooks
+    path: /mnt/notebooks
+  - source: /tmp/ml/sandbox
+    path: /mnt/workspace
+cloud-init-include:
+  - cloud-init/base-ubuntu.yaml
+recipes:
+  - run_as: root
+    scripts:
+      - recipes/install-mise.sh
+      - recipes/install-pyenv.sh
+wait:
+  cloud_init: 5m
+  required: true

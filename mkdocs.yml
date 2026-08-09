@@ -1,0 +1,109 @@
+site_name: lxm
+site_url: https://aiyor.github.io/lxm/
+site_dir: site
+site_description: Declarative, reproducible fleet management for LXD development containers
+site_author: lxm contributors
+repo_url: https://github.com/aiyor/lxm
+repo_name: aiyor/lxm
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Roboto
+    code: Roboto Mono
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+
+plugins:
+  - search:
+      lang:
+        - en
+
+# Internal authoring / build-support files — kept in the repo, not published.
+exclude_docs: |
+  STYLE.md
+  requirements.txt
+  examples/.lxm/
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/aiyor/lxm
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - getting-started/index.md
+      - Installation: getting-started/installation.md
+      - Quick Start: getting-started/quickstart.md
+      - Concepts: getting-started/concepts.md
+  - Tutorials:
+      - tutorials/index.md
+      - Your First Dev Container: tutorials/first-dev-container.md
+      - The ML Workstation: tutorials/ml-workstation.md
+      - Disposable Test Agents: tutorials/disposable-agents.md
+  - How-To Guides:
+      - howto/index.md
+      - Authoring Manifests: howto/author-manifests.md
+      - Mounting Host Directories: howto/mount-host-dirs.md
+      - Configuring Networking: howto/configure-networking.md
+      - Provisioning with Recipes: howto/provision-with-recipes.md
+      - Cloud-Init Bootstrapping: howto/cloud-init-bootstrapping.md
+      - Snapshots & Rollback: howto/snapshots-and-rollback.md
+      - Targeting with Selectors: howto/fleet-selectors.md
+      - Pruning Orphans: howto/prune-orphans.md
+      - Automating in CI: howto/automate-ci.md
+      - Migrating from lxm v1: howto/migrate-v1.md
+      - Diagnosing with doctor: howto/diagnose-with-doctor.md
+      - Interactive Shell & SSH: howto/interact-shell-ssh.md
+      - Running Scripts: howto/run-scripts.md
+  - Reference:
+      - reference/index.md
+      - CLI Reference: reference/cli.md
+      - Manifest Reference: reference/manifest.md
+      - Results & Exit Codes: reference/results-and-exit-codes.md
+      - Environment Variables: reference/environment-variables.md
+  - Explanation:
+      - Best Practices: best-practices.md
+      - Troubleshooting: troubleshooting.md

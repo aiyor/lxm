@@ -1,0 +1,44 @@
+version: 2
+
+project_name: lxm
+
+builds:
+  - main: ./cmd/lxm
+    binary: lxm
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: ["tar.gz"]
+    files:
+      - README.md
+      - ARCHITECTURE.md
+      - SPEC_*.md
+      - install.sh
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  replace_existing_artifacts: true
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

@@ -1,0 +1,22 @@
+schema: lxm/config/v2
+include:
+  - _base.yaml
+name: recipes-demo
+status: present
+image: ubuntu:24.04
+user: dev
+groups: [recipes]
+sudo: true
+inject_ssh_keys: true
+vars:
+  workspace: /tmp/projects
+mounts:
+  - source: "{{ .Vars.workspace }}"
+    path: /workspace
+recipes:
+  - run_as: root
+    scripts:
+      - recipes/bootstrap.sh
+  - run_as: dev
+    scripts:
+      - recipes/user-setup.sh

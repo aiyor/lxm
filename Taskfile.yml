@@ -1,0 +1,32 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the lxm binary
+    cmds:
+      - go build -v -o ./bin/lxm ./cmd/lxm
+
+  test:
+    desc: Run all project tests
+    cmds:
+      - go test -v ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
+
+  clean:
+    desc: Remove the compiled binary
+    cmds:
+      - rm -f ./bin/lxm
+
+  run:
+    desc: Run the application directly
+    cmds:
+      - go run -v ./cmd/lxm {{.CLI_ARGS}}
+
+  install:
+    desc: Install the binary to the GOBIN directory
+    cmds:
+      - go install -v ./cmd/lxm

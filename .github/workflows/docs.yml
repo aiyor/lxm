@@ -1,0 +1,162 @@
+name: Docs
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Docs Site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install MkDocs Material
+        run: pip install -r docs/requirements.txt
+
+      - name: Build docs site (strict)
+        run: mkdocs build --strict
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  verify:
+    name: Verify Examples & CLI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Build lxm binary
+        run: go build -o lxm ./cmd/lxm
+
+      - name: Verify CLI reference matches --help (signature conformance)
+        run: |
+          set -euo pipefail
+          doc=docs/reference/cli.md
+          fail=0
+          # Every non-interactive command prints a "Usage:" line; the reference
+          # page must contain it byte-for-byte. `ssh` disables flag parsing so
+          # its --help never prints a usage line; it is checked manually below.
+          for cmd in apply plan diff list status init run script snapshot rollback shell include compile doctor completion; do
+            usage="$(./lxm "$cmd" --help 2>&1 | sed -n '/^Usage:/{n;p;}' || true)"
+            if [ -z "$usage" ]; then
+              echo "::error::no Usage line from 'lxm $cmd --help'" >&2
+              fail=1
+              continue
+            fi
+            if ! grep -qF -- "$usage" "$doc"; then
+              echo "::error::$doc is missing the usage line: $usage" >&2
+              fail=1
+            fi
+          done
+          if ! grep -qF -- "  lxm ssh <name> [ssh_args...]" "$doc"; then
+            echo "::error::$doc is missing the ssh usage line" >&2
+            fail=1
+          fi
+          exit $fail
+
+      - name: Compile example manifests (zero warnings expected)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # Top-level examples plus each tutorial fleet subdirectory. The
+          # tutorials (UG4) keep their manifests in per-tutorial directories
+          # under docs/examples/, so every example the guide ships must pass
+          # the compile gate.
+          targets=(docs/examples/)
+          for d in docs/examples/*/; do
+            # Only include subdirectories that contain at least one manifest
+            # (a file carrying name/schema/base/image). Fragments such as
+            # cloud-init/base-cloud-config.yaml are #cloud-config, not
+            # manifests, and must be excluded.
+            if grep -lE '^name:|^schema:|^base:|^image:' "$d"*.yaml "$d"*.yml >/dev/null 2>&1; then
+              targets+=("$d")
+            fi
+          done
+          for target in "${targets[@]}"; do
+            echo "==> lxm compile $target"
+            output="$(./lxm compile "$target" 2>&1)"
+            status=$?
+            echo "$output"
+            test $status -eq 0
+            if echo "$output" | grep -q "CONFIG_WARN"; then
+              echo "::error::example manifests in $target produced config warnings" >&2
+              exit 1
+            fi
+          done
+
+      - name: Verify example manifests plan cleanly
+        run: |
+          # dev-station.yaml declares a mount whose host source must exist
+          # for plan/apply validation (exit 3 otherwise).
+          mkdir -p /tmp/projects
+          ./lxm plan docs/examples/dev-station.yaml
+
+      - name: Smoke-check doctor against examples
+        run: ./lxm doctor --skip-remote docs/examples/
+
+  linkcheck:
+    name: Check Links
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check internal and external links
+        # markdown-link-check verifies relative links (including anchors)
+        # and external URLs. Exclusions in .markdown-link-check.json:
+        # github.com/aiyor/lxm URLs point at the project repo, which is not
+        # public yet (the checker sees 404); template URLs containing
+        # ${LXM_VERSION} are uncheckable by nature.
+        run: npx --yes markdown-link-check@3.13.6 docs/ --config .markdown-link-check.json
+
+  deploy:
+    name: Publish to GitHub Pages
+    needs: [ build, verify, linkcheck ]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
