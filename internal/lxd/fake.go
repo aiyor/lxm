@@ -86,6 +86,7 @@ func (f *FakeInstanceServer) CreateInstance(req api.InstancesPost) error {
 
 	inst := &api.Instance{
 		Name:         req.Name,
+		Type:         string(req.Type),
 		Status:       "Stopped",
 		StatusCode:   api.Stopped,
 		Architecture: req.Architecture,
@@ -119,6 +120,19 @@ func (f *FakeInstanceServer) UpdateInstance(name string, put api.InstancePut, et
 		// Faithful to the real LXD daemon's 412 response text (UG5 B1):
 		// classification must be exercised against authentic input.
 		return fmt.Errorf("%s: %s vs %s. The configuration has been modified since this change began. Please retrieve the updated configuration before proceeding.", ETagConflictPrefix, etag, currentETag)
+	}
+
+	// Match real LXD QEMU driver semantics (driver_qemu.go:6046):
+	// non-live-updatable keys cannot be modified while VM is running.
+	if inst.Type == "virtual-machine" && (inst.Status == "Running" || inst.StatusCode == api.Running) {
+		if put.Config != nil {
+			if put.Config["limits.memory.hugepages"] != inst.Config["limits.memory.hugepages"] {
+				return fmt.Errorf("Key %q cannot be updated when VM is running", "limits.memory.hugepages")
+			}
+			if put.Config["raw.qemu"] != inst.Config["raw.qemu"] {
+				return fmt.Errorf("Key %q cannot be updated when VM is running", "raw.qemu")
+			}
+		}
 	}
 
 	inst.Architecture = put.Architecture

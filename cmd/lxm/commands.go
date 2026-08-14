@@ -409,7 +409,7 @@ func newListCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 
 			if opts.format == "text" {
 				w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(w, "NAME\tSTATUS\tMANAGED\tGROUPS\tIMAGE\tIP")
+				fmt.Fprintln(w, "NAME\tTYPE\tSTATUS\tMANAGED\tGROUPS\tIMAGE\tIP")
 				for _, inst := range filtered {
 					managedStr := "false"
 					if inst.Managed {
@@ -423,7 +423,7 @@ func newListCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 					if ipStr == "" {
 						ipStr = "-"
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", inst.Name, inst.Status, managedStr, groupsStr, inst.Image, ipStr)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", inst.Name, inst.Type, inst.Status, managedStr, groupsStr, inst.Image, ipStr)
 				}
 				_ = w.Flush()
 			}
@@ -1464,6 +1464,15 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				checks = append(checks, "[WARN] Kernel idmapped mounts support")
 			}
 
+			// Check /dev/kvm accessibility
+			if file, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0); err == nil {
+				_ = file.Close()
+				checks = append(checks, "[OK] KVM hardware virtualization (/dev/kvm accessible)")
+			} else {
+				warnings = append(warnings, "KVM hardware virtualization (/dev/kvm) not accessible; VMs will run without hardware acceleration or fail to launch")
+				checks = append(checks, "[WARN] KVM hardware virtualization")
+			}
+
 			// Check un-migrated configs and sensitive path mounts
 			configFiles, err := discoverYAMLFiles(targetDir, true, logger)
 			if err == nil && len(configFiles) > 0 {
@@ -1531,17 +1540,27 @@ func fetchLiveSnapshots(svc lxd.InstanceService) (map[string]*plan.InstanceSnaps
 			inst = &full.Instance
 			etag = ""
 		}
+		instType := inst.Type
+		if instType == "" {
+			instType = full.Type
+		}
+		if instType == "" {
+			instType = "container"
+		}
 		result[instName] = &plan.InstanceSnapshot{
-			Name:         inst.Name,
-			Status:       inst.Status,
-			StatusCode:   int(inst.StatusCode),
-			Architecture: inst.Architecture,
-			Config:       inst.Config,
-			Devices:      inst.Devices,
-			Profiles:     inst.Profiles,
-			Ephemeral:    inst.Ephemeral,
-			ETag:         etag,
-			HasSnapshots: len(full.Snapshots) > 0,
+			Name:            inst.Name,
+			Type:            instType,
+			Status:          inst.Status,
+			StatusCode:      int(inst.StatusCode),
+			Architecture:    inst.Architecture,
+			Config:          inst.Config,
+			ExpandedConfig:  full.ExpandedConfig,
+			Devices:         inst.Devices,
+			ExpandedDevices: full.ExpandedDevices,
+			Profiles:        inst.Profiles,
+			Ephemeral:       inst.Ephemeral,
+			ETag:            etag,
+			HasSnapshots:    len(full.Snapshots) > 0,
 		}
 	}
 	return result, nil

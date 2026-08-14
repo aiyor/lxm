@@ -33,12 +33,37 @@ flowchart LR
 
 ## 3. Merge & Inheritance Semantics
 
-### 3.1 Presence-Wins Scalar Merging
-Scalar fields (e.g. `user`, `image`, `profiles`, `state`) merge according to node-level presence:
+### 3.1 Instance Types (`type`)
+The `type` field specifies the instance virtualization model:
+* `type: container` (default): System container utilizing Linux kernel namespaces and cgroups.
+* `type: virtual-machine` (or authoring shorthand `type: vm`): Hardware-isolated virtual machine running under QEMU/KVM.
+* **Mutation Rule**: Switching `type` on an existing instance is non-transmutable and requires recreation (`RequiresRecreate = true`, forcing `RebuildFallback = true`).
+
+### 3.2 Hardware Limits (`limits`)
+Unified resource limits across containers and VMs:
+```yaml
+limits:
+  cpu: 4             # Integer vCPU count (VM) / cgroup CFS quota (container), or cpuset range "0-3"
+  memory: 8GiB       # Guest RAM size (VM) / memory cgroup limit (container)
+  disk: 50GiB        # Root disk volume resize override
+```
+
+### 3.3 VM Hypervisor Settings (`vm`)
+Exclusive configuration block for virtual machines:
+```yaml
+vm:
+  boot_mode: uefi-secureboot  # "uefi-secureboot" | "uefi-nosecureboot" | "bios"
+  secureboot: true            # Authoring shorthand for boot_mode (mutually exclusive with boot_mode)
+  hugepages: false            # Back VM memory with host hugepages (limits.memory.hugepages)
+  raw_qemu: ""                # QEMU hypervisor argument injection (raw.qemu)
+```
+
+### 3.4 Presence-Wins Scalar Merging
+Scalar fields (e.g. `user`, `image`, `profiles`, `state`, `type`) merge according to node-level presence:
 * **Omitted Field**: Inherits the base manifest value.
 * **Explicitly Set Field**: Overrides the base manifest value, even when set to an explicit zero value (e.g. `user: ""` explicitly clears an inherited user).
 
-### 3.2 Network Schema (`#NetworkObj`)
+### 3.5 Network Schema (`#NetworkObj`)
 Network interfaces are declared using the `#NetworkObj` schema:
 ```yaml
 networks:
@@ -96,8 +121,7 @@ mounts:
 
 ### 4.2 Security Constraints (`#CleanMountPath`)
 * **Absolute Source Paths**: Mount `source` paths must be absolute (`source: =~"^/"`).
-* **Clean Mount Destinations**: Mount `path` destinations matching `/`, `/proc`, `/sys`, `/dev` are rejected during compilation (**exit code 3**).
-* **Automatic ID Mapping**: Host mounts automatically enforce `shift=true` user ID mapping.
+* **ID Mapping (`shift`)**: Host mounts default to `shift: true` (activating dynamic Linux Kernel VFS idmapped mounts for containers and VirtioFS for VMs). Can be explicitly opted out (`shift: false`) for raw NFS/FUSE/socket passthrough on containers.
 
 ---
 

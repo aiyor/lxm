@@ -244,8 +244,8 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 		}
 
 	case "update":
-		// Fresh ETag re-fetch immediately before PUT
-		_, freshETag, err := e.lxdSvc.GetInstance(step.Container)
+		// Fresh ETag and instance re-fetch immediately before PUT
+		inst, freshETag, err := e.lxdSvc.GetInstance(step.Container)
 		if err != nil {
 			opErr = err
 		} else {
@@ -253,9 +253,36 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 			if step.InstancePut != nil {
 				put = *step.InstancePut
 			}
-			opErr = e.lxdSvc.UpdateInstanceContext(ctx, step.Container, put, freshETag)
-			if opErr == nil && step.PowerTransition != "" {
-				opErr = e.lxdSvc.UpdateInstanceStateContext(ctx, step.Container, step.PowerTransition, false)
+
+			// If the instance is currently running and the update involves a stop or restart transition
+			// (e.g. non-live-updatable VM hypervisor keys or desired stopped state), stop the instance
+			// before issuing the PUT so LXD accepts non-live-updatable configuration keys.
+			isLiveRunning := inst != nil && (inst.Status == "Running" || inst.StatusCode == api.Running || inst.StatusCode == 103)
+			restartAfter := false
+			if isLiveRunning && (step.PowerTransition == "restart" || step.PowerTransition == "stop") {
+				if err := e.lxdSvc.UpdateInstanceStateContext(ctx, step.Container, "stop", false); err != nil {
+					opErr = err
+				} else {
+					if step.PowerTransition == "restart" {
+						restartAfter = true
+					}
+					// Re-fetch ETag after stopping instance
+					_, freshETag, err = e.lxdSvc.GetInstance(step.Container)
+					if err != nil {
+						opErr = err
+					}
+				}
+			}
+
+			if opErr == nil {
+				opErr = e.lxdSvc.UpdateInstanceContext(ctx, step.Container, put, freshETag)
+				if opErr == nil {
+					if restartAfter {
+						opErr = e.lxdSvc.UpdateInstanceStateContext(ctx, step.Container, "start", false)
+					} else if step.PowerTransition != "" && step.PowerTransition != "restart" && step.PowerTransition != "stop" {
+						opErr = e.lxdSvc.UpdateInstanceStateContext(ctx, step.Container, step.PowerTransition, false)
+					}
+				}
 			}
 		}
 
@@ -369,6 +396,26 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 	return res, nil, warnMsg
 }
 
+var transientAgentErrors = []string{
+	"LXD VM agent is not currently running",
+	"Failed connecting to lxd-agent",
+	"The LXD agent is not running on this instance",
+	"LXD agent not running",
+	"Failed to connect to lxd-agent",
+	"Failed to connect to instance socket",
+	"websocket: close 1006 (abnormal closure)",
+}
+
+// IsTransientAgentError reports whether an execution error indicates a transient agent offline state.
+func IsTransientAgentError(errMsg string) bool {
+	for _, pattern := range transientAgentErrors {
+		if strings.Contains(errMsg, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, opts ApplyOpts) (*ErrorInfo, string) {
 	if step.WaitPolicy == nil && !step.Wait {
 		return nil, ""
@@ -395,15 +442,84 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 	default:
 	}
 
-	if step.WaitPolicy != nil && (strings.HasPrefix(step.WaitPolicy.CloudInit, "timeout") || strings.HasPrefix(step.WaitPolicy.Network, "timeout")) {
+	if step.WaitPolicy != nil && (strings.HasPrefix(step.WaitPolicy.CloudInit, "timeout") || strings.HasPrefix(step.WaitPolicy.Network, "timeout") || strings.HasPrefix(step.WaitPolicy.Agent, "timeout")) {
 		if required {
 			return &ErrorInfo{
 				Code:      "WAIT_TIMEOUT",
 				Container: step.Container,
-				Message:   "cloud-init wait policy timed out",
+				Message:   "wait policy timed out",
 			}, ""
 		}
-		return nil, fmt.Sprintf("cloud-init wait policy timed out on container %q (soft wait)", step.Container)
+		return nil, fmt.Sprintf("wait policy timed out on container %q (soft wait)", step.Container)
+	}
+
+	// 0. VM Agent Handshake Gate (VM instances only)
+	if inst, _, err := e.lxdSvc.GetInstance(step.Container); err == nil && inst != nil && inst.Type == "virtual-machine" && (inst.Status == "Running" || inst.StatusCode == 103) {
+		agentTimeout := 120 * time.Second
+		if step.WaitPolicy != nil && step.WaitPolicy.Agent != "" {
+			if d, err := time.ParseDuration(step.WaitPolicy.Agent); err == nil {
+				agentTimeout = d
+			}
+		}
+
+		agentCtx, cancelAgent := context.WithTimeout(ctx, agentTimeout)
+		defer cancelAgent()
+
+		agentReady := false
+
+		// Immediate initial probe
+		execCtx, cancelExec := context.WithTimeout(agentCtx, 3*time.Second)
+		_, execErr := e.lxdSvc.ExecInstanceContext(execCtx, step.Container, []string{"systemctl", "is-system-running"}, 0, nil)
+		cancelExec()
+		if execErr == nil {
+			agentReady = true
+		} else if !IsTransientAgentError(execErr.Error()) {
+			agentReady = true
+		}
+
+		if !agentReady {
+			pollInterval := 2 * time.Second
+			if step.WaitPolicy != nil && step.WaitPolicy.Poll != "" {
+				if d, err := time.ParseDuration(step.WaitPolicy.Poll); err == nil && d > 0 {
+					pollInterval = d
+				}
+			}
+			ticker := time.NewTicker(pollInterval)
+			defer ticker.Stop()
+
+		agentLoop:
+			for {
+				select {
+				case <-agentCtx.Done():
+					break agentLoop
+				case <-ticker.C:
+					execCtx, cancelExec := context.WithTimeout(agentCtx, 3*time.Second)
+					_, execErr := e.lxdSvc.ExecInstanceContext(execCtx, step.Container, []string{"systemctl", "is-system-running"}, 0, nil)
+					cancelExec()
+
+					if execErr == nil {
+						agentReady = true
+						break agentLoop
+					}
+
+					if !IsTransientAgentError(execErr.Error()) {
+						agentReady = true
+						break agentLoop
+					}
+				}
+			}
+		}
+
+		if !agentReady {
+			if required {
+				return &ErrorInfo{
+					Code:      "WAIT_TIMEOUT",
+					Container: step.Container,
+					Message:   fmt.Sprintf("lxd-agent wait timed out after %s on %q", agentTimeout, step.Container),
+				}, ""
+			}
+			return nil, fmt.Sprintf("lxd-agent wait timed out after %s on VM %q (soft wait)", agentTimeout, step.Container)
+		}
 	}
 
 	// Real wait execution: if container is running, check cloud-init status --wait

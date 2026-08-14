@@ -76,12 +76,54 @@ The desired power state of a `present` container: `running` (default) or `stoppe
 state: running         # running (default) | stopped
 ```
 
-### `image`
+### `type`
 
-The base image the container is created from, as a LXD image reference: a hex fingerprint, a local alias, or a `remote:alias`. The image must already be present in your LXD host; lxm refers to it by that reference.
+The virtualization model: `container` (default) or `virtual-machine` (or authoring shorthand `vm`).
 
 ```yaml
-image: ubuntu:22.04
+type: virtual-machine  # container (default) | virtual-machine (shorthand: vm)
+```
+
+* Containers share the host Linux kernel via LXC namespaces and cgroups.
+* Virtual machines are fully hardware-isolated instances running under QEMU/KVM.
+* Changing `type` on an existing live instance triggers a recreate action (`delete` + `create`), protected by the `--force` flag.
+
+### `limits`
+
+Hardware resource allocations applicable to both containers and virtual machines:
+
+```yaml
+limits:
+  cpu: 4               # Integer core count (VM vCPUs / container quota), or cpuset range "0-3"
+  memory: 8GiB         # VM guest RAM size or container memory cgroup limit
+  disk: 50GiB          # Root disk storage volume resize override
+```
+
+* `cpu`: Accepts an integer (e.g. `4`, `8`) or a cpuset string (e.g. `"0-3"`, `"0,2,4"`). Bare `"0"` is rejected.
+* `memory`: Size with standard unit suffix (`512MiB`, `8GiB`).
+* `disk`: Size with standard unit suffix. Reducing root disk size triggers a recreate action (guarded by `--force`).
+
+### `vm`
+
+Hypervisor and virtual firmware settings. These options are exclusive to virtual machines (`type: virtual-machine`):
+
+```yaml
+vm:
+  boot_mode: uefi-secureboot  # "uefi-secureboot" | "uefi-nosecureboot" | "bios"
+  secureboot: true            # Shorthand for boot_mode (mutually exclusive with boot_mode)
+  hugepages: false            # Back VM memory with host HugeTLB pages (limits.memory.hugepages)
+  raw_qemu: ""                # QEMU hypervisor CLI argument injection (raw.qemu)
+```
+
+* `boot_mode` / `secureboot`: Configures virtual UEFI/BIOS firmware. Defaults to `uefi-secureboot` for VMs.
+* Modifying `vm` hypervisor settings on a running VM triggers a clean power restart transition (`stop` $\rightarrow$ `PUT` $\rightarrow$ `start`).
+
+### `image`
+
+The base image the instance is created from, as a LXD image reference: a hex fingerprint, a local alias, or a `remote:alias`. The image must already be present in your LXD host; lxm refers to it by that reference.
+
+```yaml
+image: ubuntu:24.04
 ```
 
 ### `user`
@@ -219,7 +261,7 @@ Complete example: [`mounts-demo.yaml`](../examples/mounts-demo.yaml).
 * **Absolute sources.** In the resolved schema, mount `source` must start with `/`. Tilde (`~/...`) and `{{ .Vars.* }}` templates are expanded during authoring.
 * **Clean destinations.** `path` values of `/`, `/proc`, `/sys`, and `/dev` are rejected during compilation (`exit 3`).
 * **Host-side existence.** At `plan`/`apply` time the source directory must exist on the host, or lxm exits `3` (`config validation ... source path ... does not exist on host`).
-* **ID mapping.** lxm creates every host mount with LXD's `shift: true` device option, so host UIDs are idmapped into the container and container root does not see host file ownership directly.
+* **ID mapping (`shift`).** lxm defaults host mounts to `shift: true`. For containers, this activates dynamic Linux Kernel VFS idmapping. For virtual machines, sharing is handled via VirtioFS. To disable shifting on containers (e.g. for raw NFS/FUSE/socket mounts), explicitly set `shift: false`.
 * **Duplicate destinations.** Two mounts with the same container path are rejected after merge.
 
 !!! warning
@@ -326,12 +368,14 @@ Readiness gates delay recipe execution until cloud-init finishes or the containe
 
 ```yaml
 wait:
+  agent: 2m           # default 2m for VMs (waits for guest lxd-agent handshake)
   cloud_init: 10m     # default 10m
   network: 60s        # default 60s
   poll: 5s            # default 5s
   required: true      # default true (fail-closed)
 ```
 
+* `wait.agent`: Polling deadline for guest `lxd-agent` over virtio channel in virtual machines (default: `2m`).
 * `wait: true` / `wait: false` is accepted as a shorthand for `required: true` / `required: false` (legacy v1 style).
 * With `required: true` (the default), a readiness timeout is a hard failure: `exit 7` and recipes are skipped.
 * With `required: false`, timeouts degrade to warnings and recipes still run.
@@ -411,6 +455,9 @@ ssh_keys:
 | Unknown top-level key in a v2 manifest | `exit 3` |
 | `status: present` without `image` | `exit 3` |
 | `status: absent` with `state` | `exit 3` |
+| `vm.secureboot` and `vm.boot_mode` both set | `exit 3` |
+| Bare `"0"` CPU count | `exit 3` |
+| Floating point byte size (e.g. `1.5GB`) | `exit 3` |
 | Base manifest with `name` or `image` | `exit 3` |
 | `_`-prefixed file without `base: true` | `exit 3` |
 | Mount source that is not absolute (resolved) | `exit 3` |

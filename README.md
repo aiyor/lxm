@@ -1,6 +1,6 @@
 # lxm — Declarative LXD Fleet Manager
 
-`lxm` is a Go CLI tool for declarative, reproducible fleet management of LXD containers. Define your fleet's desired state in YAML manifests, preview pure deterministic diffs with `lxm plan`, and apply mutations safely with `lxm apply`.
+`lxm` is a Go CLI tool for declarative, reproducible fleet management of LXD containers and hardware-virtualized Virtual Machines (VMs). Define your fleet's desired state in YAML manifests, preview pure deterministic diffs with `lxm plan`, and apply mutations safely with `lxm apply`.
 
 **[User Guide](docs/index.md)** | **[Quick Installation](docs/getting-started/installation.md)** | **[Quick Start](docs/getting-started/quickstart.md)**
 
@@ -9,12 +9,13 @@
 ## Key Features
 
 * **Plan-First Architecture**: Every infrastructure mutation is preceded by a pure, deterministic diff preview (`lxm plan`).
-* **Declarative & Idempotent**: State reconciliation automatically handles container creation, device mounting, network configuration, and image rebuilds.
+* **Containers & Virtual Machines**: Unified management for lightweight LXC system containers and hardware-virtualized QEMU/KVM virtual machines (`type: container` / `type: vm`).
+* **Declarative & Idempotent**: State reconciliation automatically handles instance creation, hardware limits (CPU, memory, disk), VM hypervisor settings, device mounting, network configuration, and image rebuilds.
 * **Structured Machine Interface**: Every command (excluding TTY shells) supports `--format json` with standardized `lxm/result/v1` result envelopes and categorized exit codes (0–7).
 * **CUE Schema Validation**: Manifest authoring is checked against CUE schemas (`#LXM_AUTHORING` and `#LXM_RESOLVED`) for strict path and security compliance.
 * **Security by Default**: Enforces tool-managed host key verification via `~/.config/lxm/known_hosts` with advisory file locking (`syscall.Flock`). Sudo elevation and key injection are strictly opt-in.
 * **Fleet Selectors & Parallel Execution**: Flexible group union and name targeting (`-g`, `--name`) with parallel execution pools.
-* **Snapshot Safety & Rollback**: Automatic pre-recipe container snapshots with age/prefix retention garbage collection (`lxm snapshot gc`).
+* **Snapshot Safety & Rollback**: Automatic pre-recipe instance snapshots with age/prefix retention garbage collection (`lxm snapshot gc`).
 
 ---
 

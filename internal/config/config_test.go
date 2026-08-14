@@ -2429,3 +2429,144 @@ recipes:
 		t.Errorf("expected leaf run_as recipe second, got %+v", conf.Recipes[1])
 	}
 }
+
+func TestCPUCount_Unmarshal(t *testing.T) {
+	tests := []struct {
+		input   string
+		valid   bool
+		wantVal string
+	}{
+		{"4", true, "4"},
+		{"\"4\"", true, "4"},
+		{"\"0-3\"", true, "0-3"},
+		{"\"0,2-3\"", true, "0,2-3"},
+		{"0", false, ""},
+		{"\"0\"", false, ""},
+		{"\"invalid\"", false, ""},
+	}
+
+	for _, tt := range tests {
+		var c CPUCount
+		err := yaml.Unmarshal([]byte(tt.input), &c)
+		if tt.valid && err != nil {
+			t.Errorf("expected valid for %q, got error: %v", tt.input, err)
+		}
+		if !tt.valid && err == nil {
+			t.Errorf("expected error for %q, got success: %s", tt.input, string(c))
+		}
+		if tt.valid && string(c) != tt.wantVal {
+			t.Errorf("for input %q, expected %q, got %q", tt.input, tt.wantVal, string(c))
+		}
+	}
+}
+
+func TestMergeConfigs_VM_Limits_WaitAgent(t *testing.T) {
+	base := &Config{
+		Type: "virtual-machine",
+		Limits: &LimitsConfig{
+			CPU:      "4",
+			Memory:   "8GiB",
+			Disk:     "50GiB",
+			Presence: map[string]bool{"cpu": true, "memory": true, "disk": true},
+		},
+		VM: &VMConfig{
+			BootMode:  "uefi-secureboot",
+			Hugepages: false,
+			Presence:  map[string]bool{"boot_mode": true, "hugepages": true},
+		},
+		WaitPolicy: WaitConfig{
+			Agent:    "2m",
+			Required: true,
+			Presence: map[string]bool{"agent": true, "required": true},
+		},
+		presence: map[string]bool{"type": true, "limits": true, "vm": true, "wait": true},
+	}
+
+	overlay := &Config{
+		Limits: &LimitsConfig{
+			CPU:      "8",
+			Presence: map[string]bool{"cpu": true},
+		},
+		VM: &VMConfig{
+			RawQEMU:  "-cpu host",
+			Presence: map[string]bool{"raw_qemu": true},
+		},
+		WaitPolicy: WaitConfig{
+			Agent:    "3m",
+			Presence: map[string]bool{"agent": true},
+		},
+		presence: map[string]bool{"limits": true, "vm": true, "wait": true},
+	}
+
+	merged, err := MergeConfigs(base, overlay)
+	if err != nil {
+		t.Fatalf("MergeConfigs failed: %v", err)
+	}
+
+	if merged.Type != "virtual-machine" {
+		t.Errorf("expected Type virtual-machine, got %q", merged.Type)
+	}
+	if merged.Limits.CPU != "8" {
+		t.Errorf("expected CPU 8, got %q", merged.Limits.CPU)
+	}
+	if merged.Limits.Memory != "8GiB" {
+		t.Errorf("expected inherited Memory 8GiB, got %q", merged.Limits.Memory)
+	}
+	if merged.Limits.Disk != "50GiB" {
+		t.Errorf("expected inherited Disk 50GiB, got %q", merged.Limits.Disk)
+	}
+	if merged.VM.BootMode != "uefi-secureboot" {
+		t.Errorf("expected inherited BootMode uefi-secureboot, got %q", merged.VM.BootMode)
+	}
+	if merged.VM.RawQEMU != "-cpu host" {
+		t.Errorf("expected RawQEMU -cpu host, got %q", merged.VM.RawQEMU)
+	}
+	if merged.WaitPolicy.Agent != "3m" {
+		t.Errorf("expected WaitPolicy.Agent 3m, got %q", merged.WaitPolicy.Agent)
+	}
+}
+
+func TestLoadConfig_VM_Normalization(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "vm.yaml")
+
+	content := `schema: lxm/config/v2
+name: test-vm
+type: vm
+image: ubuntu:24.04
+user: ubuntu
+status: present
+limits:
+  cpu: 4
+  memory: 8GiB
+  disk: 50GiB
+vm:
+  secureboot: false
+mounts:
+  - source: ` + dir + `
+    path: /mnt/test
+    shift: false
+`
+	if err := os.WriteFile(manifestPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	conf, err := LoadConfig(manifestPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if conf.Type != "virtual-machine" {
+		t.Errorf("expected normalized Type virtual-machine, got %q", conf.Type)
+	}
+	if conf.VM == nil || conf.VM.BootMode != "uefi-nosecureboot" {
+		t.Errorf("expected normalized BootMode uefi-nosecureboot, got %+v", conf.VM)
+	}
+	if conf.WaitPolicy.Agent != "2m" {
+		t.Errorf("expected default VM wait.agent 2m, got %q", conf.WaitPolicy.Agent)
+	}
+	if len(conf.Mounts) != 1 || conf.Mounts[0].Shift == nil || *conf.Mounts[0].Shift != false {
+		t.Errorf("expected mount shift false, got %+v", conf.Mounts[0])
+	}
+}
+

@@ -190,8 +190,8 @@ Example (text):
 
 ```text
 $ lxm list --name dev-station
-NAME         STATUS   MANAGED  GROUPS  IMAGE   IP
-dev-station  Running  true     dev     ubuntu  10.171.13.47
+NAME         TYPE               STATUS   MANAGED  GROUPS  IMAGE   IP
+dev-station  virtual-machine    Running  true     dev     ubuntu  10.171.13.47
 ```
 
 ---
@@ -520,6 +520,7 @@ Running lxm doctor diagnostic checks...
 [SKIP] Remote LXD socket check skipped
 [OK] lxd group membership
 [OK] Kernel idmapped mounts support
+[OK] KVM hardware virtualization (/dev/kvm accessible)
 [OK] All discovered configs migrated to lxm/config/v2
 ```
 
