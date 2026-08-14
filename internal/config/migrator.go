@@ -576,6 +576,7 @@ func SaveMigratedFile(srcPath string, migratedBytes []byte, inPlace bool) (strin
 		return "", fmt.Errorf("creating compiled directory %q: %w", compiledDir, err)
 	}
 
+	//nolint:gosec // G306: compiled manifest file is intended to be standard readable YAML (0644)
 	if err := os.WriteFile(compiledPath, migratedBytes, 0644); err != nil {
 		return "", fmt.Errorf("writing compiled manifest: %w", err)
 	}

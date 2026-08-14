@@ -701,11 +701,12 @@ func mergeYAMLData(dst *map[string]interface{}, srcData []byte) error {
 		return nil
 	}
 
-	if merged, ok := deepMerge(*dst, src).(map[string]interface{}); ok {
+	mergedVal := deepMerge(*dst, src)
+	if merged, ok := mergedVal.(map[string]interface{}); ok {
 		*dst = merged
 		return nil
 	}
-	return fmt.Errorf("unexpected merged config type %T", deepMerge(*dst, src))
+	return fmt.Errorf("unexpected merged config type %T", mergedVal)
 }
 
 func deepMerge(dst, src interface{}) interface{} {
@@ -1426,6 +1427,7 @@ func writeYAMLNode(filePath string, doc *yaml.Node) error {
 		return fmt.Errorf("marshaling YAML: %w", err)
 	}
 
+	//nolint:gosec // G306: YAML configuration file intended to be readable (0644)
 	if err := os.WriteFile(filePath, out, 0644); err != nil {
 		return fmt.Errorf("writing file: %w", err)
 	}

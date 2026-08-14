@@ -70,6 +70,7 @@ func (m *KnownHostsManager) PurgeContainerKeyContext(ctx context.Context, contai
 			return nil
 		}
 
+		//nolint:gosec // G204: containerName is validated manifest identifier and m.KnownHostsFile is tool config path
 		cmd := exec.CommandContext(ctx, "ssh-keygen", "-R", containerName, "-f", m.KnownHostsFile)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -102,6 +103,7 @@ func (m *KnownHostsManager) IsHostRegisteredContext(ctx context.Context, contain
 			return nil
 		}
 
+		//nolint:gosec // G204: containerName is validated manifest identifier and m.KnownHostsFile is tool config path
 		cmd := exec.CommandContext(ctx, "ssh-keygen", "-F", containerName, "-f", m.KnownHostsFile)
 		err := cmd.Run()
 		registered = (err == nil)
@@ -124,6 +126,7 @@ func (m *KnownHostsManager) EnsureHostKeyRegisteredContext(ctx context.Context, 
 	return m.withLock(func() error {
 		// Check if already registered
 		if _, err := os.Stat(m.KnownHostsFile); err == nil {
+			//nolint:gosec // G204: containerName is validated manifest identifier and m.KnownHostsFile is tool config path
 			cmd := exec.CommandContext(ctx, "ssh-keygen", "-F", containerName, "-f", m.KnownHostsFile)
 			if err := cmd.Run(); err == nil {
 				// Host is already registered
@@ -132,6 +135,7 @@ func (m *KnownHostsManager) EnsureHostKeyRegisteredContext(ctx context.Context, 
 		}
 
 		// Run ssh-keyscan with 5-second timeout (-T 5)
+		//nolint:gosec // G204: ip is retrieved from LXD instance network state and port is integer
 		scanCmd := exec.CommandContext(ctx, "ssh-keyscan", "-T", "5", "-p", fmt.Sprintf("%d", port), ip)
 		var outBuf, errBuf bytes.Buffer
 		scanCmd.Stdout = &outBuf

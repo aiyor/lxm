@@ -42,15 +42,6 @@ linters:
         path: internal/lxd/fake\.go
       - linters:
           - gosec
-        text: "G204: Subprocess launched with a potential tainted input or cmd arguments"
-      - linters:
-          - gosec
-        text: "G304: File path provided as taint input"
-      - linters:
-          - gosec
-        text: "G306: Expect WriteFile permissions to be 0600 or less"
-      - linters:
-          - gosec
         path: _test\.go
       - linters:
           - forcetypeassert

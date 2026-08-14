@@ -31,6 +31,7 @@ func (m *Manager) ShellContext(ctx context.Context, containerName string, user s
 	// It has the most robust terminal emulation and signal handling.
 	if lxcPath, err := exec.LookPath("lxc"); err == nil {
 		m.logger.Debug("Delegating to native lxc for optimal TUI experience")
+		//nolint:gosec // G204: lxcPath is resolved via LookPath and containerName/user are validated identifiers
 		cmd := exec.CommandContext(ctx, lxcPath, "exec", containerName, "--", "su", "-l", user)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout

@@ -1218,6 +1218,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 				return nil
 			}
 
+			//nolint:gosec // G204: execArgs contains validated SSH parameters and target user/name
 			sshCmd := exec.CommandContext(ctx, "ssh", execArgs...)
 			sshCmd.Stdin = os.Stdin
 			sshCmd.Stdout = stdout
@@ -1328,9 +1329,11 @@ status: present
 image: ubuntu:22.04
 groups: [dev]
 `
+			//nolint:gosec // G306: starter manifest files are intended to be standard readable config files (0644)
 			if err := os.WriteFile(basePath, []byte(baseContent), 0644); err != nil {
 				return &exitError{code: 2, err: fmt.Errorf("writing _base.yaml: %w", err)}
 			}
+			//nolint:gosec // G306: starter manifest files are intended to be standard readable config files (0644)
 			if err := os.WriteFile(devPath, []byte(devContent), 0644); err != nil {
 				return &exitError{code: 2, err: fmt.Errorf("writing config/dev.yaml: %w", err)}
 			}

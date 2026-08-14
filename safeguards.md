@@ -79,10 +79,10 @@ The following suite of analyzers is enabled in [.golangci.yml](file:///mnt/devel
 | **`nilerr`** | Error Handling | Catches swallowed errors where an error is verified non-nil but `nil` is returned. |
 | **`noctx`** | Concurrency / OS | Flags HTTP requests and `os/exec` invocations that do not pass a `context.Context`. |
 | **`gocritic`** | Bugs & Diagnostics | Detects subtle bugs, skipped `defer`s on `os.Exit`, slice mutation side-effects, and performance anti-patterns. |
-| **`gosec`** | Security | Inspects source code for security vulnerabilities, weak file permissions, and injection vectors. |
+| **`gosec`** | Security | Inspects source code for security vulnerabilities, weak file permissions, and injection vectors (enforced via per-site review annotations). |
 | **`forcetypeassert`** | Robustness | Enforces checked type assertions across dynamic interface decoding. |
 | **`errcheck`** | Robustness | Ensures unchecked error returns from I/O and critical functions are flagged and handled. |
-| **`govet`** | Standard Vet | Core Go vet checks (shadowing, printf, struct tags, locks). |
+| **`govet`** | Standard Vet | Core Go vet checks (printf formatting, struct tags, lock copying, unreachable code). |
 | **`staticcheck`** | Core Static Analysis | Advanced static analysis for bugs, dead code, and standard library simplifications. |
 | **`ineffassign`** | Dead Code | Detects ineffectual variable assignments. |
 | **`unused`** | Dead Code | Flags unused constants, variables, functions, and struct fields. |

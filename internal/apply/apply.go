@@ -351,7 +351,7 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 	}
 
 	if opErr == nil && (step.Action == "recreate" || step.Action == "delete") {
-		_ = fleet.DefaultKnownHostsManager().PurgeContainerKey(step.Container)
+		_ = fleet.DefaultKnownHostsManager().PurgeContainerKeyContext(ctx, step.Container)
 	}
 
 	if opErr != nil {
