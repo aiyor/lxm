@@ -1,5 +1,19 @@
 version: "2"
 linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - errorlint
+    - nilerr
+    - noctx
+    - gocritic
+    - gosec
+    - forcetypeassert
+    - unconvert
+    - misspell
   settings:
     errcheck:
       exclude-functions:
@@ -26,6 +40,21 @@ linters:
       - linters:
           - staticcheck
         path: internal/lxd/fake\.go
+      - linters:
+          - gosec
+        text: "G204: Subprocess launched with a potential tainted input or cmd arguments"
+      - linters:
+          - gosec
+        text: "G304: File path provided as taint input"
+      - linters:
+          - gosec
+        text: "G306: Expect WriteFile permissions to be 0600 or less"
+      - linters:
+          - gosec
+        path: _test\.go
+      - linters:
+          - forcetypeassert
+        path: _test\.go
     paths:
       - third_party$
       - builtin$

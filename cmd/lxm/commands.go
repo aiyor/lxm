@@ -695,22 +695,25 @@ func newSnapshotCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 				return err
 			}
 
-			if len(args) > 0 && args[0] == "gc" {
-				gcFlag = true
-				args = args[1:]
-			} else if len(args) > 0 && args[0] == "list" {
-				args = args[1:]
-			} else if len(args) > 0 && args[0] == "create" {
-				if len(args) < 3 {
-					return &exitError{code: 2, err: fmt.Errorf("snapshot create requires container name and snapshot name")}
+			if len(args) > 0 {
+				switch args[0] {
+				case "gc":
+					gcFlag = true
+					args = args[1:]
+				case "list":
+					args = args[1:]
+				case "create":
+					if len(args) < 3 {
+						return &exitError{code: 2, err: fmt.Errorf("snapshot create requires container name and snapshot name")}
+					}
+					args = args[1:]
+				case "delete":
+					if len(args) < 3 {
+						return &exitError{code: 2, err: fmt.Errorf("snapshot delete requires container name and snapshot name")}
+					}
+					deleteSnapName = args[2]
+					args = []string{args[1]}
 				}
-				args = args[1:]
-			} else if len(args) > 0 && args[0] == "delete" {
-				if len(args) < 3 {
-					return &exitError{code: 2, err: fmt.Errorf("snapshot delete requires container name and snapshot name")}
-				}
-				deleteSnapName = args[2]
-				args = []string{args[1]}
 			}
 
 			if gcFlag {
@@ -1186,7 +1189,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 						execArgs = append(execArgs, "-o", "StrictHostKeyChecking=yes")
 					}
 					if !isDryRun {
-						if err := knownMgr.EnsureHostKeyRegistered(name, ip, 22); err != nil {
+						if err := knownMgr.EnsureHostKeyRegisteredContext(ctx, name, ip, 22); err != nil {
 							return &exitError{code: 6, err: fmt.Errorf("host key registration failed for %q (%s): %w", name, ip, err)}
 						}
 					}
@@ -1215,7 +1218,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 				return nil
 			}
 
-			sshCmd := exec.Command("ssh", execArgs...)
+			sshCmd := exec.CommandContext(ctx, "ssh", execArgs...)
 			sshCmd.Stdin = os.Stdin
 			sshCmd.Stdout = stdout
 			sshCmd.Stderr = stderr

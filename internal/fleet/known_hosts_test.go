@@ -12,10 +12,13 @@ import (
 func TestMain(m *testing.M) {
 	tmpDir, err := os.MkdirTemp("", "lxm_fleet_test_*")
 	if err == nil {
-		os.Setenv("LXM_KNOWN_HOSTS_FILE", filepath.Join(tmpDir, "known_hosts"))
-		defer os.RemoveAll(tmpDir)
+		_ = os.Setenv("LXM_KNOWN_HOSTS_FILE", filepath.Join(tmpDir, "known_hosts"))
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if tmpDir != "" {
+		_ = os.RemoveAll(tmpDir)
+	}
+	os.Exit(code)
 }
 
 func TestKnownHostsManager_BasicOperations(t *testing.T) {

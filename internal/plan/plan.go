@@ -241,7 +241,8 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 	powerStateChanged := liveState != desiredState
 
 	// 5. InPlace Configuration Update
-	if len(diffs) > 0 {
+	switch {
+	case len(diffs) > 0:
 		step.Action = "update"
 		step.Changed = true
 		step.Diff = diffs
@@ -264,7 +265,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		} else if liveState == "running" && hasVMConfigDiff(diffs) {
 			step.PowerTransition = "restart"
 		}
-	} else if powerStateChanged {
+	case powerStateChanged:
 		step.Changed = true
 		if desiredState == "running" {
 			step.Action = "start"
@@ -274,7 +275,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		step.Diff = []FieldDiff{
 			{Field: "state", Old: liveState, New: desiredState},
 		}
-	} else {
+	default:
 		step.Action = "noop"
 		step.Changed = false
 	}

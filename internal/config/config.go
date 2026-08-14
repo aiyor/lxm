@@ -701,8 +701,11 @@ func mergeYAMLData(dst *map[string]interface{}, srcData []byte) error {
 		return nil
 	}
 
-	*dst = deepMerge(*dst, src).(map[string]interface{})
-	return nil
+	if merged, ok := deepMerge(*dst, src).(map[string]interface{}); ok {
+		*dst = merged
+		return nil
+	}
+	return fmt.Errorf("unexpected merged config type %T", deepMerge(*dst, src))
 }
 
 func deepMerge(dst, src interface{}) interface{} {
@@ -981,23 +984,23 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 	if overlay.Replace != nil && len(overlay.Replace.Mounts) > 0 {
 		res.Mounts = overlay.Replace.Mounts
 	} else {
-		res.Mounts = append(base.Mounts, overlay.Mounts...)
+		res.Mounts = append(append(Mounts(nil), base.Mounts...), overlay.Mounts...)
 	}
 
 	if overlay.Replace != nil && len(overlay.Replace.Networks) > 0 {
 		res.Networks = overlay.Replace.Networks
 	} else {
-		res.Networks = append(base.Networks, overlay.Networks...)
+		res.Networks = append(append([]NetworkConfig(nil), base.Networks...), overlay.Networks...)
 	}
 
 	if overlay.Replace != nil && len(overlay.Replace.Recipes) > 0 {
 		res.Recipes = overlay.Replace.Recipes
 	} else {
-		res.Recipes = append(base.Recipes, overlay.Recipes...)
+		res.Recipes = append(append(Recipes(nil), base.Recipes...), overlay.Recipes...)
 	}
 
-	res.CloudInitInclude = append(base.CloudInitInclude, overlay.CloudInitInclude...)
-	res.Groups = append(base.Groups, overlay.Groups...)
+	res.CloudInitInclude = append(append([]string(nil), base.CloudInitInclude...), overlay.CloudInitInclude...)
+	res.Groups = append(append([]string(nil), base.Groups...), overlay.Groups...)
 
 	// Apply Remove Directives (D5, C3)
 	if overlay.Remove != nil {
@@ -1222,16 +1225,19 @@ func loadConfigRecursive(configFile string, visited map[string]bool) (*Config, e
 	}
 
 	// Schema detection (D13) & CUE Authoring validation (on expandedData so templates are substituted!)
-	if raw.Schema == "" {
+	switch raw.Schema {
+	case "":
 		fmt.Fprintf(os.Stderr, "notice: %s declares no schema (lxm/config/v1 compat mode) — run lxm compile to migrate to lxm/config/v2\n", fileName)
-	} else if raw.Schema == "lxm/config/v2" {
+	case "lxm/config/v2":
 		v, err := NewValidator()
 		if err == nil {
 			if err := v.ValidateAuthoring([]byte(expandedData)); err != nil {
 				return nil, fmt.Errorf("schema validation %s: %w", fileName, err)
 			}
 		}
-	} else if raw.Schema != "lxm/config/v1" {
+	case "lxm/config/v1":
+		// Supported v1 schema
+	default:
 		return nil, fmt.Errorf("unknown schema version %q in %s", raw.Schema, fileName)
 	}
 
