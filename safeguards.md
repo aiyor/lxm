@@ -88,6 +88,7 @@ The following suite of analyzers is enabled in [.golangci.yml](file:///mnt/devel
 | **`unused`** | Dead Code | Flags unused constants, variables, functions, and struct fields. |
 | **`unconvert`** | Cleanliness | Detects redundant type conversions. |
 | **`misspell`** | Documentation | Catches spelling mistakes in logs, comments, and error messages. |
+| **`nolintlint`** | Hygiene & Integrity | Ensures `//nolint` directives are actively used, specific, and include explanatory justification. |
 
 ---
 

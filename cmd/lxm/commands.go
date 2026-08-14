@@ -1218,7 +1218,6 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 				return nil
 			}
 
-			//nolint:gosec // G204: execArgs contains validated SSH parameters and target user/name
 			sshCmd := exec.CommandContext(ctx, "ssh", execArgs...)
 			sshCmd.Stdin = os.Stdin
 			sshCmd.Stdout = stdout
@@ -1379,7 +1378,7 @@ func newCompileCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 			var totalWarnings []string
 
 			for _, file := range configFiles {
-				raw, err := os.ReadFile(file)
+				raw, err := os.ReadFile(filepath.Clean(file))
 				if err != nil {
 					return &exitError{code: 3, err: fmt.Errorf("reading manifest %q: %w", file, err)}
 				}

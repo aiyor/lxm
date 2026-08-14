@@ -110,7 +110,6 @@ func LoadRecipe(path string, baseDir string) (*RecipeMetadata, error) {
 	target = filepath.Clean(target)
 	ext := strings.ToLower(filepath.Ext(target))
 	if ext == ".yaml" || ext == ".yml" {
-		//nolint:gosec // G304: target is cleaned recipe file path relative to base directory
 		data, err := os.ReadFile(target)
 		if err != nil {
 			return nil, fmt.Errorf("reading recipe metadata %q: %w", target, err)
@@ -160,7 +159,6 @@ func ComputeScriptHash(scriptPath string, baseDir string) (string, error) {
 	}
 	target = filepath.Clean(target)
 
-	//nolint:gosec // G304: target is cleaned recipe file path relative to base directory
 	data, err := os.ReadFile(target)
 	if err != nil {
 		return "", fmt.Errorf("reading script file %q: %w", target, err)
@@ -192,7 +190,6 @@ func ExecuteRecipeScriptContext(ctx context.Context, svc lxd.InstanceService, co
 	}
 	target = filepath.Clean(target)
 
-	//nolint:gosec // G304: target is cleaned recipe file path relative to base directory
 	scriptBytes, err := os.ReadFile(target)
 	if err != nil {
 		return lxd.ExecResult{ExitCode: 3}, "", err

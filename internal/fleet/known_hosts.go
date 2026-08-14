@@ -70,7 +70,6 @@ func (m *KnownHostsManager) PurgeContainerKeyContext(ctx context.Context, contai
 			return nil
 		}
 
-		//nolint:gosec // G204: containerName is validated manifest identifier and m.KnownHostsFile is tool config path
 		cmd := exec.CommandContext(ctx, "ssh-keygen", "-R", containerName, "-f", m.KnownHostsFile)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -103,7 +102,6 @@ func (m *KnownHostsManager) IsHostRegisteredContext(ctx context.Context, contain
 			return nil
 		}
 
-		//nolint:gosec // G204: containerName is validated manifest identifier and m.KnownHostsFile is tool config path
 		cmd := exec.CommandContext(ctx, "ssh-keygen", "-F", containerName, "-f", m.KnownHostsFile)
 		err := cmd.Run()
 		registered = (err == nil)
@@ -126,7 +124,6 @@ func (m *KnownHostsManager) EnsureHostKeyRegisteredContext(ctx context.Context, 
 	return m.withLock(func() error {
 		// Check if already registered
 		if _, err := os.Stat(m.KnownHostsFile); err == nil {
-			//nolint:gosec // G204: containerName is validated manifest identifier and m.KnownHostsFile is tool config path
 			cmd := exec.CommandContext(ctx, "ssh-keygen", "-F", containerName, "-f", m.KnownHostsFile)
 			if err := cmd.Run(); err == nil {
 				// Host is already registered

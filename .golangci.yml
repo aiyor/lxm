@@ -14,7 +14,11 @@ linters:
     - forcetypeassert
     - unconvert
     - misspell
+    - nolintlint
   settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true
     errcheck:
       exclude-functions:
         - fmt.Fprint

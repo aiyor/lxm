@@ -66,7 +66,7 @@ type manifestProbe struct {
 // manifest and therefore fails on base files (no name) by design — exactly the
 // files doctor must not misreport as un-migrated.
 func probeManifestFile(path string) (*manifestProbe, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}
