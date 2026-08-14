@@ -192,7 +192,7 @@ recipes: []
 	})
 	t.Run("F2: state running/stopped accepted by #LXM_RESOLVED and #LXM_AUTHORING", func(t *testing.T) {
 		for _, sv := range []string{"running", "stopped"} {
-			stateYAML := []byte(fmt.Sprintf(`
+			stateYAML := fmt.Appendf(nil, `
 schema: lxm/config/v2
 name: dev-station
 image: ubuntu-24.04
@@ -204,7 +204,7 @@ wait:
 mounts: []
 networks: []
 recipes: []
-`, sv))
+`, sv)
 			if err := v.ValidateResolved(stateYAML); err != nil {
 				t.Errorf("expected state: %s to pass #LXM_RESOLVED, got: %v", sv, err)
 			}

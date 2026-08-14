@@ -1266,5 +1266,3 @@ func TestReconciler_Compute_VM_HugepagesAndRawQEMU_DiffAndRestart(t *testing.T) 
 		t.Errorf("expected diff for raw.qemu, got diffs: %+v", step.Diff)
 	}
 }
-
-

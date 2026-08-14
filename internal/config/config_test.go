@@ -2569,4 +2569,3 @@ mounts:
 		t.Errorf("expected mount shift false, got %+v", conf.Mounts[0])
 	}
 }
-

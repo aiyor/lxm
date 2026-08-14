@@ -1213,6 +1213,3 @@ func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopPowerTransition(t *testi
 		t.Errorf("expected instance to remain Stopped, got %q", inst.Status)
 	}
 }
-
-
-
