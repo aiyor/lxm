@@ -159,7 +159,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			lastComputedPlan = combinedPlan
 
 			executor := apply.NewExecutor(svc)
-			report, err := executor.Apply(ctx, combinedPlan, apply.ApplyOpts{
+			report, applyErr := executor.Apply(ctx, combinedPlan, apply.ApplyOpts{
 				Jobs:         5,
 				DryRun:       opts.dryRun,
 				Force:        opts.force,
@@ -168,6 +168,10 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				NoStart:      opts.noStart,
 			})
 			lastApplyReport = report
+
+			if applyErr != nil {
+				return &exitError{code: 1, err: applyErr}
+			}
 
 			if report != nil && report.ExitCode != 0 {
 				errMsg := "apply failed"

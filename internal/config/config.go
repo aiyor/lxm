@@ -279,9 +279,10 @@ func (m *Mount) UnmarshalYAML(value *yaml.Node) error {
 		m.Path = parts[1]
 		if len(parts) > 2 {
 			for _, opt := range parts[2:] {
-				if opt == "ro" || opt == "readonly" {
+				switch opt {
+				case "ro", "readonly":
 					m.Readonly = true
-				} else if opt == "recursive" {
+				case "recursive":
 					m.Recursive = true
 				}
 			}
@@ -1089,13 +1090,9 @@ func LoadConfig(configFile string) (*Config, error) {
 	conf.Include = nil
 
 	// Normalization Pipeline (VM, Limits, Mounts, WaitPolicy)
-	if conf.Type == "vm" {
+	switch conf.Type {
+	case "vm", "virtual-machine":
 		conf.Type = "virtual-machine"
-	}
-	if conf.Type == "" {
-		conf.Type = "container"
-	}
-	if conf.Type == "virtual-machine" {
 		if conf.VM == nil {
 			conf.VM = &VMConfig{BootMode: "uefi-secureboot"}
 		} else {
@@ -1114,7 +1111,8 @@ func LoadConfig(configFile string) (*Config, error) {
 		if !conf.WaitPolicy.Presence["agent"] || conf.WaitPolicy.Agent == "" {
 			conf.WaitPolicy.Agent = "2m"
 		}
-	} else if conf.Type == "container" {
+	default:
+		conf.Type = "container"
 		conf.VM = nil
 		if !conf.WaitPolicy.Presence["agent"] {
 			conf.WaitPolicy.Agent = ""

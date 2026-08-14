@@ -127,10 +127,10 @@ func (f *FakeInstanceServer) UpdateInstance(name string, put api.InstancePut, et
 	if inst.Type == "virtual-machine" && (inst.Status == "Running" || inst.StatusCode == api.Running) {
 		if put.Config != nil {
 			if put.Config["limits.memory.hugepages"] != inst.Config["limits.memory.hugepages"] {
-				return fmt.Errorf("Key %q cannot be updated when VM is running", "limits.memory.hugepages")
+				return fmt.Errorf("key %q cannot be updated when VM is running", "limits.memory.hugepages")
 			}
 			if put.Config["raw.qemu"] != inst.Config["raw.qemu"] {
-				return fmt.Errorf("Key %q cannot be updated when VM is running", "raw.qemu")
+				return fmt.Errorf("key %q cannot be updated when VM is running", "raw.qemu")
 			}
 		}
 	}
