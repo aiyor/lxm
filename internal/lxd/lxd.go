@@ -620,7 +620,8 @@ type interactiveSignalOpts struct {
 }
 
 func handleInteractiveSignal(sig os.Signal, opts interactiveSignalOpts, controlChan chan<- api.InstanceExecControl, done <-chan struct{}) bool {
-	if sig == syscall.SIGWINCH {
+	switch sig {
+	case syscall.SIGWINCH:
 		getFS := opts.getTermSize
 		if getFS == nil {
 			getFS = term.GetSize
@@ -640,7 +641,7 @@ func handleInteractiveSignal(sig os.Signal, opts interactiveSignalOpts, controlC
 			}
 		}
 		return false
-	} else if sig == syscall.SIGINT {
+	case syscall.SIGINT:
 		select {
 		case controlChan <- api.InstanceExecControl{
 			Command: "signal",
@@ -652,7 +653,7 @@ func handleInteractiveSignal(sig os.Signal, opts interactiveSignalOpts, controlC
 			return true
 		}
 		return false
-	} else {
+	default:
 		// SIGTERM / SIGHUP / external interrupt: restore terminal state before re-raising signal
 		if opts.restoreTerm != nil {
 			opts.restoreTerm()

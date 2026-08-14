@@ -28,12 +28,22 @@ import (
 // Compact string mount: "HostPath:ContainerPath[:ro|:rw]"
 #MountStr: =~"^.+:.+(:(ro|rw))?$"
 
+#InstanceType: "container" | "virtual-machine"
+#InstanceTypeAuthoring: #InstanceType | "vm"
+
+// Strict integer byte sizes aligned with LXD shared/units.ParseByteSizeString
+#ByteSize: =~"^[0-9]+(B|kB|MB|GB|TB|PB|EB|KiB|MiB|GiB|TiB|PiB|EiB)?$"
+
+#CPUCountAuthoring: (int & >0) | (=~"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$" & !~"^0$")
+#CPUCountResolved:  =~"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$" & !~"^0$"
+
 // Authoring mount object (allows raw tilde '~' and '{{ .Vars.* }}' template sources)
 #MountObjAuthoring: close({
-	source:    string
-	path:      #CleanMountPath
-	readonly?: bool | *false
+	source:     string
+	path:       #CleanMountPath
+	readonly?:  bool | *false
 	recursive?: bool | *false
+	shift?:     bool | *true
 })
 
 // Authoring mount object for the Style 2 map form: the map key supplies the
@@ -43,18 +53,50 @@ import (
 	path?:      #CleanMountPath
 	readonly?:  bool | *false
 	recursive?: bool | *false
+	shift?:     bool | *true
 })
 
 // Resolved mount object (strictly enforces absolute host source path)
 #MountObjResolved: close({
-	source:    string & =~"^/"
-	path:      #CleanMountPath
-	readonly?: bool | *false
+	source:     string & =~"^/"
+	path:       #CleanMountPath
+	readonly?:  bool | *false
 	recursive?: bool | *false
+	shift?:     bool | *true
+})
+
+#LimitsAuthoring: close({
+	cpu?:    #CPUCountAuthoring
+	memory?: #ByteSize
+	disk?:   #ByteSize
+})
+
+#LimitsResolved: close({
+	cpu?:    #CPUCountResolved
+	memory?: #ByteSize
+	disk?:   #ByteSize
+})
+
+#VMConfigAuthoring: close({
+	Z1="secureboot"?: bool
+	Z2="boot_mode"?:  "uefi-secureboot" | "uefi-nosecureboot" | "bios"
+	hugepages?:       bool | *false
+	raw_qemu?:        string
+
+	if Z1 != _|_ && Z2 != _|_ {
+		_|_
+	}
+})
+
+#VMConfigResolved: close({
+	boot_mode?: "uefi-secureboot" | "uefi-nosecureboot" | "bios"
+	hugepages?: bool | *false
+	raw_qemu?:  string
 })
 
 // Wait policy struct with recursive presence tracking
 #WaitConfig: close({
+	agent?:      string
 	cloud_init?: string | *"10m"
 	network?:    string | *"60s"
 	poll?:       string | *"5s"
@@ -69,10 +111,14 @@ import (
 	schema?: "lxm/config/v2"
 	base?:   bool | *false
 	name?:   string
+	type?:   #InstanceTypeAuthoring | *"container"
 	image?:  #ImageRef
 	user?:   string | *"ubuntu"
 	status?: "present" | "absent" | *"present"
 	state?:  "running" | "stopped" // explicit power state; overrides status-derived default (F2)
+
+	limits?: #LimitsAuthoring
+	vm?:     #VMConfigAuthoring
 
 	// Local template variables for host path reuse (file-local scope)
 	vars?: {[#EnvKey]: string}
@@ -96,15 +142,15 @@ import (
 	// comment-only script entries are rejected loudly (mirroring the
 	// migrator's Transform 8 emptiness check).
 	recipes?: [...((string & != "" & !~"^\\s*#") | close({root: [...(string & != "" & !~"^\\s*#")] & [_, ...]}) | close({
-		run_as?:  string | *"root"
-		scripts:  [...(string & != "" & !~"^\\s*#")] & [_, ...]
+		run_as?: string | *"root"
+		scripts: [...(string & != "" & !~"^\\s*#")] & [_, ...]
 	}))]
 
 	// Cloud-Init inclusion & configuration (Hyphenated v1 keys preserved)
 	"cloud-init-include"?: [...string]
 	X1="cloud-init"?:      string
 	X2="cloud-init-file"?: string
-	"network-config"?:  string
+	"network-config"?:     string
 
 	if X1 != _|_ && X2 != _|_ {
 		_|_
@@ -128,7 +174,7 @@ import (
 	// Security Posture Fields (D9)
 	sudo?:              bool
 	"inject_ssh_keys"?: bool
-	"ssh_keys"?:       [...string]
+	"ssh_keys"?:        [...string]
 })
 
 // ============================================================================
@@ -138,10 +184,14 @@ import (
 #LXM_RESOLVED: close({
 	schema: "lxm/config/v2"
 	name:   string & strings.MinRunes(1)
-	image?: #ImageRef  // Optional for status: absent; status: present => image required is a Go invariant (F1)
+	type:   #InstanceType | *"container"
+	image?: #ImageRef // Optional for status: absent; status: present => image required is a Go invariant (F1)
 	user:   string & strings.MinRunes(1)
 	status: "present" | "absent"
 	state?: "running" | "stopped" // Go normalizer default "running"; state with status: absent is a Go ValidatePostMerge error (F2)
+
+	limits?: #LimitsResolved
+	vm?:     #VMConfigResolved
 
 	// Normalized mount objects ONLY (no strings, no maps)
 	// Authoritative Security Gate: source and path MUST be absolute
@@ -163,7 +213,7 @@ import (
 	"cloud-init-include"?: [...string]
 	Y1="cloud-init"?:      string
 	Y2="cloud-init-file"?: string
-	"network-config"?:  string
+	"network-config"?:     string
 
 	if Y1 != _|_ && Y2 != _|_ {
 		_|_
@@ -174,5 +224,5 @@ import (
 	// Security Posture Fields (D9)
 	sudo?:              bool
 	"inject_ssh_keys"?: bool
-	"ssh_keys"?:       [...string]
+	"ssh_keys"?:        [...string]
 })

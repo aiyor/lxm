@@ -19,10 +19,13 @@ import (
 func TestMain(m *testing.M) {
 	tmpDir, err := os.MkdirTemp("", "lxm_apply_test_*")
 	if err == nil {
-		os.Setenv("LXM_KNOWN_HOSTS_FILE", filepath.Join(tmpDir, "known_hosts"))
-		defer os.RemoveAll(tmpDir)
+		_ = os.Setenv("LXM_KNOWN_HOSTS_FILE", filepath.Join(tmpDir, "known_hosts"))
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if tmpDir != "" {
+		_ = os.RemoveAll(tmpDir)
+	}
+	os.Exit(code)
 }
 
 func TestExecutor_DryRun(t *testing.T) {
@@ -1007,5 +1010,209 @@ func TestExecutor_InterruptDuringRecipeScript_ReturnsInternalError(t *testing.T)
 	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
 	if rep.ExitCode != 1 {
 		t.Errorf("expected exit code 1 (INTERNAL_ERROR) on recipe execution cancellation, got %d", rep.ExitCode)
+	}
+}
+
+func TestIsTransientAgentError(t *testing.T) {
+	transientMatches := []string{
+		"LXD VM agent is not currently running",
+		"Failed connecting to lxd-agent",
+		"The LXD agent is not running on this instance",
+		"LXD agent not running",
+		"Failed to connect to lxd-agent",
+		"Failed to connect to instance socket",
+		"websocket: close 1006 (abnormal closure)",
+	}
+
+	for _, msg := range transientMatches {
+		if !apply.IsTransientAgentError(msg) {
+			t.Errorf("expected %q to be transient agent error", msg)
+		}
+	}
+
+	nonTransient := []string{
+		"systemctl: command not found",
+		"exit status 1",
+		"permission denied",
+	}
+
+	for _, msg := range nonTransient {
+		if apply.IsTransientAgentError(msg) {
+			t.Errorf("expected %q NOT to be transient agent error", msg)
+		}
+	}
+}
+
+func TestExecutor_WaitPolicy_VMAgentHandshake(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+
+	attempts := 0
+	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
+		attempts++
+		if attempts <= 2 {
+			return lxd.ExecResult{ExitCode: -1}, fmt.Errorf("LXD VM agent is not currently running")
+		}
+		return lxd.ExecResult{ExitCode: 0, Stdout: "running\n"}, nil
+	}
+
+	exec := apply.NewExecutor(fake)
+	p := &plan.Plan{
+		Steps: []plan.Step{
+			{
+				Container:     "test-vm",
+				Action:        "create",
+				InstancesPost: &api.InstancesPost{Name: "test-vm", Type: "virtual-machine"},
+				Wait:          true,
+				WaitPolicy: &config.WaitConfig{
+					Agent:    "5s",
+					Poll:     "10ms",
+					Required: true,
+				},
+			},
+		},
+	}
+
+	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	if err != nil || rep.ExitCode != 0 {
+		t.Fatalf("expected VM agent handshake success, got exit code %d, error: %v", rep.ExitCode, err)
+	}
+	if attempts < 3 {
+		t.Errorf("expected at least 3 attempts to establish handshake, got %d", attempts)
+	}
+}
+
+func TestExecutor_WaitPolicy_VMAgentTimeout(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+
+	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
+		return lxd.ExecResult{ExitCode: -1}, fmt.Errorf("LXD VM agent is not currently running")
+	}
+
+	exec := apply.NewExecutor(fake)
+	p := &plan.Plan{
+		Steps: []plan.Step{
+			{
+				Container:     "timeout-vm",
+				Action:        "create",
+				InstancesPost: &api.InstancesPost{Name: "timeout-vm", Type: "virtual-machine"},
+				Wait:          true,
+				WaitPolicy: &config.WaitConfig{
+					Agent:    "50ms",
+					Poll:     "10ms",
+					Required: true,
+				},
+			},
+		},
+	}
+
+	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	if rep.ExitCode != 7 {
+		t.Errorf("expected exit code 7 (WAIT_TIMEOUT) on VM agent timeout, got %d", rep.ExitCode)
+	}
+}
+
+func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopBeforePUT(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+	_ = fake.CreateInstance(api.InstancesPost{
+		Name: "running-vm",
+		Type: "virtual-machine",
+	})
+	fake.Instances["running-vm"].Status = "Running"
+	fake.Instances["running-vm"].StatusCode = api.Running
+	fake.Instances["running-vm"].Config = map[string]string{
+		"boot.mode": "uefi-secureboot",
+	}
+
+	exec := apply.NewExecutor(fake)
+
+	// Step updating raw.qemu and hugepages with PowerTransition = "restart"
+	p := &plan.Plan{
+		Steps: []plan.Step{
+			{
+				Container:       "running-vm",
+				Action:          "update",
+				Changed:         true,
+				PowerTransition: "restart",
+				InstancePut: &api.InstancePut{
+					Config: map[string]string{
+						"boot.mode":               "uefi-secureboot",
+						"limits.memory.hugepages": "true",
+						"raw.qemu":                "-cpu host",
+					},
+				},
+			},
+		},
+	}
+
+	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	if err != nil || rep.ExitCode != 0 {
+		t.Fatalf("expected successful update via stop->PUT->start, got exit code %d, err: %v", rep.ExitCode, err)
+	}
+
+	inst, _, err := fake.GetInstance("running-vm")
+	if err != nil {
+		t.Fatalf("failed to get instance: %v", err)
+	}
+	if inst.Config["raw.qemu"] != "-cpu host" {
+		t.Errorf("expected raw.qemu to be updated, got %q", inst.Config["raw.qemu"])
+	}
+	if inst.Config["limits.memory.hugepages"] != "true" {
+		t.Errorf("expected limits.memory.hugepages to be updated, got %q", inst.Config["limits.memory.hugepages"])
+	}
+	if inst.Status != "Running" {
+		t.Errorf("expected instance to be restarted and Running, got %q", inst.Status)
+	}
+}
+
+func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopPowerTransition(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+	_ = fake.CreateInstance(api.InstancesPost{
+		Name: "running-vm-stop",
+		Type: "virtual-machine",
+	})
+	fake.Instances["running-vm-stop"].Status = "Running"
+	fake.Instances["running-vm-stop"].StatusCode = api.Running
+	fake.Instances["running-vm-stop"].Config = map[string]string{
+		"boot.mode": "uefi-secureboot",
+	}
+
+	exec := apply.NewExecutor(fake)
+
+	// Step updating raw.qemu and hugepages with PowerTransition = "stop" (desired state: stopped)
+	p := &plan.Plan{
+		Steps: []plan.Step{
+			{
+				Container:       "running-vm-stop",
+				Action:          "update",
+				Changed:         true,
+				PowerTransition: "stop",
+				InstancePut: &api.InstancePut{
+					Config: map[string]string{
+						"boot.mode":               "uefi-secureboot",
+						"limits.memory.hugepages": "true",
+						"raw.qemu":                "-cpu host",
+					},
+				},
+			},
+		},
+	}
+
+	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	if err != nil || rep.ExitCode != 0 {
+		t.Fatalf("expected successful update via stop->PUT, got exit code %d, err: %v", rep.ExitCode, err)
+	}
+
+	inst, _, err := fake.GetInstance("running-vm-stop")
+	if err != nil {
+		t.Fatalf("failed to get instance: %v", err)
+	}
+	if inst.Config["raw.qemu"] != "-cpu host" {
+		t.Errorf("expected raw.qemu to be updated, got %q", inst.Config["raw.qemu"])
+	}
+	if inst.Config["limits.memory.hugepages"] != "true" {
+		t.Errorf("expected limits.memory.hugepages to be updated, got %q", inst.Config["limits.memory.hugepages"])
+	}
+	if inst.Status != "Stopped" {
+		t.Errorf("expected instance to remain Stopped, got %q", inst.Status)
 	}
 }

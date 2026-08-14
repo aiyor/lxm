@@ -1,8 +1,16 @@
 version: '3'
 
 tasks:
+  gofmt:
+    desc: Format Go source files
+    aliases: [fmt]
+    cmds:
+      - gofmt -s -w .
+
   build:
     desc: Build the lxm binary
+    deps:
+      - gofmt
     cmds:
       - go build -v -o ./bin/lxm ./cmd/lxm
 
@@ -13,6 +21,8 @@ tasks:
 
   lint:
     desc: Run golangci-lint
+    deps:
+      - gofmt
     cmds:
       - golangci-lint run ./...
 

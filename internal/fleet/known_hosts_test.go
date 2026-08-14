@@ -12,10 +12,13 @@ import (
 func TestMain(m *testing.M) {
 	tmpDir, err := os.MkdirTemp("", "lxm_fleet_test_*")
 	if err == nil {
-		os.Setenv("LXM_KNOWN_HOSTS_FILE", filepath.Join(tmpDir, "known_hosts"))
-		defer os.RemoveAll(tmpDir)
+		_ = os.Setenv("LXM_KNOWN_HOSTS_FILE", filepath.Join(tmpDir, "known_hosts"))
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if tmpDir != "" {
+		_ = os.RemoveAll(tmpDir)
+	}
+	os.Exit(code)
 }
 
 func TestKnownHostsManager_BasicOperations(t *testing.T) {
@@ -100,7 +103,7 @@ func TestKnownHostsManager_Concurrency(t *testing.T) {
 						return err
 					}
 					defer f.Close()
-					_, err = f.WriteString(fmt.Sprintf("%s ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI12345678901234567890123456789012345678901%d\n", name, idx))
+					_, err = fmt.Fprintf(f, "%s ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI12345678901234567890123456789012345678901%d\n", name, idx)
 					return err
 				})
 			}

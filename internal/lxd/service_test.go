@@ -69,7 +69,7 @@ func TestFakeInstanceServer(t *testing.T) {
 	}
 
 	// Test error classification
-	code, isEtag := fake.ClassifyLXDError(fmt.Errorf("not found"), "lookup")
+	code, _ := fake.ClassifyLXDError(fmt.Errorf("not found"), "lookup")
 	if code != 5 {
 		t.Errorf("expected exit code 5 for lookup not found, got %d", code)
 	}

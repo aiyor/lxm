@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -62,14 +63,14 @@ func (m *KnownHostsManager) withLock(fn func() error) error {
 	return fn()
 }
 
-// PurgeContainerKey removes host key entries for containerName using ssh-keygen -R under lock.
-func (m *KnownHostsManager) PurgeContainerKey(containerName string) error {
+// PurgeContainerKeyContext removes host key entries for containerName using ssh-keygen -R under lock.
+func (m *KnownHostsManager) PurgeContainerKeyContext(ctx context.Context, containerName string) error {
 	return m.withLock(func() error {
 		if _, err := os.Stat(m.KnownHostsFile); os.IsNotExist(err) {
 			return nil
 		}
 
-		cmd := exec.Command("ssh-keygen", "-R", containerName, "-f", m.KnownHostsFile)
+		cmd := exec.CommandContext(ctx, "ssh-keygen", "-R", containerName, "-f", m.KnownHostsFile)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			outStr := string(out)
@@ -87,8 +88,13 @@ func (m *KnownHostsManager) PurgeContainerKey(containerName string) error {
 	})
 }
 
-// IsHostRegistered checks if containerName is present in known_hosts file using ssh-keygen -F.
-func (m *KnownHostsManager) IsHostRegistered(containerName string) (bool, error) {
+// PurgeContainerKey removes host key entries for containerName using ssh-keygen -R under lock.
+func (m *KnownHostsManager) PurgeContainerKey(containerName string) error {
+	return m.PurgeContainerKeyContext(context.Background(), containerName)
+}
+
+// IsHostRegisteredContext checks if containerName is present in known_hosts file using ssh-keygen -F.
+func (m *KnownHostsManager) IsHostRegisteredContext(ctx context.Context, containerName string) (bool, error) {
 	var registered bool
 	err := m.withLock(func() error {
 		if _, err := os.Stat(m.KnownHostsFile); os.IsNotExist(err) {
@@ -96,7 +102,7 @@ func (m *KnownHostsManager) IsHostRegistered(containerName string) (bool, error)
 			return nil
 		}
 
-		cmd := exec.Command("ssh-keygen", "-F", containerName, "-f", m.KnownHostsFile)
+		cmd := exec.CommandContext(ctx, "ssh-keygen", "-F", containerName, "-f", m.KnownHostsFile)
 		err := cmd.Run()
 		registered = (err == nil)
 		return nil
@@ -104,8 +110,13 @@ func (m *KnownHostsManager) IsHostRegistered(containerName string) (bool, error)
 	return registered, err
 }
 
-// EnsureHostKeyRegistered verifies if containerName is in known_hosts; if absent, runs ssh-keyscan and appends under lock.
-func (m *KnownHostsManager) EnsureHostKeyRegistered(containerName string, ip string, port int) error {
+// IsHostRegistered checks if containerName is present in known_hosts file using ssh-keygen -F.
+func (m *KnownHostsManager) IsHostRegistered(containerName string) (bool, error) {
+	return m.IsHostRegisteredContext(context.Background(), containerName)
+}
+
+// EnsureHostKeyRegisteredContext verifies if containerName is in known_hosts; if absent, runs ssh-keyscan and appends under lock.
+func (m *KnownHostsManager) EnsureHostKeyRegisteredContext(ctx context.Context, containerName string, ip string, port int) error {
 	if port <= 0 {
 		port = 22
 	}
@@ -113,7 +124,7 @@ func (m *KnownHostsManager) EnsureHostKeyRegistered(containerName string, ip str
 	return m.withLock(func() error {
 		// Check if already registered
 		if _, err := os.Stat(m.KnownHostsFile); err == nil {
-			cmd := exec.Command("ssh-keygen", "-F", containerName, "-f", m.KnownHostsFile)
+			cmd := exec.CommandContext(ctx, "ssh-keygen", "-F", containerName, "-f", m.KnownHostsFile)
 			if err := cmd.Run(); err == nil {
 				// Host is already registered
 				return nil
@@ -121,7 +132,8 @@ func (m *KnownHostsManager) EnsureHostKeyRegistered(containerName string, ip str
 		}
 
 		// Run ssh-keyscan with 5-second timeout (-T 5)
-		scanCmd := exec.Command("ssh-keyscan", "-T", "5", "-p", fmt.Sprintf("%d", port), ip)
+		//nolint:gosec // G204: ip is retrieved from LXD instance network state and port is integer
+		scanCmd := exec.CommandContext(ctx, "ssh-keyscan", "-T", "5", "-p", fmt.Sprintf("%d", port), ip)
 		var outBuf, errBuf bytes.Buffer
 		scanCmd.Stdout = &outBuf
 		scanCmd.Stderr = &errBuf
@@ -162,4 +174,9 @@ func (m *KnownHostsManager) EnsureHostKeyRegistered(containerName string, ip str
 
 		return nil
 	})
+}
+
+// EnsureHostKeyRegistered verifies if containerName is in known_hosts; if absent, runs ssh-keyscan and appends under lock.
+func (m *KnownHostsManager) EnsureHostKeyRegistered(containerName string, ip string, port int) error {
+	return m.EnsureHostKeyRegisteredContext(context.Background(), containerName, ip, port)
 }

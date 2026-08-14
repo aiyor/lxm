@@ -1028,3 +1028,241 @@ func TestReconciler_NilManifestAndRebuildExtension(t *testing.T) {
 		t.Errorf("expected network properties in InstancesPost, got %v", devs["eth0"])
 	}
 }
+
+func TestReconciler_Compute_VM_Create(t *testing.T) {
+	rec := plan.NewReconciler()
+	shiftFalse := false
+
+	conf := &config.Config{
+		Name:  "vm1",
+		Type:  "virtual-machine",
+		Image: "ubuntu:24.04",
+		User:  "ubuntu",
+		Limits: &config.LimitsConfig{
+			CPU:    "4",
+			Memory: "8GiB",
+			Disk:   "50GiB",
+		},
+		VM: &config.VMConfig{
+			BootMode:  "uefi-nosecureboot",
+			Hugepages: true,
+			RawQEMU:   "-cpu host",
+		},
+		Mounts: []config.Mount{
+			{Source: "/tmp/data", Path: "/mnt/data", Shift: &shiftFalse},
+		},
+	}
+
+	p, err := rec.Compute(conf, nil, false)
+	if err != nil {
+		t.Fatalf("Compute failed: %v", err)
+	}
+
+	if len(p.Steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(p.Steps))
+	}
+	step := p.Steps[0]
+	if step.Action != "create" {
+		t.Errorf("expected create action, got %q", step.Action)
+	}
+	if step.InstancesPost.Type != "virtual-machine" {
+		t.Errorf("expected type virtual-machine, got %q", step.InstancesPost.Type)
+	}
+	if step.InstancesPost.Config["limits.cpu"] != "4" {
+		t.Errorf("expected limits.cpu 4, got %q", step.InstancesPost.Config["limits.cpu"])
+	}
+	if step.InstancesPost.Config["limits.memory"] != "8GiB" {
+		t.Errorf("expected limits.memory 8GiB, got %q", step.InstancesPost.Config["limits.memory"])
+	}
+	if step.InstancesPost.Config["boot.mode"] != "uefi-nosecureboot" {
+		t.Errorf("expected boot.mode uefi-nosecureboot, got %q", step.InstancesPost.Config["boot.mode"])
+	}
+	if step.InstancesPost.Config["limits.memory.hugepages"] != "true" {
+		t.Errorf("expected hugepages true, got %q", step.InstancesPost.Config["limits.memory.hugepages"])
+	}
+	if step.InstancesPost.Devices["root"]["size"] != "50GiB" || step.InstancesPost.Devices["root"]["pool"] != "default" {
+		t.Errorf("expected root disk 50GiB on default pool, got %+v", step.InstancesPost.Devices["root"])
+	}
+	if step.InstancesPost.Devices["mount0"]["shift"] != "false" {
+		t.Errorf("expected mount shift false, got %+v", step.InstancesPost.Devices["mount0"])
+	}
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "raw.qemu") {
+		t.Errorf("expected raw_qemu warning, got %+v", p.Warnings)
+	}
+}
+
+func TestReconciler_Compute_TypeChange_ForcesRebuildFallback(t *testing.T) {
+	rec := plan.NewReconciler()
+
+	conf := &config.Config{
+		Name:  "box1",
+		Type:  "virtual-machine",
+		Image: "ubuntu:24.04",
+		User:  "ubuntu",
+	}
+
+	live := map[string]*plan.InstanceSnapshot{
+		"box1": {
+			Name:   "box1",
+			Type:   "container",
+			Status: "Running",
+			Config: map[string]string{
+				"image.os":      "ubuntu",
+				"image.release": "24.04",
+				"user.lxm.user": "ubuntu",
+			},
+		},
+	}
+
+	p, err := rec.Compute(conf, live, true) // hasRebuildExt = true
+	if err != nil {
+		t.Fatalf("Compute failed: %v", err)
+	}
+
+	step := p.Steps[0]
+	if step.Action != "recreate" {
+		t.Errorf("expected action recreate, got %q", step.Action)
+	}
+	if !step.RebuildFallback {
+		t.Errorf("expected RebuildFallback=true for type change even when hasRebuildExt is true")
+	}
+}
+
+func TestReconciler_Compute_BootMode_RunningRestart(t *testing.T) {
+	rec := plan.NewReconciler()
+
+	conf := &config.Config{
+		Name:  "vm1",
+		Type:  "virtual-machine",
+		Image: "ubuntu:24.04",
+		User:  "ubuntu",
+		VM: &config.VMConfig{
+			BootMode: "uefi-nosecureboot",
+		},
+	}
+
+	live := map[string]*plan.InstanceSnapshot{
+		"vm1": {
+			Name:   "vm1",
+			Type:   "virtual-machine",
+			Status: "Running",
+			Config: map[string]string{
+				"image.os":      "ubuntu",
+				"image.release": "24.04",
+				"user.lxm.user": "ubuntu",
+				"boot.mode":     "uefi-secureboot",
+			},
+		},
+	}
+
+	p, err := rec.Compute(conf, live, false)
+	if err != nil {
+		t.Fatalf("Compute failed: %v", err)
+	}
+
+	step := p.Steps[0]
+	if step.Action != "update" {
+		t.Errorf("expected action update, got %q", step.Action)
+	}
+	if step.PowerTransition != "restart" {
+		t.Errorf("expected PowerTransition restart for boot.mode change on running VM, got %q", step.PowerTransition)
+	}
+}
+
+func TestReconciler_Compute_DiskShrink_Recreate(t *testing.T) {
+	rec := plan.NewReconciler()
+
+	conf := &config.Config{
+		Name:  "box1",
+		Image: "ubuntu:24.04",
+		User:  "ubuntu",
+		Limits: &config.LimitsConfig{
+			Disk: "20GiB",
+		},
+	}
+
+	live := map[string]*plan.InstanceSnapshot{
+		"box1": {
+			Name:   "box1",
+			Type:   "container",
+			Status: "Running",
+			Config: map[string]string{
+				"image.os":      "ubuntu",
+				"image.release": "24.04",
+				"user.lxm.user": "ubuntu",
+			},
+			ExpandedDevices: map[string]map[string]string{
+				"root": {"type": "disk", "path": "/", "size": "50GiB"},
+			},
+		},
+	}
+
+	p, err := rec.Compute(conf, live, false)
+	if err != nil {
+		t.Fatalf("Compute failed: %v", err)
+	}
+
+	step := p.Steps[0]
+	if step.Action != "recreate" {
+		t.Errorf("expected recreate action for disk shrink (50GiB -> 20GiB), got %q", step.Action)
+	}
+}
+
+func TestReconciler_Compute_VM_HugepagesAndRawQEMU_DiffAndRestart(t *testing.T) {
+	rec := plan.NewReconciler()
+
+	conf := &config.Config{
+		Name:  "vm1",
+		Type:  "virtual-machine",
+		Image: "ubuntu:24.04",
+		User:  "ubuntu",
+		VM: &config.VMConfig{
+			Hugepages: true,
+			RawQEMU:   "-cpu host,kvm=off",
+		},
+	}
+
+	live := map[string]*plan.InstanceSnapshot{
+		"vm1": {
+			Name:   "vm1",
+			Type:   "virtual-machine",
+			Status: "Running",
+			Config: map[string]string{
+				"image.os":      "ubuntu",
+				"image.release": "24.04",
+				"user.lxm.user": "ubuntu",
+				"boot.mode":     "uefi-secureboot",
+			},
+		},
+	}
+
+	p, err := rec.Compute(conf, live, false)
+	if err != nil {
+		t.Fatalf("Compute failed: %v", err)
+	}
+
+	step := p.Steps[0]
+	if step.Action != "update" {
+		t.Fatalf("expected action update, got %q", step.Action)
+	}
+	if step.PowerTransition != "restart" {
+		t.Errorf("expected PowerTransition restart for VM hypervisor config changes on running instance, got %q", step.PowerTransition)
+	}
+
+	hasHugepagesDiff := false
+	hasRawQEMUDiff := false
+	for _, d := range step.Diff {
+		if d.Field == "limits.memory.hugepages" && d.New == "true" {
+			hasHugepagesDiff = true
+		}
+		if d.Field == "raw.qemu" && d.New == "-cpu host,kvm=off" {
+			hasRawQEMUDiff = true
+		}
+	}
+	if !hasHugepagesDiff {
+		t.Errorf("expected diff for limits.memory.hugepages, got diffs: %+v", step.Diff)
+	}
+	if !hasRawQEMUDiff {
+		t.Errorf("expected diff for raw.qemu, got diffs: %+v", step.Diff)
+	}
+}

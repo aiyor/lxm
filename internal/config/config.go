@@ -7,14 +7,79 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/aiyor/lxm/internal/recipe"
 	"gopkg.in/yaml.v3"
 )
 
+var cpuRegex = regexp.MustCompile(`^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$`)
+
+// CPUCount handles custom unmarshaling and validation for int or string CPU allocations.
+type CPUCount string
+
+func (c *CPUCount) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		if value.Tag == "!!int" {
+			val, err := strconv.Atoi(value.Value)
+			if err != nil || val <= 0 {
+				return fmt.Errorf("cpu count must be a positive integer, got %q", value.Value)
+			}
+			*c = CPUCount(value.Value)
+			return nil
+		}
+		if value.Value == "0" || !cpuRegex.MatchString(value.Value) {
+			return fmt.Errorf("invalid cpu count or cpuset format %q", value.Value)
+		}
+		*c = CPUCount(value.Value)
+		return nil
+	}
+	return fmt.Errorf("invalid cpu count format")
+}
+
+// LimitsConfig models CPU, Memory, and Root Disk constraints.
+type LimitsConfig struct {
+	CPU      CPUCount        `yaml:"cpu,omitempty"`
+	Memory   string          `yaml:"memory,omitempty"`
+	Disk     string          `yaml:"disk,omitempty"`
+	Presence map[string]bool `yaml:"-"`
+}
+
+func (l *LimitsConfig) UnmarshalYAML(value *yaml.Node) error {
+	type rawLimits LimitsConfig
+	var rl rawLimits
+	if err := value.Decode(&rl); err != nil {
+		return err
+	}
+	*l = LimitsConfig(rl)
+	l.Presence = extractPresenceMap(value)
+	return nil
+}
+
+// VMConfig models hypervisor-specific firmware and boot flags.
+type VMConfig struct {
+	SecureBoot *bool           `yaml:"secureboot,omitempty"`
+	BootMode   string          `yaml:"boot_mode,omitempty"`
+	Hugepages  bool            `yaml:"hugepages,omitempty"`
+	RawQEMU    string          `yaml:"raw_qemu,omitempty"`
+	Presence   map[string]bool `yaml:"-"`
+}
+
+func (v *VMConfig) UnmarshalYAML(value *yaml.Node) error {
+	type rawVM VMConfig
+	var rv rawVM
+	if err := value.Decode(&rv); err != nil {
+		return err
+	}
+	*v = VMConfig(rv)
+	v.Presence = extractPresenceMap(value)
+	return nil
+}
+
 // WaitConfig specifies timeout and polling deadlines for readiness gates.
 type WaitConfig struct {
+	Agent     string          `yaml:"agent,omitempty"`
 	CloudInit string          `yaml:"cloud_init,omitempty"`
 	Network   string          `yaml:"network,omitempty"`
 	Poll      string          `yaml:"poll,omitempty"`
@@ -25,6 +90,7 @@ type WaitConfig struct {
 // DefaultWaitConfig returns standard default wait policy deadlines.
 func DefaultWaitConfig() WaitConfig {
 	return WaitConfig{
+		Agent:     "",
 		CloudInit: "10m",
 		Network:   "60s",
 		Poll:      "5s",
@@ -57,6 +123,9 @@ func (w *WaitConfig) UnmarshalYAML(value *yaml.Node) error {
 
 		w.Presence = extractPresenceMap(value)
 
+		if w.Presence["agent"] {
+			w.Agent = rw.Agent
+		}
 		if w.Presence["cloud_init"] {
 			w.CloudInit = rw.CloudInit
 		}
@@ -89,12 +158,15 @@ type ReplaceDirective struct {
 	Recipes  []RecipeGroup   `yaml:"recipes,omitempty"`
 }
 
-// Config defines the desired state for a container.
+// Config defines the desired state for an instance.
 type Config struct {
 	Schema           string            `yaml:"schema,omitempty"`
 	Name             string            `yaml:"name,omitempty"`
+	Type             string            `yaml:"type,omitempty"` // container | virtual-machine
 	Status           string            `yaml:"status,omitempty"`
 	State            string            `yaml:"state,omitempty"` // running | stopped (F2)
+	Limits           *LimitsConfig     `yaml:"limits,omitempty"`
+	VM               *VMConfig         `yaml:"vm,omitempty"`
 	WaitPolicy       WaitConfig        `yaml:"wait"`
 	LegacyWaitPolicy *WaitConfig       `yaml:"wait_config,omitempty"` // v1-compat legacy tag
 	Image            string            `yaml:"image,omitempty"`
@@ -193,6 +265,7 @@ type Mount struct {
 	Path      string `yaml:"path"`
 	Recursive bool   `yaml:"recursive,omitempty"`
 	Readonly  bool   `yaml:"readonly,omitempty"`
+	Shift     *bool  `yaml:"shift,omitempty"`
 }
 
 // UnmarshalYAML implements custom unmarshaling for Mount to support compact string shorthand.
@@ -206,9 +279,10 @@ func (m *Mount) UnmarshalYAML(value *yaml.Node) error {
 		m.Path = parts[1]
 		if len(parts) > 2 {
 			for _, opt := range parts[2:] {
-				if opt == "ro" || opt == "readonly" {
+				switch opt {
+				case "ro", "readonly":
 					m.Readonly = true
-				} else if opt == "recursive" {
+				case "recursive":
 					m.Recursive = true
 				}
 			}
@@ -627,8 +701,12 @@ func mergeYAMLData(dst *map[string]interface{}, srcData []byte) error {
 		return nil
 	}
 
-	*dst = deepMerge(*dst, src).(map[string]interface{})
-	return nil
+	mergedVal := deepMerge(*dst, src)
+	if merged, ok := mergedVal.(map[string]interface{}); ok {
+		*dst = merged
+		return nil
+	}
+	return fmt.Errorf("unexpected merged config type %T", mergedVal)
 }
 
 func deepMerge(dst, src interface{}) interface{} {
@@ -703,8 +781,9 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 		res.ConfigBaseDir = overlay.ConfigBaseDir
 	}
 
-	if res.WaitPolicy.Presence == nil {
-		res.WaitPolicy.Presence = make(map[string]bool)
+	res.WaitPolicy.Presence = make(map[string]bool)
+	for k, v := range base.WaitPolicy.Presence {
+		res.WaitPolicy.Presence[k] = v
 	}
 
 	if base.presence != nil {
@@ -727,6 +806,10 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 	// Recursive struct merge for WaitPolicy
 	if isPresent(overlay, "wait", effectiveOverlayWait) || isPresent(overlay, "wait_config", effectiveOverlayWait) || len(effectiveOverlayWait.Presence) > 0 {
 		if effectiveOverlayWait.Presence != nil {
+			if effectiveOverlayWait.Presence["agent"] {
+				res.WaitPolicy.Agent = effectiveOverlayWait.Agent
+				res.WaitPolicy.Presence["agent"] = true
+			}
 			if effectiveOverlayWait.Presence["cloud_init"] {
 				res.WaitPolicy.CloudInit = effectiveOverlayWait.CloudInit
 				res.WaitPolicy.Presence["cloud_init"] = true
@@ -742,6 +825,72 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 			if effectiveOverlayWait.Presence["required"] {
 				res.WaitPolicy.Required = effectiveOverlayWait.Required
 				res.WaitPolicy.Presence["required"] = true
+			}
+		}
+	}
+
+	// Presence-wins scalar merge
+	if isPresent(overlay, "type", overlay.Type) {
+		res.Type = overlay.Type
+	} else {
+		res.Type = base.Type
+	}
+
+	// Recursive struct merge for Limits
+	if base.Limits != nil || overlay.Limits != nil {
+		res.Limits = &LimitsConfig{Presence: make(map[string]bool)}
+		if base.Limits != nil {
+			res.Limits.CPU = base.Limits.CPU
+			res.Limits.Memory = base.Limits.Memory
+			res.Limits.Disk = base.Limits.Disk
+			for k, v := range base.Limits.Presence {
+				res.Limits.Presence[k] = v
+			}
+		}
+		if overlay.Limits != nil {
+			if overlay.Limits.Presence["cpu"] {
+				res.Limits.CPU = overlay.Limits.CPU
+				res.Limits.Presence["cpu"] = true
+			}
+			if overlay.Limits.Presence["memory"] {
+				res.Limits.Memory = overlay.Limits.Memory
+				res.Limits.Presence["memory"] = true
+			}
+			if overlay.Limits.Presence["disk"] {
+				res.Limits.Disk = overlay.Limits.Disk
+				res.Limits.Presence["disk"] = true
+			}
+		}
+	}
+
+	// Recursive struct merge for VM
+	if base.VM != nil || overlay.VM != nil {
+		res.VM = &VMConfig{Presence: make(map[string]bool)}
+		if base.VM != nil {
+			res.VM.SecureBoot = base.VM.SecureBoot
+			res.VM.BootMode = base.VM.BootMode
+			res.VM.Hugepages = base.VM.Hugepages
+			res.VM.RawQEMU = base.VM.RawQEMU
+			for k, v := range base.VM.Presence {
+				res.VM.Presence[k] = v
+			}
+		}
+		if overlay.VM != nil {
+			if overlay.VM.Presence["secureboot"] {
+				res.VM.SecureBoot = overlay.VM.SecureBoot
+				res.VM.Presence["secureboot"] = true
+			}
+			if overlay.VM.Presence["boot_mode"] {
+				res.VM.BootMode = overlay.VM.BootMode
+				res.VM.Presence["boot_mode"] = true
+			}
+			if overlay.VM.Presence["hugepages"] {
+				res.VM.Hugepages = overlay.VM.Hugepages
+				res.VM.Presence["hugepages"] = true
+			}
+			if overlay.VM.Presence["raw_qemu"] {
+				res.VM.RawQEMU = overlay.VM.RawQEMU
+				res.VM.Presence["raw_qemu"] = true
 			}
 		}
 	}
@@ -836,23 +985,23 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 	if overlay.Replace != nil && len(overlay.Replace.Mounts) > 0 {
 		res.Mounts = overlay.Replace.Mounts
 	} else {
-		res.Mounts = append(base.Mounts, overlay.Mounts...)
+		res.Mounts = append(append(Mounts(nil), base.Mounts...), overlay.Mounts...)
 	}
 
 	if overlay.Replace != nil && len(overlay.Replace.Networks) > 0 {
 		res.Networks = overlay.Replace.Networks
 	} else {
-		res.Networks = append(base.Networks, overlay.Networks...)
+		res.Networks = append(append([]NetworkConfig(nil), base.Networks...), overlay.Networks...)
 	}
 
 	if overlay.Replace != nil && len(overlay.Replace.Recipes) > 0 {
 		res.Recipes = overlay.Replace.Recipes
 	} else {
-		res.Recipes = append(base.Recipes, overlay.Recipes...)
+		res.Recipes = append(append(Recipes(nil), base.Recipes...), overlay.Recipes...)
 	}
 
-	res.CloudInitInclude = append(base.CloudInitInclude, overlay.CloudInitInclude...)
-	res.Groups = append(base.Groups, overlay.Groups...)
+	res.CloudInitInclude = append(append([]string(nil), base.CloudInitInclude...), overlay.CloudInitInclude...)
+	res.Groups = append(append([]string(nil), base.Groups...), overlay.Groups...)
 
 	// Apply Remove Directives (D5, C3)
 	if overlay.Remove != nil {
@@ -943,6 +1092,43 @@ func LoadConfig(configFile string) (*Config, error) {
 		conf.User = "ubuntu"
 	}
 	conf.Include = nil
+
+	// Normalization Pipeline (VM, Limits, Mounts, WaitPolicy)
+	switch conf.Type {
+	case "vm", "virtual-machine":
+		conf.Type = "virtual-machine"
+		if conf.VM == nil {
+			conf.VM = &VMConfig{BootMode: "uefi-secureboot"}
+		} else {
+			if conf.VM.BootMode == "" && conf.VM.SecureBoot != nil {
+				if *conf.VM.SecureBoot {
+					conf.VM.BootMode = "uefi-secureboot"
+				} else {
+					conf.VM.BootMode = "uefi-nosecureboot"
+				}
+			}
+			if conf.VM.BootMode == "" && conf.VM.SecureBoot == nil {
+				conf.VM.BootMode = "uefi-secureboot"
+			}
+			conf.VM.SecureBoot = nil
+		}
+		if !conf.WaitPolicy.Presence["agent"] || conf.WaitPolicy.Agent == "" {
+			conf.WaitPolicy.Agent = "2m"
+		}
+	default:
+		conf.Type = "container"
+		conf.VM = nil
+		if !conf.WaitPolicy.Presence["agent"] {
+			conf.WaitPolicy.Agent = ""
+		}
+	}
+
+	for i := range conf.Mounts {
+		if conf.Mounts[i].Shift == nil {
+			t := true
+			conf.Mounts[i].Shift = &t
+		}
+	}
 
 	// Validate resolved manifest against CUE resolved schema (#LXM_RESOLVED) when schema is lxm/config/v2
 	if conf.Schema == "lxm/config/v2" {
@@ -1040,16 +1226,19 @@ func loadConfigRecursive(configFile string, visited map[string]bool) (*Config, e
 	}
 
 	// Schema detection (D13) & CUE Authoring validation (on expandedData so templates are substituted!)
-	if raw.Schema == "" {
+	switch raw.Schema {
+	case "":
 		fmt.Fprintf(os.Stderr, "notice: %s declares no schema (lxm/config/v1 compat mode) — run lxm compile to migrate to lxm/config/v2\n", fileName)
-	} else if raw.Schema == "lxm/config/v2" {
+	case "lxm/config/v2":
 		v, err := NewValidator()
 		if err == nil {
 			if err := v.ValidateAuthoring([]byte(expandedData)); err != nil {
 				return nil, fmt.Errorf("schema validation %s: %w", fileName, err)
 			}
 		}
-	} else if raw.Schema != "lxm/config/v1" {
+	case "lxm/config/v1":
+		// Supported v1 schema
+	default:
 		return nil, fmt.Errorf("unknown schema version %q in %s", raw.Schema, fileName)
 	}
 
@@ -1238,6 +1427,7 @@ func writeYAMLNode(filePath string, doc *yaml.Node) error {
 		return fmt.Errorf("marshaling YAML: %w", err)
 	}
 
+	//nolint:gosec // G306: YAML configuration file intended to be readable (0644)
 	if err := os.WriteFile(filePath, out, 0644); err != nil {
 		return fmt.Errorf("writing file: %w", err)
 	}

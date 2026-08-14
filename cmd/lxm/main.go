@@ -46,9 +46,8 @@ func (e *exitError) Error() string {
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
 	code := runWithContext(ctx, os.Args[1:], os.Stdout, os.Stderr, nil)
+	cancel()
 	os.Exit(code)
 }
 
@@ -76,7 +75,7 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 			cachedSvc, svcErr = lxd.NewService()
 		})
 		if svcErr != nil {
-			return nil, &exitError{code: 4, err: fmt.Errorf("Failed to connect to LXD: %w", svcErr)}
+			return nil, &exitError{code: 4, err: fmt.Errorf("failed to connect to LXD: %w", svcErr)}
 		}
 		return cachedSvc, nil
 	}

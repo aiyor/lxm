@@ -107,6 +107,7 @@ func LoadRecipe(path string, baseDir string) (*RecipeMetadata, error) {
 		target = filepath.Join(baseDir, path)
 	}
 
+	target = filepath.Clean(target)
 	ext := strings.ToLower(filepath.Ext(target))
 	if ext == ".yaml" || ext == ".yml" {
 		data, err := os.ReadFile(target)
@@ -156,6 +157,7 @@ func ComputeScriptHash(scriptPath string, baseDir string) (string, error) {
 	if baseDir != "" && !filepath.IsAbs(target) {
 		target = filepath.Join(baseDir, scriptPath)
 	}
+	target = filepath.Clean(target)
 
 	data, err := os.ReadFile(target)
 	if err != nil {
@@ -186,6 +188,7 @@ func ExecuteRecipeScriptContext(ctx context.Context, svc lxd.InstanceService, co
 	if baseDir != "" && !filepath.IsAbs(target) {
 		target = filepath.Join(baseDir, scriptPath)
 	}
+	target = filepath.Clean(target)
 
 	scriptBytes, err := os.ReadFile(target)
 	if err != nil {

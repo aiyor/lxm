@@ -8,9 +8,10 @@ import (
 	"github.com/aiyor/lxm/internal/lxd"
 )
 
-// InstanceStatus contains high-level information about a container instance.
+// InstanceStatus contains high-level information about a container or virtual-machine instance.
 type InstanceStatus struct {
 	Name         string            `json:"name"`
+	Type         string            `json:"type"`
 	Status       string            `json:"status"`
 	StatusCode   int               `json:"status_code"`
 	Architecture string            `json:"architecture"`
@@ -40,8 +41,13 @@ func GetInventory(svc lxd.InstanceService) (*FleetInventory, error) {
 	}
 
 	for _, full := range instances {
+		instType := full.Type
+		if instType == "" {
+			instType = "container"
+		}
 		status := InstanceStatus{
 			Name:         full.Name,
+			Type:         instType,
 			Status:       full.Status,
 			StatusCode:   int(full.StatusCode),
 			Architecture: full.Architecture,

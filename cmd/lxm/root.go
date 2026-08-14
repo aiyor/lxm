@@ -29,11 +29,8 @@ type cmdOptions struct {
 	runAs      string
 	envVars    []string
 	prefix     string
-	gc         bool
-	outDir     string
 	inPlace    bool
 	skipRemote bool
-	insecure   bool
 }
 
 type serviceGetter func() (lxd.InstanceService, error)

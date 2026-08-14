@@ -11,20 +11,24 @@ import (
 	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/recipe"
 	"github.com/canonical/lxd/shared/api"
+	"github.com/canonical/lxd/shared/units"
 )
 
-// InstanceSnapshot represents a read-only snapshot of a live LXD container instance.
+// InstanceSnapshot represents a read-only snapshot of a live LXD instance.
 type InstanceSnapshot struct {
-	Name         string                       `json:"name"`
-	Status       string                       `json:"status"`
-	StatusCode   int                          `json:"status_code"`
-	Architecture string                       `json:"architecture"`
-	Config       map[string]string            `json:"config,omitempty"`
-	Devices      map[string]map[string]string `json:"devices,omitempty"`
-	Profiles     []string                     `json:"profiles,omitempty"`
-	Ephemeral    bool                         `json:"ephemeral"`
-	ETag         string                       `json:"etag"`
-	HasSnapshots bool                         `json:"has_snapshots"`
+	Name            string                       `json:"name"`
+	Type            string                       `json:"type"` // "container" | "virtual-machine"
+	Status          string                       `json:"status"`
+	StatusCode      int                          `json:"status_code"`
+	Architecture    string                       `json:"architecture"`
+	Config          map[string]string            `json:"config,omitempty"`
+	ExpandedConfig  map[string]string            `json:"expanded_config,omitempty"`
+	Devices         map[string]map[string]string `json:"devices,omitempty"`
+	ExpandedDevices map[string]map[string]string `json:"expanded_devices,omitempty"`
+	Profiles        []string                     `json:"profiles,omitempty"`
+	Ephemeral       bool                         `json:"ephemeral"`
+	ETag            string                       `json:"etag"`
+	HasSnapshots    bool                         `json:"has_snapshots"`
 }
 
 // Plan represents a complete, serializable reconciliation plan.
@@ -32,6 +36,7 @@ type Plan struct {
 	Schema   string      `json:"schema"` // "lxm/plan/v1"
 	Manifest string      `json:"manifest,omitempty"`
 	Steps    []Step      `json:"steps"`
+	Warnings []string    `json:"warnings,omitempty"`
 	Summary  PlanSummary `json:"summary"`
 }
 
@@ -49,7 +54,7 @@ type Step struct {
 	ETag            string                   `json:"etag,omitempty"`
 	RebuildFallback bool                     `json:"rebuild_fallback,omitempty"`
 	PurgeSnapshots  bool                     `json:"purge_snapshots,omitempty"`
-	PowerTransition string                   `json:"power_transition,omitempty"` // "start" | "stop"
+	PowerTransition string                   `json:"power_transition,omitempty"` // "start" | "stop" | "restart"
 	InstancesPost   *api.InstancesPost       `json:"instances_post,omitempty"`
 	InstancePut     *api.InstancePut         `json:"instance_put,omitempty"`
 	RebuildPost     *api.InstanceRebuildPost `json:"rebuild_post,omitempty"`
@@ -162,6 +167,11 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		// Attach recipe steps for new container
 		step.Recipes = buildRecipeSteps(manifest)
 
+		// Plumb raw_qemu warning
+		if manifest.Type == "virtual-machine" && manifest.VM != nil && manifest.VM.RawQEMU != "" {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("instance %q specifies raw.qemu hypervisor arguments: %q", manifest.Name, manifest.VM.RawQEMU))
+		}
+
 		plan.Steps = append(plan.Steps, step)
 		plan.Summary = computeSummary(plan.Steps)
 		return plan, nil
@@ -178,7 +188,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		step.Diff = diffs
 		step.Wait = manifest.WaitPolicy.Required
 		step.PurgeSnapshots = liveInst.HasSnapshots
-		if !hasRebuildExt {
+		if isTypeChange(diffs) || !hasRebuildExt {
 			step.RebuildFallback = true
 		}
 
@@ -207,6 +217,11 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		// Recipes must be re-run on recreate
 		step.Recipes = buildRecipeSteps(manifest)
 
+		// Plumb raw_qemu warning
+		if manifest.Type == "virtual-machine" && manifest.VM != nil && manifest.VM.RawQEMU != "" {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("instance %q specifies raw.qemu hypervisor arguments: %q", manifest.Name, manifest.VM.RawQEMU))
+		}
+
 		plan.Steps = append(plan.Steps, step)
 		plan.Summary = computeSummary(plan.Steps)
 		return plan, nil
@@ -226,7 +241,8 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 	powerStateChanged := liveState != desiredState
 
 	// 5. InPlace Configuration Update
-	if len(diffs) > 0 {
+	switch {
+	case len(diffs) > 0:
 		step.Action = "update"
 		step.Changed = true
 		step.Diff = diffs
@@ -246,8 +262,10 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 			step.Diff = append(step.Diff, FieldDiff{
 				Field: "state", Old: liveState, New: desiredState,
 			})
+		} else if liveState == "running" && hasVMConfigDiff(diffs) {
+			step.PowerTransition = "restart"
 		}
-	} else if powerStateChanged {
+	case powerStateChanged:
 		step.Changed = true
 		if desiredState == "running" {
 			step.Action = "start"
@@ -257,7 +275,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		step.Diff = []FieldDiff{
 			{Field: "state", Old: liveState, New: desiredState},
 		}
-	} else {
+	default:
 		step.Action = "noop"
 		step.Changed = false
 	}
@@ -265,33 +283,75 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 	// Recipe updates for existing container
 	step.Recipes = buildRecipeSteps(manifest)
 
+	// Plumb raw_qemu warning
+	if manifest.Type == "virtual-machine" && manifest.VM != nil && manifest.VM.RawQEMU != "" {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("instance %q specifies raw.qemu hypervisor arguments: %q", manifest.Name, manifest.VM.RawQEMU))
+	}
+
 	plan.Steps = append(plan.Steps, step)
 	plan.Summary = computeSummary(plan.Steps)
 	return plan, nil
 }
 
 func buildInstancesPost(manifest *config.Config) (*api.InstancesPost, error) {
+	instType := api.InstanceTypeContainer
+	if manifest.Type == "virtual-machine" {
+		instType = api.InstanceTypeVM
+	}
+
 	post := &api.InstancesPost{
 		Name: manifest.Name,
+		Type: instType,
 		Source: api.InstanceSource{
 			Type:  "image",
 			Alias: manifest.Image,
 		},
 		InstancePut: api.InstancePut{
-			Config: map[string]string{
-				"user.lxm.user":    manifest.User,
-				"user.lxm.managed": "true",
-			},
+			Config:  make(map[string]string),
 			Devices: make(map[string]map[string]string),
 		},
 	}
+
+	// 1. Hardware Limits
+	if manifest.Limits != nil {
+		if manifest.Limits.CPU != "" {
+			post.Config["limits.cpu"] = string(manifest.Limits.CPU)
+		}
+		if manifest.Limits.Memory != "" {
+			post.Config["limits.memory"] = manifest.Limits.Memory
+		}
+		if manifest.Limits.Disk != "" {
+			post.Devices["root"] = map[string]string{
+				"type": "disk",
+				"path": "/",
+				"pool": "default",
+				"size": manifest.Limits.Disk,
+			}
+		}
+	}
+
+	// 2. VM Configs
+	if manifest.Type == "virtual-machine" && manifest.VM != nil {
+		if manifest.VM.BootMode != "" {
+			post.Config["boot.mode"] = manifest.VM.BootMode
+		}
+		if manifest.VM.Hugepages {
+			post.Config["limits.memory.hugepages"] = "true"
+		}
+		if manifest.VM.RawQEMU != "" {
+			post.Config["raw.qemu"] = manifest.VM.RawQEMU
+		}
+	}
+
+	// 3. User, Groups & Cloud-Init
+	post.Config["user.lxm.user"] = manifest.User
+	post.Config["user.lxm.managed"] = "true"
 	if len(manifest.Groups) > 0 {
 		grps := make([]string, len(manifest.Groups))
 		copy(grps, manifest.Groups)
 		sort.Strings(grps)
 		post.Config["user.lxm.groups"] = strings.Join(grps, ",")
 	}
-
 	cloudInit, err := manifest.ResolveCloudInit(manifest.ConfigBaseDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving cloud-init: %w", err)
@@ -303,23 +363,29 @@ func buildInstancesPost(manifest *config.Config) (*api.InstancesPost, error) {
 		post.Config["user.network-config"] = manifest.NetworkConfig
 	}
 
+	// 4. Mounts with Shift
 	for i, m := range manifest.Mounts {
 		devName := fmt.Sprintf("mount%d", i)
 		props := map[string]string{
 			"type":   "disk",
 			"source": m.Source,
 			"path":   m.Path,
-			"shift":  "true",
 		}
-		if m.Recursive {
-			props["recursive"] = "true"
+		if m.Shift == nil || *m.Shift {
+			props["shift"] = "true"
+		} else {
+			props["shift"] = "false"
 		}
 		if m.Readonly {
 			props["readonly"] = "true"
 		}
+		if m.Recursive {
+			props["recursive"] = "true"
+		}
 		post.Devices[devName] = props
 	}
 
+	// 5. Networks
 	for _, n := range manifest.Networks {
 		devName := n.Name
 		if devName == "" {
@@ -353,18 +419,13 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.Ins
 		Ephemeral:    live.Ephemeral,
 	}
 
+	// 1. Copy live configuration base
 	for k, v := range live.Config {
 		put.Config[k] = v
 	}
 	put.Config["user.lxm.managed"] = "true"
-	for dev, props := range live.Devices {
-		devCopy := make(map[string]string)
-		for k, v := range props {
-			devCopy[k] = v
-		}
-		put.Devices[dev] = devCopy
-	}
 
+	// 2. Recompute user, groups, cloud-init
 	if manifest.User != "" {
 		put.Config["user.lxm.user"] = manifest.User
 	}
@@ -376,7 +437,6 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.Ins
 	} else {
 		delete(put.Config, "user.lxm.groups")
 	}
-
 	cloudInit, err := manifest.ResolveCloudInit(manifest.ConfigBaseDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving cloud-init: %w", err)
@@ -390,33 +450,94 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.Ins
 		delete(put.Config, "user.network-config")
 	}
 
-	// Remove old lxm disk & nic devices
-	for devName, devProps := range put.Devices {
-		if devProps["type"] == "disk" && devName != "root" {
-			delete(put.Devices, devName)
+	// 3. Apply / Clear Hardware Limits
+	if manifest.Limits != nil {
+		if manifest.Limits.CPU != "" {
+			put.Config["limits.cpu"] = string(manifest.Limits.CPU)
+		} else {
+			delete(put.Config, "limits.cpu")
 		}
-		if devProps["type"] == "nic" {
-			delete(put.Devices, devName)
+		if manifest.Limits.Memory != "" {
+			put.Config["limits.memory"] = manifest.Limits.Memory
+		} else {
+			delete(put.Config, "limits.memory")
+		}
+		if manifest.Limits.Disk != "" {
+			rootDev := map[string]string{"type": "disk", "path": "/", "pool": "default"}
+			if live.ExpandedDevices != nil && live.ExpandedDevices["root"] != nil {
+				for k, v := range live.ExpandedDevices["root"] {
+					rootDev[k] = v
+				}
+			}
+			rootDev["size"] = manifest.Limits.Disk
+			put.Devices["root"] = rootDev
+		}
+	} else {
+		delete(put.Config, "limits.cpu")
+		delete(put.Config, "limits.memory")
+	}
+
+	// 4. Apply / Clear VM Configs
+	if manifest.Type == "virtual-machine" && manifest.VM != nil {
+		if manifest.VM.BootMode != "" {
+			put.Config["boot.mode"] = manifest.VM.BootMode
+		}
+		if manifest.VM.Hugepages {
+			put.Config["limits.memory.hugepages"] = "true"
+		} else {
+			delete(put.Config, "limits.memory.hugepages")
+		}
+		if manifest.VM.RawQEMU != "" {
+			put.Config["raw.qemu"] = manifest.VM.RawQEMU
+		} else {
+			delete(put.Config, "raw.qemu")
 		}
 	}
 
+	// 5. Copy live non-managed devices (preserving root and custom non-lxm devices)
+	for dev, props := range live.Devices {
+		if dev == "root" {
+			if manifest.Limits == nil || manifest.Limits.Disk == "" {
+				devCopy := make(map[string]string)
+				for k, v := range props {
+					devCopy[k] = v
+				}
+				put.Devices[dev] = devCopy
+			}
+			continue
+		}
+		if props["type"] != "disk" && props["type"] != "nic" {
+			devCopy := make(map[string]string)
+			for k, v := range props {
+				devCopy[k] = v
+			}
+			put.Devices[dev] = devCopy
+		}
+	}
+
+	// 6. Rebuild Mounts with Shift
 	for i, m := range manifest.Mounts {
 		devName := fmt.Sprintf("mount%d", i)
 		props := map[string]string{
 			"type":   "disk",
 			"source": m.Source,
 			"path":   m.Path,
-			"shift":  "true",
 		}
-		if m.Recursive {
-			props["recursive"] = "true"
+		if m.Shift == nil || *m.Shift {
+			props["shift"] = "true"
+		} else {
+			props["shift"] = "false"
 		}
 		if m.Readonly {
 			props["readonly"] = "true"
 		}
+		if m.Recursive {
+			props["recursive"] = "true"
+		}
 		put.Devices[devName] = props
 	}
 
+	// 7. Rebuild Networks
 	for _, n := range manifest.Networks {
 		devName := n.Name
 		if devName == "" {
@@ -441,9 +562,81 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.Ins
 	return put, nil
 }
 
+func isTypeChange(diffs []FieldDiff) bool {
+	for _, d := range diffs {
+		if d.Field == "type" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasVMConfigDiff(diffs []FieldDiff) bool {
+	for _, d := range diffs {
+		if d.Field == "boot.mode" || d.Field == "limits.memory.hugepages" || d.Field == "raw.qemu" {
+			return true
+		}
+	}
+	return false
+}
+
+func isDiskShrink(oldSizeStr, newSizeStr string) bool {
+	if oldSizeStr == "" || newSizeStr == "" {
+		return false
+	}
+	oldBytes, err1 := units.ParseByteSizeString(oldSizeStr)
+	newBytes, err2 := units.ParseByteSizeString(newSizeStr)
+	if err1 != nil || err2 != nil {
+		return true
+	}
+	return newBytes < oldBytes
+}
+
+func sortMounts(mounts []config.Mount) {
+	sort.Slice(mounts, func(i, j int) bool {
+		if mounts[i].Path != mounts[j].Path {
+			return mounts[i].Path < mounts[j].Path
+		}
+		return mounts[i].Source < mounts[j].Source
+	})
+}
+
+func areMountsEqual(manifestMounts, liveMounts []config.Mount) bool {
+	if len(manifestMounts) != len(liveMounts) {
+		return false
+	}
+	m1 := make([]config.Mount, len(manifestMounts))
+	copy(m1, manifestMounts)
+	sortMounts(m1)
+
+	m2 := make([]config.Mount, len(liveMounts))
+	copy(m2, liveMounts)
+	sortMounts(m2)
+
+	for i := range m1 {
+		s1 := (m1[i].Shift == nil || *m1[i].Shift)
+		s2 := (m2[i].Shift == nil || *m2[i].Shift)
+		if m1[i].Source != m2[i].Source || m1[i].Path != m2[i].Path || m1[i].Readonly != m2[i].Readonly || m1[i].Recursive != m2[i].Recursive || s1 != s2 {
+			return false
+		}
+	}
+	return true
+}
+
 func computeDiffs(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff, bool) {
 	var diffs []FieldDiff
 	requiresRecreate := false
+
+	// 1. Instance Type Invariant
+	if live.Type != "" && manifest.Type != "" && live.Type != manifest.Type {
+		diffs = append(diffs, FieldDiff{
+			Field:            "type",
+			Old:              live.Type,
+			New:              manifest.Type,
+			RequiresRecreate: true,
+		})
+		requiresRecreate = true
+	}
 
 	liveImage := getLiveImage(live)
 	if manifest.Image != "" && liveImage != "" && !imageMatches(manifest.Image, liveImage, live.Config) {
@@ -488,8 +681,76 @@ func computeDiffs(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff,
 		})
 	}
 
+	// 2. Hardware Limits Diffs (diffed against local Config to stay idempotent with profile limits)
+	desiredCPU := ""
+	desiredMem := ""
+	if manifest.Limits != nil {
+		desiredCPU = string(manifest.Limits.CPU)
+		desiredMem = manifest.Limits.Memory
+	}
+
+	liveCPU := live.Config["limits.cpu"]
+	if desiredCPU != liveCPU {
+		diffs = append(diffs, FieldDiff{Field: "limits.cpu", Old: liveCPU, New: desiredCPU})
+	}
+
+	liveMem := live.Config["limits.memory"]
+	if desiredMem != liveMem {
+		diffs = append(diffs, FieldDiff{Field: "limits.memory", Old: liveMem, New: desiredMem})
+	}
+
+	// Disk limit is only diffed when explicitly managed in manifest
+	if manifest.Limits != nil && manifest.Limits.Disk != "" {
+		liveDisk := ""
+		if live.ExpandedDevices != nil && live.ExpandedDevices["root"] != nil {
+			liveDisk = live.ExpandedDevices["root"]["size"]
+		}
+		if manifest.Limits.Disk != liveDisk {
+			if isDiskShrink(liveDisk, manifest.Limits.Disk) {
+				diffs = append(diffs, FieldDiff{Field: "limits.disk", Old: liveDisk, New: manifest.Limits.Disk, RequiresRecreate: true})
+				requiresRecreate = true
+			} else {
+				diffs = append(diffs, FieldDiff{Field: "limits.disk", Old: liveDisk, New: manifest.Limits.Disk})
+			}
+		}
+	}
+
+	// 3. VM Config Diffs (boot.mode, hugepages, raw_qemu)
+	if manifest.Type == "virtual-machine" {
+		desiredBoot := "uefi-secureboot"
+		if manifest.VM != nil && manifest.VM.BootMode != "" {
+			desiredBoot = manifest.VM.BootMode
+		}
+		liveBoot := live.Config["boot.mode"]
+		if liveBoot == "" {
+			liveBoot = "uefi-secureboot"
+		}
+		if desiredBoot != liveBoot {
+			diffs = append(diffs, FieldDiff{Field: "boot.mode", Old: liveBoot, New: desiredBoot})
+		}
+
+		desiredHugepages := ""
+		if manifest.VM != nil && manifest.VM.Hugepages {
+			desiredHugepages = "true"
+		}
+		liveHugepages := live.Config["limits.memory.hugepages"]
+		if desiredHugepages != liveHugepages {
+			diffs = append(diffs, FieldDiff{Field: "limits.memory.hugepages", Old: liveHugepages, New: desiredHugepages})
+		}
+
+		desiredRawQEMU := ""
+		if manifest.VM != nil {
+			desiredRawQEMU = manifest.VM.RawQEMU
+		}
+		liveRawQEMU := live.Config["raw.qemu"]
+		if desiredRawQEMU != liveRawQEMU {
+			diffs = append(diffs, FieldDiff{Field: "raw.qemu", Old: liveRawQEMU, New: desiredRawQEMU})
+		}
+	}
+
+	// 4. Mounts & Shift Normalization (order-insensitive)
 	liveMounts := getLiveMounts(live)
-	if !reflect.DeepEqual(manifest.Mounts, liveMounts) {
+	if !areMountsEqual(manifest.Mounts, liveMounts) {
 		diffs = append(diffs, FieldDiff{
 			Field: "mounts",
 			Old:   liveMounts,
@@ -590,17 +851,17 @@ func getLiveMounts(live *InstanceSnapshot) config.Mounts {
 		if devProps["type"] == "disk" && devName != "root" {
 			rec := devProps["recursive"] == "true"
 			ro := devProps["readonly"] == "true"
+			shiftVal := (devProps["shift"] == "true" || devProps["shift"] == "")
 			mounts = append(mounts, config.Mount{
 				Source:    devProps["source"],
 				Path:      devProps["path"],
 				Recursive: rec,
 				Readonly:  ro,
+				Shift:     &shiftVal,
 			})
 		}
 	}
-	sort.Slice(mounts, func(i, j int) bool {
-		return mounts[i].Path < mounts[j].Path
-	})
+	sortMounts(mounts)
 	return mounts
 }
 

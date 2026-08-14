@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/aiyor/lxm/internal/config"
@@ -77,6 +78,12 @@ func (m *mockLXDClient) HasExtension(name string) bool {
 
 func (m *mockLXDClient) ClassifyLXDError(err error, intent string) (int, bool) {
 	if err == nil {
+		return 0, false
+	}
+	if strings.Contains(err.Error(), "not found") {
+		if intent == "lookup" {
+			return 5, false
+		}
 		return 0, false
 	}
 	return 4, false

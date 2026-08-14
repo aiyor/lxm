@@ -247,8 +247,11 @@ func (m *Manager) updateContainerNetworks(instance *api.Instance, conf *config.C
 func (m *Manager) DeleteContainer(name string) error {
 	instance, _, err := m.client.GetInstance(name)
 	if err != nil {
-		m.logger.Info("Container does not exist. Nothing to delete.", "name", name)
-		return nil
+		if code, _ := m.client.ClassifyLXDError(err, "lookup"); code == 5 {
+			m.logger.Info("Container does not exist. Nothing to delete.", "name", name)
+			return nil
+		}
+		return fmt.Errorf("getting container %q for deletion: %w", name, err)
 	}
 
 	if instance.StatusCode != api.Stopped {

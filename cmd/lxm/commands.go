@@ -159,7 +159,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			lastComputedPlan = combinedPlan
 
 			executor := apply.NewExecutor(svc)
-			report, err := executor.Apply(ctx, combinedPlan, apply.ApplyOpts{
+			report, applyErr := executor.Apply(ctx, combinedPlan, apply.ApplyOpts{
 				Jobs:         5,
 				DryRun:       opts.dryRun,
 				Force:        opts.force,
@@ -168,6 +168,10 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				NoStart:      opts.noStart,
 			})
 			lastApplyReport = report
+
+			if applyErr != nil {
+				return &exitError{code: 1, err: applyErr}
+			}
 
 			if report != nil && report.ExitCode != 0 {
 				errMsg := "apply failed"
@@ -409,7 +413,7 @@ func newListCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 
 			if opts.format == "text" {
 				w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(w, "NAME\tSTATUS\tMANAGED\tGROUPS\tIMAGE\tIP")
+				fmt.Fprintln(w, "NAME\tTYPE\tSTATUS\tMANAGED\tGROUPS\tIMAGE\tIP")
 				for _, inst := range filtered {
 					managedStr := "false"
 					if inst.Managed {
@@ -423,7 +427,7 @@ func newListCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 					if ipStr == "" {
 						ipStr = "-"
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", inst.Name, inst.Status, managedStr, groupsStr, inst.Image, ipStr)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", inst.Name, inst.Type, inst.Status, managedStr, groupsStr, inst.Image, ipStr)
 				}
 				_ = w.Flush()
 			}
@@ -691,22 +695,25 @@ func newSnapshotCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 				return err
 			}
 
-			if len(args) > 0 && args[0] == "gc" {
-				gcFlag = true
-				args = args[1:]
-			} else if len(args) > 0 && args[0] == "list" {
-				args = args[1:]
-			} else if len(args) > 0 && args[0] == "create" {
-				if len(args) < 3 {
-					return &exitError{code: 2, err: fmt.Errorf("snapshot create requires container name and snapshot name")}
+			if len(args) > 0 {
+				switch args[0] {
+				case "gc":
+					gcFlag = true
+					args = args[1:]
+				case "list":
+					args = args[1:]
+				case "create":
+					if len(args) < 3 {
+						return &exitError{code: 2, err: fmt.Errorf("snapshot create requires container name and snapshot name")}
+					}
+					args = args[1:]
+				case "delete":
+					if len(args) < 3 {
+						return &exitError{code: 2, err: fmt.Errorf("snapshot delete requires container name and snapshot name")}
+					}
+					deleteSnapName = args[2]
+					args = []string{args[1]}
 				}
-				args = args[1:]
-			} else if len(args) > 0 && args[0] == "delete" {
-				if len(args) < 3 {
-					return &exitError{code: 2, err: fmt.Errorf("snapshot delete requires container name and snapshot name")}
-				}
-				deleteSnapName = args[2]
-				args = []string{args[1]}
 			}
 
 			if gcFlag {
@@ -1182,7 +1189,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 						execArgs = append(execArgs, "-o", "StrictHostKeyChecking=yes")
 					}
 					if !isDryRun {
-						if err := knownMgr.EnsureHostKeyRegistered(name, ip, 22); err != nil {
+						if err := knownMgr.EnsureHostKeyRegisteredContext(ctx, name, ip, 22); err != nil {
 							return &exitError{code: 6, err: fmt.Errorf("host key registration failed for %q (%s): %w", name, ip, err)}
 						}
 					}
@@ -1211,7 +1218,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 				return nil
 			}
 
-			sshCmd := exec.Command("ssh", execArgs...)
+			sshCmd := exec.CommandContext(ctx, "ssh", execArgs...)
 			sshCmd.Stdin = os.Stdin
 			sshCmd.Stdout = stdout
 			sshCmd.Stderr = stderr
@@ -1321,9 +1328,11 @@ status: present
 image: ubuntu:22.04
 groups: [dev]
 `
+			//nolint:gosec // G306: starter manifest files are intended to be standard readable config files (0644)
 			if err := os.WriteFile(basePath, []byte(baseContent), 0644); err != nil {
 				return &exitError{code: 2, err: fmt.Errorf("writing _base.yaml: %w", err)}
 			}
+			//nolint:gosec // G306: starter manifest files are intended to be standard readable config files (0644)
 			if err := os.WriteFile(devPath, []byte(devContent), 0644); err != nil {
 				return &exitError{code: 2, err: fmt.Errorf("writing config/dev.yaml: %w", err)}
 			}
@@ -1369,7 +1378,7 @@ func newCompileCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 			var totalWarnings []string
 
 			for _, file := range configFiles {
-				raw, err := os.ReadFile(file)
+				raw, err := os.ReadFile(filepath.Clean(file))
 				if err != nil {
 					return &exitError{code: 3, err: fmt.Errorf("reading manifest %q: %w", file, err)}
 				}
@@ -1464,6 +1473,15 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				checks = append(checks, "[WARN] Kernel idmapped mounts support")
 			}
 
+			// Check /dev/kvm accessibility
+			if file, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0); err == nil {
+				_ = file.Close()
+				checks = append(checks, "[OK] KVM hardware virtualization (/dev/kvm accessible)")
+			} else {
+				warnings = append(warnings, "KVM hardware virtualization (/dev/kvm) not accessible; VMs will run without hardware acceleration or fail to launch")
+				checks = append(checks, "[WARN] KVM hardware virtualization")
+			}
+
 			// Check un-migrated configs and sensitive path mounts
 			configFiles, err := discoverYAMLFiles(targetDir, true, logger)
 			if err == nil && len(configFiles) > 0 {
@@ -1531,17 +1549,27 @@ func fetchLiveSnapshots(svc lxd.InstanceService) (map[string]*plan.InstanceSnaps
 			inst = &full.Instance
 			etag = ""
 		}
+		instType := inst.Type
+		if instType == "" {
+			instType = full.Type
+		}
+		if instType == "" {
+			instType = "container"
+		}
 		result[instName] = &plan.InstanceSnapshot{
-			Name:         inst.Name,
-			Status:       inst.Status,
-			StatusCode:   int(inst.StatusCode),
-			Architecture: inst.Architecture,
-			Config:       inst.Config,
-			Devices:      inst.Devices,
-			Profiles:     inst.Profiles,
-			Ephemeral:    inst.Ephemeral,
-			ETag:         etag,
-			HasSnapshots: len(full.Snapshots) > 0,
+			Name:            inst.Name,
+			Type:            instType,
+			Status:          inst.Status,
+			StatusCode:      int(inst.StatusCode),
+			Architecture:    inst.Architecture,
+			Config:          inst.Config,
+			ExpandedConfig:  full.ExpandedConfig,
+			Devices:         inst.Devices,
+			ExpandedDevices: full.ExpandedDevices,
+			Profiles:        inst.Profiles,
+			Ephemeral:       inst.Ephemeral,
+			ETag:            etag,
+			HasSnapshots:    len(full.Snapshots) > 0,
 		}
 	}
 	return result, nil

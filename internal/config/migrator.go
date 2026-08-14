@@ -195,33 +195,36 @@ func MigrateManifest(rawYAML []byte) ([]byte, []string, error) {
 		// Collect (source, destination) pairs from either the list form or the
 		// Style 2 map form (container path -> host source or object).
 		var mountPairs [][2]string
-		if mountsNode.Kind == yaml.SequenceNode {
+		switch mountsNode.Kind {
+		case yaml.SequenceNode:
 			for _, elem := range mountsNode.Content {
 				if elem.Kind == yaml.AliasNode && elem.Alias != nil {
 					elem = elem.Alias
 				}
 				var destPath string
 				var srcPath string
-				if elem.Kind == yaml.ScalarNode {
+				switch elem.Kind {
+				case yaml.ScalarNode:
 					parts := strings.Split(elem.Value, ":")
 					if len(parts) >= 2 {
 						srcPath = parts[0]
 						destPath = parts[1]
 					}
-				} else if elem.Kind == yaml.MappingNode {
+				case yaml.MappingNode:
 					for m := 0; m < len(elem.Content); m += 2 {
 						k := elem.Content[m].Value
 						v := elem.Content[m+1].Value
-						if k == "path" || k == "destination" {
+						switch k {
+						case "path", "destination":
 							destPath = v
-						} else if k == "source" {
+						case "source":
 							srcPath = v
 						}
 					}
 				}
 				mountPairs = append(mountPairs, [2]string{srcPath, destPath})
 			}
-		} else if mountsNode.Kind == yaml.MappingNode {
+		case yaml.MappingNode:
 			for m := 0; m+1 < len(mountsNode.Content); m += 2 {
 				destPath := mountsNode.Content[m].Value
 				srcNode := mountsNode.Content[m+1]
@@ -229,9 +232,10 @@ func MigrateManifest(rawYAML []byte) ([]byte, []string, error) {
 					srcNode = srcNode.Alias
 				}
 				srcPath := ""
-				if srcNode.Kind == yaml.ScalarNode {
+				switch srcNode.Kind {
+				case yaml.ScalarNode:
 					srcPath = srcNode.Value
-				} else if srcNode.Kind == yaml.MappingNode {
+				case yaml.MappingNode:
 					for s := 0; s+1 < len(srcNode.Content); s += 2 {
 						if srcNode.Content[s].Value == "source" {
 							srcPath = srcNode.Content[s+1].Value
@@ -472,7 +476,8 @@ func MigrateManifest(rawYAML []byte) ([]byte, []string, error) {
 
 	// Re-evaluate wait node location after potential insert
 	for i := 0; i < len(docNode.Content); i += 2 {
-		if docNode.Content[i].Value == "wait" {
+		switch docNode.Content[i].Value {
+		case "wait":
 			vNode := docNode.Content[i+1]
 			if vNode.Kind == yaml.ScalarNode && (strings.EqualFold(vNode.Value, "true") || strings.EqualFold(vNode.Value, "false")) {
 				// Convert wait: bool -> wait: {required: bool}. Case-insensitive
@@ -490,7 +495,7 @@ func MigrateManifest(rawYAML []byte) ([]byte, []string, error) {
 					{Kind: yaml.ScalarNode, Value: fmt.Sprintf("%t", isReq)},
 				}
 			}
-		} else if docNode.Content[i].Value == "wait_config" {
+		case "wait_config":
 			// Migrate legacy wait_config key to wait
 			docNode.Content[i].Value = "wait"
 		}
@@ -571,6 +576,7 @@ func SaveMigratedFile(srcPath string, migratedBytes []byte, inPlace bool) (strin
 		return "", fmt.Errorf("creating compiled directory %q: %w", compiledDir, err)
 	}
 
+	//nolint:gosec // G306: compiled manifest file is intended to be standard readable YAML (0644)
 	if err := os.WriteFile(compiledPath, migratedBytes, 0644); err != nil {
 		return "", fmt.Errorf("writing compiled manifest: %w", err)
 	}

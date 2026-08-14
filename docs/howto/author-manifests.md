@@ -169,7 +169,36 @@ wait:
 
 After resolution this container has: no mounts, one network at `10.0.0.50`, no recipes, and `wait: {cloud_init: 5m, required: false}` — the leaf's `wait` fields override the base's, and the base's `10m`/`required: true` are gone.
 
-## 5. Validate your manifests
+## 5. Authoring Virtual Machines (VMs)
+
+To declare a hardware-isolated Virtual Machine instead of a container, set `type: virtual-machine` (or authoring shorthand `type: vm`):
+
+```yaml
+# config/node01.yaml
+schema: lxm/config/v2
+include:
+  - _base_vm.yaml
+name: k8s-node-01
+status: present
+image: ubuntu:24.04
+
+limits:
+  cpu: 8               # 8 dedicated vCPUs
+  memory: 16GiB        # 16 GiB guest RAM
+  disk: 100GiB         # 100 GiB root disk
+
+vm:
+  boot_mode: uefi-secureboot
+
+wait:
+  agent: 2m            # wait for guest lxd-agent handshake
+```
+
+* **Hardware Limits**: `limits.cpu`, `limits.memory`, and `limits.disk` allocate physical resources.
+* **Firmware & QEMU**: The `vm:` block controls UEFI/BIOS firmware and QEMU arguments.
+* **Agent Handshake**: `wait.agent` ensures `lxm` waits for the guest `lxd-agent` over virtio channel before running recipes or network gates.
+
+## 6. Validate your manifests
 
 Before applying anything, confirm every file compiles and preview what it would do:
 

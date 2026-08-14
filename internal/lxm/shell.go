@@ -1,12 +1,17 @@
 package lxm
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 )
 
 func (m *Manager) Shell(containerName string, user string) error {
+	return m.ShellContext(context.Background(), containerName, user)
+}
+
+func (m *Manager) ShellContext(ctx context.Context, containerName string, user string) error {
 	if user == "" {
 		instance, _, err := m.client.GetInstance(containerName)
 		if err != nil {
@@ -26,7 +31,7 @@ func (m *Manager) Shell(containerName string, user string) error {
 	// It has the most robust terminal emulation and signal handling.
 	if lxcPath, err := exec.LookPath("lxc"); err == nil {
 		m.logger.Debug("Delegating to native lxc for optimal TUI experience")
-		cmd := exec.Command(lxcPath, "exec", containerName, "--", "su", "-l", user)
+		cmd := exec.CommandContext(ctx, lxcPath, "exec", containerName, "--", "su", "-l", user)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
