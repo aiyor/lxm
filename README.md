@@ -46,13 +46,26 @@ Or install and pin a version with [mise](https://mise.jdx.dev/):
 mise use -g github:aiyor/lxm
 ```
 
-Or build the `lxm` binary directly from source:
+### Building from Source
+
+Build the `lxm` binary directly from source:
 
 ```bash
 go build -o lxm ./cmd/lxm
 ```
 
 The compiled binary is self-contained with zero CGO runtime dependencies.
+
+### Development
+
+The repository uses [Task](https://taskfile.dev/) for local automation:
+
+```bash
+task fmt    # Format Go source files (gofmt -s -w .)
+task lint   # Run golangci-lint across all packages
+task test   # Run full test suite with race detector
+task build  # Format and build ./bin/lxm binary
+```
 
 ---
 
