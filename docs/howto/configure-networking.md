@@ -93,8 +93,116 @@ web-01  Running  true     web     ubuntu  10.171.13.120
 | `duplicate network name "eth0"` | Two networks with the same `name` after merge | Give each interface a distinct `name`. |
 | No IP assigned | The static address is outside the bridge subnet or already in use | Pick a free address inside `lxc network show <parent>`'s subnet. |
 
+## Managed virtual switches & network segmentation
+
+Beyond attaching NICs to LXD's default bridge, lxm can **create and own the bridges themselves**
+and enforce **group-based traffic policy** between them. This is the `vswitches:` and
+`network_policy:` feature — declarative, deterministic network segmentation for container and VM
+fleets.
+
+The mental model:
+
+* A **vswitch** is a LXD managed bridge that lxm creates, owns, and reconciles (`vswitches:`).
+* A **network group** is a set of vswitches that share policy (the `group:` field on a vswitch).
+* A **network policy** (`network_policy:`) expresses which groups may talk to which other groups,
+  mutually or one-way. lxm compiles it into **LXD network ACLs** (one `lxm-<vswitch>` ACL per
+  grouped vswitch) and applies them with a `reject` default.
+
+Both blocks are **fleet-scoped**: they are usually declared once in a `_base.yaml` and inherited by
+every leaf manifest (`include: [_base.yaml]`), then unioned across all loaded manifests.
+
+```yaml
+# _base.yaml
+schema: lxm/config/v2
+base: true
+
+vswitches:
+  - name: vmbr0
+    ipv4: 10.30.0.1/24
+    group: vms
+  - name: cbr0
+    ipv4: 10.40.0.1/24
+    group: containers
+  - name: svcbr0
+    ipv4: 10.50.0.1/24
+    group: services
+  - name: labbr0
+    ipv4: 10.60.0.1/24
+    group: quarantine
+
+network_policy:
+  allow:
+    - from: vms
+      to: services        # vms ⇄ services, fully mutual
+    - from: containers
+      to: services
+      direction: egress   # containers may initiate; services may not
+```
+
+Instances join a vswitch with the existing `parent:` key:
+
+```yaml
+# web-a.yaml
+schema: lxm/config/v2
+include: [_base.yaml]
+name: web-a
+networks:
+  - name: eth0
+    parent: vmbr0
+```
+
+### What the policy means
+
+* **Intra-vswitch** — instances on the *same* bridge talk at L2 with no filtering (LXD bridge
+  ACLs cannot filter within a bridge; segmentation is per-vswitch).
+* **Intra-group** — vswitches sharing a `group` may communicate freely, mutually.
+* **Inter-group** — **denied (reject) by default** in both directions unless an `allow` matches.
+* **`direction: both`** (default) — mutual communication.
+* **`direction: egress`** — the `from` group may initiate toward `to`; the `to` group may not
+  initiate back. Reply traffic of established flows is handled by LXD's stateful allows.
+* **Isolated "internet-only" network** — a group with **no** `allow` entries referencing it keeps
+  outbound internet (default `internet: true`) while every internal subnet is rejected.
+
+Each vswitch's own subnet is always in the reject set, so instances cannot reach the **host
+gateway** on the bridge (SSH/LXD API/exporters bound there) — except DHCP/DNS, which ride LXD's
+baseline rules that ACLs cannot block.
+
+### `internal_cidrs` — declaring more "internal" space
+
+The isolation model treats RFC1918 space (`10/8`, `172.16/12`, `192.168/16`), `100.64/10`,
+loopback, link-local, and all managed vswitch subnets as internal — unreachable from
+`internet: true` groups. Anything else is reachable through the internet wildcard.
+
+**This includes your host's own public/routable addresses.** A cloud host with a public IP (e.g.
+`203.0.113.5`) is *not* in the default internal set, so a quarantine network could reach host
+services bound to it. If your host exposes services on non-RFC1918 addresses, declare them:
+
+```yaml
+network_policy:
+  internal_cidrs:
+    - 203.0.113.0/24    # the host's public block → now rejected from internet-enabled groups
+```
+
+`internal_cidrs` is **additive** to the locked default set and applies to every grouped vswitch
+with `internet: true`. Entries outside the defaults are the ones that matter: a
+`192.168.77.0/24` declaration adds nothing, because the default `192.168.0.0/16` already covers it.
+
+### Caveats
+
+* **Guest routing can bypass policy.** An instance with NICs on vswitches from two different groups
+  can forward traffic between them if guest IP forwarding is enabled. `lxm plan` warns when it sees
+  this (R10); it cannot prevent it.
+* **Cross-bridge traffic is source-NAT'd at the destination bridge.** ACLs are evaluated *before*
+  that NAT (verified on LXD 6.9), so the source-subnet rules match correctly — but the *guest on the
+  receiving side* sees the destination bridge's gateway as the peer source, not the real source IP.
+* **Tightening is not retroactive.** Removing an `allow` blocks new connections immediately, but
+  already-established flows keep flowing until the kernel conntrack entry expires (up to 5 days for
+  TCP). See [Conntrack lifecycle](../reference/conntrack-lifecycle.md).
+
 ## Next steps
 
 * [Mounting Host Directories](mount-host-dirs.md) — combine mounts with networking.
 * [Cloud-Init Bootstrapping](cloud-init-bootstrapping.md) — network configuration via cloud-init.
 * [Manifest Reference](../reference/manifest.md#networks) — the networks field reference.
+* [Conntrack lifecycle](../reference/conntrack-lifecycle.md) — what happens when you tighten policy
+  with live traffic.

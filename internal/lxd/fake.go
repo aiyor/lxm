@@ -23,6 +23,7 @@ type FakeInstanceServer struct {
 	Extensions  map[string]bool
 	RebuiltLogs []string
 	Snapshots   map[string]map[string]*api.InstanceSnapshot // containerName -> snapName -> snapshot
+	Nets        *Networks                                   // network + ACL backing state
 
 	// Optional custom hook functions
 	GetInstanceFunc         func(name string) (*api.Instance, string, error)
@@ -32,11 +33,15 @@ type FakeInstanceServer struct {
 	UpdateInstanceStateFunc func(name string, action string, force bool) error
 	RebuildInstanceFunc     func(name string, req api.InstanceRebuildPost) error
 	ExecInstanceFunc        func(name string, cmd []string, uid uint32, env map[string]string) (ExecResult, error)
+	CreateNetworkFunc       func(req api.NetworksPost) error
+	CreateNetworkACLFunc    func(acl api.NetworkACLsPost) error
+	GetNetworksFunc         func() ([]api.Network, error)
+	GetNetworkACLsFunc      func() ([]api.NetworkACL, error)
 }
 
 // NewFakeInstanceServer creates a new initialized FakeInstanceServer.
 func NewFakeInstanceServer() *FakeInstanceServer {
-	return &FakeInstanceServer{
+	f := &FakeInstanceServer{
 		Instances:  make(map[string]*api.Instance),
 		ETags:      make(map[string]string),
 		Files:      make(map[string]map[string][]byte),
@@ -44,6 +49,8 @@ func NewFakeInstanceServer() *FakeInstanceServer {
 		Extensions: map[string]bool{"instances_rebuild": true},
 		Snapshots:  make(map[string]map[string]*api.InstanceSnapshot),
 	}
+	f.AddNetworks()
+	return f
 }
 
 var _ InstanceService = (*FakeInstanceServer)(nil)

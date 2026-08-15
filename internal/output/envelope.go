@@ -8,21 +8,23 @@ const SchemaVersion = "lxm/result/v1"
 
 // Envelope represents the standardized lxm result envelope schema (lxm/result/v1).
 type Envelope struct {
-	Schema   string       `json:"schema"`
-	Command  string       `json:"command"`
-	OK       bool         `json:"ok"`
-	Target   string       `json:"target"`
-	Plan     PlanSummary  `json:"plan"`
-	Results  []ResultItem `json:"results"`
-	Warnings []string     `json:"warnings"`
-	Errors   []ErrorInfo  `json:"errors"`
-	ExitCode int          `json:"exit_code"`
+	Schema         string          `json:"schema"`
+	Command        string          `json:"command"`
+	OK             bool            `json:"ok"`
+	Target         string          `json:"target"`
+	Plan           PlanSummary     `json:"plan"`
+	Results        []ResultItem    `json:"results"`
+	NetworkResults []NetworkResult `json:"network_results,omitempty"`
+	Warnings       []string        `json:"warnings"`
+	Errors         []ErrorInfo     `json:"errors"`
+	ExitCode       int             `json:"exit_code"`
 }
 
 // PlanSummary represents the plan summary structure within the envelope.
 type PlanSummary struct {
-	Summary map[string]int `json:"summary"`
-	Steps   interface{}    `json:"steps,omitempty"`
+	Summary      map[string]int `json:"summary"`
+	Steps        interface{}    `json:"steps,omitempty"`
+	NetworkSteps interface{}    `json:"network_steps,omitempty"`
 }
 
 // ResultItem represents an individual container operation result.
@@ -34,10 +36,21 @@ type ResultItem struct {
 	DurationMS int64  `json:"duration_ms,omitempty"`
 }
 
+// NetworkResult represents an individual network-step operation result.
+type NetworkResult struct {
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	Changed    bool   `json:"changed"`
+	OK         bool   `json:"ok"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
 // ErrorInfo represents a structured error entry inside the envelope.
 type ErrorInfo struct {
 	Code      string `json:"code"`
 	Container string `json:"container,omitempty"`
+	Name      string `json:"name,omitempty"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
 }

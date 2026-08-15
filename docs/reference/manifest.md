@@ -285,6 +285,63 @@ Duplicate interface names are rejected after merge, and `ipv4` must parse as an 
 
 ---
 
+## Virtual switches (`vswitches`)
+
+Fleet-scoped declaration of LXD managed bridges that lxm creates, owns, and reconciles. Usually
+declared in `_base.yaml` and inherited by every leaf via `include`; identical declarations across
+loaded manifests are deduplicated, and conflicting ones fail with both file paths cited.
+
+```yaml
+vswitches:
+  - name: vmbr0
+    ipv4: 10.30.0.1/24     # required; gateway must be the first usable host (network .1)
+    group: vms             # optional; network group for network_policy
+    type: bridge           # optional; v1 only "bridge"
+    driver: native         # optional; "native" | "openvswitch" (immutable after create)
+    nat: true              # optional; default true
+    internet: true         # optional; only meaningful with a group; default true
+    ipv6: none             # optional; v1 only "none"
+```
+
+Validation (Go-side, exit 3): `ipv4` must parse as a CIDR whose address is the first usable host
+(`10.10.50.1/16` is rejected — it is not the first host of `10.10.0.0/16`); prefix length must be
+`/8`–`/29`; names must be unique; subnets must not overlap; `internet: false` requires a `group`.
+
+An **ungrouped** vswitch is managed for addressing only — stock LXD open routing, no ACLs. Removing
+a `group` later detaches the ACL and leaves it unmanaged. Removing a vswitch from the manifests
+stops managing it; lxm never deletes networks.
+
+---
+
+## Network policy (`network_policy`)
+
+Fleet-scoped, group-based traffic policy compiled deterministically into LXD network ACLs (`lxm-
+<vswitch>` per grouped vswitch) with a `reject` default. Like `vswitches`, it is typically declared
+in `_base.yaml`, unioned (and deduplicated) across all loaded manifests.
+
+```yaml
+network_policy:
+  internal_cidrs:            # optional; ADDITIVE to the locked default internal set
+    - 192.168.77.0/24
+  allow:
+    - from: vms              # required; a group with ≥1 vswitch
+      to: services           # required; a group with ≥1 vswitch
+      direction: both        # "both" (default, mutual) | "egress" (one-way initiation)
+```
+
+* `allow` entries referencing a group with no vswitches fail with exit 3.
+* Identical duplicate `allow` entries and `internal_cidrs` are deduplicated silently; the same
+  `(from, to)` pair declared with differing `direction` fails with exit 3.
+* An `allow` with `from == to` is a no-op (intra-group is already allowed) and is flagged by a plan
+  warning.
+* `internal_cidrs` adds operator-declared networks to the **internal set** that `internet: true`
+  groups may not reach — this is the remedy for the [non-RFC1918 host-address caveat](../howto/configure-networking.md#internal_cidrs--declaring-more-internal-space).
+
+See [Configuring Networking → Managed virtual switches & network segmentation](../howto/configure-networking.md#managed-virtual-switches--network-segmentation) for the full model,
+the `parent:` join pattern, and the caveats.
+
+---
+
 ## Recipes
 
 Recipes are provisioning scripts that run inside the container during `apply`. The supported v2 form is a list of groups, each with an optional `run_as` user (default `root`) and a non-empty `scripts` list:

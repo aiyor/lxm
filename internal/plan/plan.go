@@ -33,11 +33,12 @@ type InstanceSnapshot struct {
 
 // Plan represents a complete, serializable reconciliation plan.
 type Plan struct {
-	Schema   string      `json:"schema"` // "lxm/plan/v1"
-	Manifest string      `json:"manifest,omitempty"`
-	Steps    []Step      `json:"steps"`
-	Warnings []string    `json:"warnings,omitempty"`
-	Summary  PlanSummary `json:"summary"`
+	Schema       string        `json:"schema"` // "lxm/plan/v1"
+	Manifest     string        `json:"manifest,omitempty"`
+	NetworkSteps []NetworkStep `json:"network_steps,omitempty"`
+	Steps        []Step        `json:"steps"`
+	Warnings     []string      `json:"warnings,omitempty"`
+	Summary      PlanSummary   `json:"summary"`
 }
 
 // Step represents a reconciliation step for a single container.

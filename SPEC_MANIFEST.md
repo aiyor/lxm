@@ -73,7 +73,69 @@ networks:
 ```
 Fields allowed: `name` (required string), `ipv4` (optional IPv4 address string), `parent` (optional network bridge name string).
 
-### 3.3 List Directives (`remove` and `replace`)
+### 3.6 Virtual Switches (`#VSwitchObjAuthoring` / fleet-scoped)
+
+> This section is the **canonical manifest-schema reference** for `vswitches:` and `network_policy:`
+> (it mirrors the CUE schemas in `internal/config/schemas/v2.cue`). The feature-level spec — the
+> generator matrix, CIDR decomposition, reconciliation/execution model, and verification — lives in
+> [`NETWORK-SPEC.md`](NETWORK-SPEC.md). Keep the two schema tables in sync when either changes.
+
+`vswitches:` declares LXD managed bridges that lxm creates and owns. It is **fleet-scoped**: the
+union of every loaded manifest's `vswitches:` is compiled (identical duplicates dedup; conflicting
+specs exit 3 citing both files). Usually declared in a `_base.yaml` and inherited via `include`.
+
+```yaml
+vswitches:
+  - name: vmbr0
+    ipv4: 10.30.0.1/24
+    group: vms
+```
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `name` | string | — (required) | `=~"^[a-z][a-z0-9-]{0,30}$"`. |
+| `type` | string | `"bridge"` | v1 lock: only `"bridge"`. |
+| `driver` | string | `"native"` | `"native" \| "openvswitch"`; immutable after create (exit 3). |
+| `ipv4` | string | — (required) | CIDR whose address is the **first usable host** (network `.1`); prefix `/8`–`/29` (Go-validated). |
+| `ipv6` | string | `"none"` | v1 lock: only `"none"`. |
+| `nat` | bool | `true` | → `ipv4.nat`. |
+| `group` | string | — | Group membership; absence ⇒ managed for addressing only (no ACLs). |
+| `internet` | bool | `true` | Only meaningful with `group`. |
+
+An ungrouped vswitch gets no ACLs (stock LXD routing). Removing `group` detaches the ACL; removing
+the vswitch stops managing it (lxm never deletes networks).
+
+### 3.7 Network Policy (`network_policy` / fleet-scoped)
+
+`network_policy:` is a group-based traffic policy compiled deterministically into LXD network ACLs
+(`lxm-<vswitch>`, `reject` default). Fleet-scoped; `allow` entries and `internal_cidrs` are unioned
+and deduplicated across manifests (identical dedup; conflicting `(from,to)` with differing
+`direction` ⇒ exit 3).
+
+```yaml
+network_policy:
+  internal_cidrs:              # optional; ADDITIVE to the locked default internal set (§3.6/NETWORK-SPEC §5.2)
+    - 192.168.77.0/24
+  allow:
+    - from: vms                # required; a group with ≥1 vswitch
+      to: services             # required; a group with ≥1 vswitch
+      direction: both          # "both" (default, mutual) | "egress" (one-way initiation)
+```
+
+`allow` entries reference network groups (from `vswitches[].group`):
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `from` | string | — (required) | A group with ≥1 vswitch; unknown group ⇒ exit 3. |
+| `to` | string | — (required) | A group with ≥1 vswitch; unknown group ⇒ exit 3. |
+| `direction` | string | `"both"` | `"both"` (mutual) \| `"egress"` (one-way initiation). |
+
+Rules: `from == to` is a no-op (intra-group is already allowed; plan warning); `internal_cidrs`
+entries must be valid CIDRs, are additive to the locked default internal set (RFC1918 supernets,
+`100.64/10`, loopback, link-local) that `internet: true` groups may not reach, and duplicates dedup
+silently.
+
+### 3.8 List Directives (`remove` and `replace`)
 List fields (`mounts`, `networks`, `recipes`) concatenate by default. Inheritance behavior can be modified using directives:
 
 ```yaml

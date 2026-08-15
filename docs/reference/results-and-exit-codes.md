@@ -209,6 +209,30 @@ exit_code=$(lxm plan config/ --format json | jq -r '.exit_code')
 [ "$exit_code" -eq 0 ]
 ```
 
+## Network steps & results
+
+Fleets that use [`vswitches:` / `network_policy:`](manifest.md#virtual-switches-vswitches) produce
+an additional, additive surface in the envelope:
+
+* **`plan.network_steps`** — the reconciliation steps for LXD network ACLs and vswitches, executed
+  *before* instance steps (`create_acl`/`update_acl` before `create_vswitch`/`update_vswitch`, so
+  a network can always reference its ACL). Each step carries `kind`, `name`, and the payload.
+* **`network_results`** — the per-step execution outcome from `apply`, alongside `results`:
+  `{name, kind, changed, ok, duration_ms}`. A network-step failure is therefore machine-
+  distinguishable from an instance-step failure, and aborts the apply **before any instance step
+  runs** (networks are prerequisites).
+* A failed network step also appears in `errors` with the failing object's name in the `name`
+  field (instance errors use `container`).
+
+```bash
+# Show the network steps a fleet needs:
+lxm plan config/ --format json | jq '.plan.network_steps[] | [.kind, .name]'
+
+# Verify every network step applied cleanly:
+lxm apply config/ --format json | jq -e '.network_results[] | select(.ok != true)' > /dev/null \
+  && echo "network failure" || echo "networks clean"
+```
+
 ## Related
 
 * [CLI Reference](cli.md) — per-command exit codes and flags.

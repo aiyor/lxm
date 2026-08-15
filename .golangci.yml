@@ -45,6 +45,9 @@ linters:
           - staticcheck
         path: internal/lxd/fake\.go
       - linters:
+          - staticcheck
+        path: internal/lxd/fake_network\.go
+      - linters:
           - gosec
         path: _test\.go
       - linters:

@@ -1,0 +1,25 @@
+schema: lxm/config/v2
+name: lxm-lab
+type: virtual-machine
+status: present
+image: ubuntu:24.04
+user: ubuntu
+vm:
+  boot_mode: uefi-nosecureboot      # secureboot off → enables nested VM instances later
+limits:
+  cpu: 4
+  memory: 8GiB
+  disk: 40GiB
+wait:
+  agent: 5m
+  cloud_init: 10m
+networks:
+  - name: eth0
+    parent: lxdbr0                  # host default bridge — the untouchable management NIC
+mounts:
+  - source: /mnt/devel/tools/lxm    # repo checkout; mounted readonly at /opt/lxm-src
+    path: /opt/lxm-src
+    readonly: true
+recipes:
+  - recipes/setup-inner-lxd.sh
+  - recipes/build-lxm.sh

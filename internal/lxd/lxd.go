@@ -91,6 +91,20 @@ type InstanceService interface {
 	RestoreInstanceSnapshotContext(ctx context.Context, name string, snapshotName string) error
 }
 
+// NetworkService defines the interface for interacting with LXD networks and
+// network ACLs (the vswitches:/network_policy: feature surface).
+type NetworkService interface {
+	GetNetworks() ([]api.Network, error)
+	GetNetwork(name string) (*api.Network, string, error)
+	CreateNetwork(network api.NetworksPost) error
+	UpdateNetwork(name string, network api.NetworkPut, etag string) error
+	GetNetworkACLs() ([]api.NetworkACL, error)
+	GetNetworkACL(name string) (*api.NetworkACL, string, error)
+	CreateNetworkACL(acl api.NetworkACLsPost) error
+	UpdateNetworkACL(name string, acl api.NetworkACLPut, etag string) error
+	DeleteNetworkACL(name string) error
+}
+
 type lxdService struct {
 	client lxd_client.InstanceServer
 }
@@ -244,6 +258,42 @@ func (s *lxdService) RestoreInstanceSnapshotContext(ctx context.Context, name st
 		return err
 	}
 	return waitOpContext(ctx, op)
+}
+
+func (s *lxdService) GetNetworks() ([]api.Network, error) {
+	return s.client.GetNetworks()
+}
+
+func (s *lxdService) GetNetwork(name string) (*api.Network, string, error) {
+	return s.client.GetNetwork(name)
+}
+
+func (s *lxdService) CreateNetwork(network api.NetworksPost) error {
+	return s.client.CreateNetwork(network)
+}
+
+func (s *lxdService) UpdateNetwork(name string, network api.NetworkPut, etag string) error {
+	return s.client.UpdateNetwork(name, network, etag)
+}
+
+func (s *lxdService) GetNetworkACLs() ([]api.NetworkACL, error) {
+	return s.client.GetNetworkACLs()
+}
+
+func (s *lxdService) GetNetworkACL(name string) (*api.NetworkACL, string, error) {
+	return s.client.GetNetworkACL(name)
+}
+
+func (s *lxdService) CreateNetworkACL(acl api.NetworkACLsPost) error {
+	return s.client.CreateNetworkACL(acl)
+}
+
+func (s *lxdService) UpdateNetworkACL(name string, acl api.NetworkACLPut, etag string) error {
+	return s.client.UpdateNetworkACL(name, acl, etag)
+}
+
+func (s *lxdService) DeleteNetworkACL(name string) error {
+	return s.client.DeleteNetworkACL(name)
 }
 
 func (s *lxdService) HasExtension(name string) bool {

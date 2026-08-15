@@ -10,12 +10,21 @@
 
 * **Plan-First Architecture**: Every infrastructure mutation is preceded by a pure, deterministic diff preview (`lxm plan`).
 * **Containers & Virtual Machines**: Unified management for lightweight LXC system containers and hardware-virtualized QEMU/KVM virtual machines (`type: container` / `type: vm`).
+* **Managed Virtual Switches & Network Segmentation**: Declare `vswitches:` (LXD managed bridges) and a group-based `network_policy:` — compiled deterministically into LXD network ACLs for isolated, mutually-communicating, and one-way networks.
 * **Declarative & Idempotent**: State reconciliation automatically handles instance creation, hardware limits (CPU, memory, disk), VM hypervisor settings, device mounting, network configuration, and image rebuilds.
 * **Structured Machine Interface**: Every command (excluding TTY shells) supports `--format json` with standardized `lxm/result/v1` result envelopes and categorized exit codes (0–7).
 * **CUE Schema Validation**: Manifest authoring is checked against CUE schemas (`#LXM_AUTHORING` and `#LXM_RESOLVED`) for strict path and security compliance.
 * **Security by Default**: Enforces tool-managed host key verification via `~/.config/lxm/known_hosts` with advisory file locking (`syscall.Flock`). Sudo elevation and key injection are strictly opt-in.
 * **Fleet Selectors & Parallel Execution**: Flexible group union and name targeting (`-g`, `--name`) with parallel execution pools.
 * **Snapshot Safety & Rollback**: Automatic pre-recipe instance snapshots with age/prefix retention garbage collection (`lxm snapshot gc`).
+
+---
+
+## Specifications
+
+* **[NETWORK-SPEC.md](NETWORK-SPEC.md)** — the authoritative spec for the `vswitches:` / `network_policy:` **feature**: group-based traffic policy compiled into LXD network ACLs, the generator matrix, CIDR decomposition, reconciliation/execution model, and verified integration results.
+* **[VM-SPEC.md](VM-SPEC.md)** — the authoritative spec for virtual-machine fleet management: VM manifest fields, hardware limits, hypervisor settings, data disks, and the VM apply/verify lifecycle.
+* **[SPEC_MANIFEST.md](SPEC_MANIFEST.md)** — the canonical **manifest schema** contract (all fields, CUE validation, inheritance) — including the authoritative `vswitches:`/`network_policy:` field tables that `NETWORK-SPEC.md` references.
 
 ---
 
