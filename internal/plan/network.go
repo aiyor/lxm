@@ -14,14 +14,15 @@ import (
 // Executed before instance steps, in order: ACL steps, then vswitch steps
 // (§7.4, driven by C8).
 type NetworkStep struct {
-	Kind    string               `json:"kind"` // create_acl | update_acl | create_vswitch | update_vswitch
-	Name    string               `json:"name"`
-	Changed bool                 `json:"changed"`
-	Diff    []FieldDiff          `json:"diff,omitempty"`
-	ACLPost *api.NetworkACLsPost `json:"acl_post,omitempty"`
-	ACLPut  *api.NetworkACLPut   `json:"acl_put,omitempty"`
-	NetPost *api.NetworksPost    `json:"network_post,omitempty"`
-	NetPut  *api.NetworkPut      `json:"network_put,omitempty"`
+	Kind      string               `json:"kind"` // create_acl | update_acl | create_vswitch | update_vswitch
+	Name      string               `json:"name"`
+	Changed   bool                 `json:"changed"`
+	Diff      []FieldDiff          `json:"diff,omitempty"`
+	Tightened bool                 `json:"tightened,omitempty"` // update_acl narrows/removes allows (conntrack warning)
+	ACLPost   *api.NetworkACLsPost `json:"acl_post,omitempty"`
+	ACLPut    *api.NetworkACLPut   `json:"acl_put,omitempty"`
+	NetPost   *api.NetworksPost    `json:"network_post,omitempty"`
+	NetPut    *api.NetworkPut      `json:"network_put,omitempty"`
 }
 
 // NetworkPlan is the fleet-scoped reconciliation plan for vswitches and ACLs.
@@ -94,7 +95,7 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 		}
 
 		if !aclRulesEqual(liveACL, desired) || liveACL.Description != desired.Description {
-			np.Steps = append(np.Steps, NetworkStep{
+			step := NetworkStep{
 				Kind:    "update_acl",
 				Name:    acl.Name,
 				Changed: true,
@@ -102,7 +103,15 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 				Diff: []FieldDiff{
 					{Field: "rules", Old: fmt.Sprintf("%d live rules", len(liveACL.Egress)+len(liveACL.Ingress)), New: fmt.Sprintf("%d desired rules", len(egress)+len(ingress))},
 				},
-			})
+			}
+			// D3: the conntrack warning applies only when the change removes or
+			// narrows allows (§7.6), not on a pure widening.
+			step.Tightened = allowsRemoved(liveACL, desired)
+			// D6: surface a hand-created ACL that lxm is about to overwrite.
+			if liveACL.Config == nil || liveACL.Config["user.lxm.managed"] != "true" {
+				np.Warnings = append(np.Warnings, fmt.Sprintf("ACL %q exists without the lxm managed marker and will be overwritten (the lxm- prefix is reserved)", acl.Name))
+			}
+			np.Steps = append(np.Steps, step)
 		}
 	}
 
@@ -142,9 +151,37 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 				Diff:    diff,
 			})
 		}
+
+		// D4a: when a group is removed, annotate the now-orphaned lxm ACL so
+		// its description records that it is unattached (§7.3 un-grouping row).
+		if vs.Group == "" {
+			aclName := network.ACLName(vs.Name)
+			if liveACL, ok := live.ACLs[aclName]; ok && liveACL.Config["user.lxm.managed"] == "true" {
+				annotated := liveACL.Description
+				if !strings.Contains(annotated, "unattached") {
+					if annotated != "" {
+						annotated += "; "
+					}
+					annotated += "lxm managed ACL; unattached (group removed)"
+				}
+				if annotated != liveACL.Description {
+					np.Steps = append(np.Steps, NetworkStep{
+						Kind:    "update_acl",
+						Name:    aclName,
+						Changed: true,
+						ACLPut: &api.NetworkACLPut{
+							Description: annotated,
+							Ingress:     liveACL.Ingress,
+							Egress:      liveACL.Egress,
+							Config:      liveACL.Config,
+						},
+					})
+				}
+			}
+		}
 	}
 
-	// 3. Unmanage warning: lxm-managed networks no longer declared.
+	// 3. Unmanage warning: lxm-managed networks/ACLs no longer declared.
 	for name, liveNet := range live.Networks {
 		if liveNet.Config["user.lxm.managed"] != "true" {
 			continue
@@ -153,8 +190,47 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 			np.Warnings = append(np.Warnings, fmt.Sprintf("vswitch %q no longer declared; left unmanaged (lxm never deletes networks)", name))
 		}
 	}
+	for aclName, liveACL := range live.ACLs {
+		if liveACL.Config["user.lxm.managed"] != "true" {
+			continue
+		}
+		if _, desired := aclByName[aclName]; !desired {
+			np.Warnings = append(np.Warnings, fmt.Sprintf("network ACL %q no longer declared; left unmanaged (lxm never deletes ACLs)", aclName))
+		}
+	}
 
 	return np, nil
+}
+
+// allowsRemoved reports whether an ACL update removes or narrows an allow rule
+// relative to the live ACL (D3 — the §7.6 tightening signal).
+func allowsRemoved(live *api.NetworkACL, desired *api.NetworkACLPut) bool {
+	liveKeys := make(map[string]bool)
+	for _, r := range live.Ingress {
+		if r.Action == "allow" {
+			liveKeys[allowRuleKey("ingress", r)] = true
+		}
+	}
+	for _, r := range live.Egress {
+		if r.Action == "allow" {
+			liveKeys[allowRuleKey("egress", r)] = true
+		}
+	}
+	for _, r := range desired.Ingress {
+		if r.Action == "allow" {
+			delete(liveKeys, allowRuleKey("ingress", r))
+		}
+	}
+	for _, r := range desired.Egress {
+		if r.Action == "allow" {
+			delete(liveKeys, allowRuleKey("egress", r))
+		}
+	}
+	return len(liveKeys) > 0
+}
+
+func allowRuleKey(dir string, r api.NetworkACLRule) string {
+	return dir + "\x00" + r.Source + "\x00" + r.Destination
 }
 
 // buildNetworksPost constructs the create payload for a vswitch.
@@ -242,14 +318,35 @@ func splitACLs(s string) []string {
 func buildNetworkUpdate(vs *network.VSwitch, live *api.Network) (*api.NetworkPut, []FieldDiff) {
 	desired := desiredNetworkConfig(vs, live)
 	diff := diffNetworkConfig(live.Config, desired)
+
+	// Reconcile the description too, so adding/removing a group leaves a
+	// truthful one (minor finding: update_vswitch previously pinned the live
+	// value forever). A foreign bridge's own description is preserved on
+	// adoption rather than clobbered.
+	desiredDesc := vswitchDescription(vs)
+	if live.Description != "" && live.Config["user.lxm.managed"] != "true" {
+		desiredDesc = live.Description
+	}
+	if live.Description != desiredDesc {
+		diff = append(diff, FieldDiff{Field: "description", Old: live.Description, New: desiredDesc})
+	}
+
 	if len(diff) == 0 {
 		return nil, nil
 	}
 	put := &api.NetworkPut{
 		Config:      desired,
-		Description: live.Description,
+		Description: desiredDesc,
 	}
 	return put, diff
+}
+
+// vswitchDescription is the deterministic description for a managed vswitch.
+func vswitchDescription(vs *network.VSwitch) string {
+	if vs.Group == "" {
+		return ""
+	}
+	return fmt.Sprintf("lxm managed vswitch (group %s)", vs.Group)
 }
 
 // desiredNetworkConfig computes the full desired config for an existing
@@ -315,11 +412,37 @@ func diffNetworkConfig(live, desired map[string]string) []FieldDiff {
 	sort.Strings(keys)
 	var diff []FieldDiff
 	for _, k := range keys {
-		if live[k] != desired[k] {
+		equal := live[k] == desired[k]
+		if k == "security.acls" {
+			// ACL references are a set: order must not cause perpetual
+			// update churn (lxm writes them sorted, but LXD/operators may
+			// reorder, and foreign ACLs can be appended in any order).
+			equal = sameACLSet(live[k], desired[k])
+		}
+		if !equal {
 			diff = append(diff, FieldDiff{Field: k, Old: live[k], New: desired[k]})
 		}
 	}
 	return diff
+}
+
+// sameACLSet reports whether two comma-separated ACL reference lists name the
+// same set of ACLs (order-insensitive).
+func sameACLSet(a, b string) bool {
+	sa, sb := splitACLs(a), splitACLs(b)
+	if len(sa) != len(sb) {
+		return false
+	}
+	mb := make(map[string]bool, len(sb))
+	for _, n := range sb {
+		mb[n] = true
+	}
+	for _, n := range sa {
+		if !mb[n] {
+			return false
+		}
+	}
+	return true
 }
 
 // aclRulesEqual reports whether a live ACL matches the desired put payload.

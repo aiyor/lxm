@@ -214,3 +214,71 @@ name: web-a
 		t.Fatalf("unexpected error message: %s", env.Errors[0].Message)
 	}
 }
+
+// TestRun_NoVSwitches_NoFalseNICWarnings is the F1 regression: a vswitch-less
+// fleet with the stock lxdbr0 parent must not emit the "not a known LXD
+// network or declared vswitch" warning.
+func TestRun_NoVSwitches_NoFalseNICWarnings(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+	fake.Extensions["network_acl"] = true
+	// The fake reports lxdbr0 as a live network.
+	if err := fake.CreateNetwork(api.NetworksPost{Name: "lxdbr0", Type: "bridge"}); err != nil {
+		t.Fatal(err)
+	}
+	tmpDir := t.TempDir()
+	writeTestFile(t, filepath.Join(tmpDir, "inst-a.yaml"), `schema: lxm/config/v2
+name: inst-a
+image: ubuntu:22.04
+networks:
+  - name: eth0
+    parent: lxdbr0
+`)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"plan", tmpDir, "--format", "json"}, &stdout, &stderr, fake)
+	if code != 0 {
+		t.Fatalf("plan returned %d, want 0. Stderr: %s", code, stderr.String())
+	}
+	var env output.Envelope
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	for _, w := range env.Warnings {
+		if strings.Contains(w, "not a known LXD network") {
+			t.Fatalf("false unknown-parent warning for vswitch-less fleet: %q", w)
+		}
+	}
+}
+
+// TestRun_LiveStateListError_Exit4 is the F2 regression: a live-state listing
+// failure must exit 4 at plan time instead of planning against an empty live
+// set (which would bypass adoption-refusal/foreign-ACL checks).
+func TestRun_LiveStateListError_Exit4(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+	fake.Extensions["network_acl"] = true
+	fake.GetNetworksFunc = func() ([]api.Network, error) {
+		return nil, errors.New("daemon hiccup listing networks")
+	}
+	tmpDir := t.TempDir()
+	writeTestFile(t, filepath.Join(tmpDir, "_base.yaml"), `schema: lxm/config/v2
+base: true
+image: ubuntu:22.04
+vswitches:
+  - name: vmbr0
+    ipv4: 10.30.0.1/24
+    group: vms
+`)
+	writeTestFile(t, filepath.Join(tmpDir, "web-a.yaml"), `schema: lxm/config/v2
+include: [_base.yaml]
+name: web-a
+`)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"plan", tmpDir, "--format", "json"}, &stdout, &stderr, fake)
+	if code != 4 {
+		t.Fatalf("expected exit 4 on live-state listing failure, got %d. Stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "listing LXD networks") {
+		t.Fatalf("expected listing-error message, got: %s", stderr.String())
+	}
+}

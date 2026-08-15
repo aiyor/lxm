@@ -103,6 +103,7 @@ nav:
       - CLI Reference: reference/cli.md
       - Manifest Reference: reference/manifest.md
       - Results & Exit Codes: reference/results-and-exit-codes.md
+      - Conntrack Lifecycle: reference/conntrack-lifecycle.md
       - Environment Variables: reference/environment-variables.md
   - Explanation:
       - Best Practices: best-practices.md

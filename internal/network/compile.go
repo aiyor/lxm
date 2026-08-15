@@ -315,3 +315,15 @@ func isIPv4CIDR(cidr string) bool {
 func RuleCount(acl *CompiledACL) int {
 	return len(acl.Rules)
 }
+
+// RejectRuleCount returns the number of reject rules in a compiled ACL (the
+// §3.2 guard is defined over the compiled reject set).
+func RejectRuleCount(acl *CompiledACL) int {
+	n := 0
+	for _, r := range acl.Rules {
+		if r.Action == "reject" {
+			n++
+		}
+	}
+	return n
+}

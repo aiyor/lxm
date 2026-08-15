@@ -16,7 +16,11 @@ func (conf *Config) validateVSwitches() error {
 			return fmt.Errorf("vswitches[%d]: name is required", i)
 		}
 		if seenNames[vs.Name] {
-			return fmt.Errorf("vswitch %q: duplicate name within manifest", vs.Name)
+			// Redeclarations are resolved at the fleet union (§5/§7.2), not
+			// per-tree: identical duplicates deduplicate silently and
+			// conflicting ones fail with both file paths in the message.
+			// Skipping here lets that resolution happen with attribution.
+			continue
 		}
 		seenNames[vs.Name] = true
 
@@ -41,12 +45,8 @@ func (conf *Config) validateVSwitches() error {
 	}
 
 	if conf.NetworkPolicy != nil {
-		seen := make(map[string]bool)
 		for i, cidr := range conf.NetworkPolicy.InternalCIDRs {
-			if seen[cidr] {
-				return fmt.Errorf("network_policy.internal_cidrs[%d]: duplicate %q", i, cidr)
-			}
-			seen[cidr] = true
+			// Duplicates are deduplicated silently (§2.2) at the fleet union.
 			if _, _, err := net.ParseCIDR(cidr); err != nil {
 				return fmt.Errorf("network_policy.internal_cidrs[%d]: invalid CIDR %q: %w", i, cidr, err)
 			}

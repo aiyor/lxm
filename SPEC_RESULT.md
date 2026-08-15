@@ -46,9 +46,34 @@
 * `target` (`string`): Target argument passed to the command (if applicable).
 * `plan` (`object`): Plan summary map and step list (populated for `plan` and `apply`).
 * `results` (`array`): List of individual container operation result items (`ResultItem`).
+* `network_results` (`array`, additive): List of network-step result items (`NetworkResult`) for
+  `vswitches:`/`network_policy:` fleets.
 * `warnings` (`array`): List of warning message strings emitted during execution.
 * `errors` (`array`): List of error objects (`ErrorInfo`) when `exit_code != 0`.
 * `exit_code` (`int`): Categorized numeric process exit code (0–7).
+
+### Network-Scoped Additive Fields
+
+Fleets that use `vswitches:` / `network_policy:` extend the envelope without changing existing
+consumers:
+
+* **`plan.network_steps`** (`array` of `NetworkStep`): reconciliation steps for LXD network ACLs
+  and vswitches, executed **before** instance steps — ACL steps (`create_acl`/`update_acl`) before
+  vswitch steps (`create_vswitch`/`update_vswitch`), satisfying the C8 dependency (a network may
+  reference only existing ACLs). Each step carries `kind`, `name`, `diff`, `changed`, and the
+  request payload (`acl_post`/`acl_put`/`network_post`/`network_put`).
+* **`network_results`** (`array` of `NetworkResult`): per-step outcomes from `apply` —
+  `{name, kind, changed, ok, duration_ms, error?}` — so a phase-1 (network) failure is
+  machine-distinguishable from a phase-3 (instance) failure.
+* **`errors[]` for network steps** carry the failing object's name in the `name` field (instance
+  errors use `container`).
+* **Phase-abort**: a network-step LXD error aborts the apply before any instance step runs;
+  `network_results` records the failing step and its `LXD_ERROR` (exit 4) surfaces in the top-level
+  `errors` array.
+
+Exit-code mapping is unchanged and shared with the instance plane: manifest/policy/union/IPAM/NIC
+violations ⇒ `3` (`CONFIG_ERROR`); LXD API/extension errors (including `create_acl`/
+`create_vswitch`) ⇒ `4` (`LXD_ERROR`).
 
 ---
 

@@ -35,6 +35,9 @@ func (f *FakeInstanceServer) AddNetworks() {
 func (f *FakeInstanceServer) GetNetworks() ([]api.Network, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.GetNetworksFunc != nil {
+		return f.GetNetworksFunc()
+	}
 	if f.Nets == nil {
 		return nil, nil
 	}
@@ -77,10 +80,11 @@ func (f *FakeInstanceServer) CreateNetwork(req api.NetworksPost) error {
 		cfg = make(map[string]string)
 	}
 	f.Nets.Networks[req.Name] = &api.Network{
-		Name:    req.Name,
-		Type:    req.Type,
-		Config:  cfg,
-		Managed: true,
+		Name:        req.Name,
+		Type:        req.Type,
+		Description: req.Description,
+		Config:      cfg,
+		Managed:     true,
 	}
 	f.Nets.NetworkETags[req.Name] = "net-etag-created"
 	return nil

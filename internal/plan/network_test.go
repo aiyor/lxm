@@ -242,7 +242,7 @@ func TestComputeNetworks_Noop(t *testing.T) {
 	}
 	live := &plan.NetworkLiveState{
 		Networks: map[string]*api.Network{
-			"vmbr0": {Name: "vmbr0", Config: map[string]string{
+			"vmbr0": {Name: "vmbr0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{
 				"user.lxm.managed":                     "true",
 				"ipv4.address":                         "10.30.0.1/24",
 				"bridge.driver":                        "native",
@@ -254,7 +254,7 @@ func TestComputeNetworks_Noop(t *testing.T) {
 				"security.acls.default.ingress.action": "reject",
 				"security.acls.default.egress.action":  "reject",
 			}},
-			"svcbr0": {Name: "svcbr0", Config: map[string]string{
+			"svcbr0": {Name: "svcbr0", Description: "lxm managed vswitch (group services)", Config: map[string]string{
 				"user.lxm.managed":                     "true",
 				"ipv4.address":                         "10.50.0.1/24",
 				"bridge.driver":                        "native",
@@ -315,5 +315,178 @@ func TestComputeNetworks_ExtensionNotRequiredForUngrouped(t *testing.T) {
 	}
 	if len(np.Steps) != 1 || np.Steps[0].Kind != "create_vswitch" {
 		t.Fatalf("expected single create_vswitch, got %v", np.Steps)
+	}
+}
+
+func TestComputeNetworks_Tightened_OnlyWhenAllowsRemoved(t *testing.T) {
+	f := testFleet(t, fleetConfigs()...)
+	rec := plan.NewNetworkReconciler()
+
+	// Live ACL has the full mutual-policy allow set; desired removes one allow
+	// (simulate tightening by making the live ACL richer).
+	liveACL := &api.NetworkACL{
+		Name:   "lxm-vmbr0",
+		Config: map[string]string{"user.lxm.managed": "true"},
+		Egress: []api.NetworkACLRule{
+			{Action: "allow", Source: "10.30.0.0/24", Destination: "10.31.0.0/24", State: "enabled"},
+			{Action: "allow", Source: "10.30.0.0/24", Destination: "10.50.0.0/24", State: "enabled"},
+			{Action: "reject", Source: "10.30.0.0/24", Destination: "10.9.9.0/24", State: "enabled"},
+		},
+	}
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*api.Network{
+			"vmbr0": {Name: "vmbr0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{"user.lxm.managed": "true", "ipv4.address": "10.30.0.1/24", "bridge.driver": "native"}},
+		},
+		ACLs: map[string]*api.NetworkACL{"lxm-vmbr0": liveACL},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+	for _, s := range np.Steps {
+		if s.Kind == "update_acl" && s.Name == "lxm-vmbr0" {
+			if !s.Tightened {
+				t.Fatalf("expected Tightened=true when an allow was removed")
+			}
+			return
+		}
+	}
+	t.Fatalf("expected update_acl step")
+}
+
+func TestComputeNetworks_NotTightened_OnWidening(t *testing.T) {
+	f := testFleet(t, fleetConfigs()...)
+	rec := plan.NewNetworkReconciler()
+
+	// Live ACL is missing an allow that desired adds -> widening, not tightening.
+	liveACL := &api.NetworkACL{
+		Name:   "lxm-vmbr0",
+		Config: map[string]string{"user.lxm.managed": "true"},
+		Egress: []api.NetworkACLRule{
+			{Action: "allow", Source: "10.30.0.0/24", Destination: "0.0.0.0/0", State: "enabled"},
+		},
+	}
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*api.Network{
+			"vmbr0": {Name: "vmbr0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{"user.lxm.managed": "true", "ipv4.address": "10.30.0.1/24", "bridge.driver": "native"}},
+		},
+		ACLs: map[string]*api.NetworkACL{"lxm-vmbr0": liveACL},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+	for _, s := range np.Steps {
+		if s.Kind == "update_acl" && s.Name == "lxm-vmbr0" {
+			if s.Tightened {
+				t.Fatalf("expected Tightened=false for a widening update")
+			}
+			return
+		}
+	}
+	t.Fatalf("expected update_acl step")
+}
+
+func TestComputeNetworks_UnmanagedACL_OverwriteWarning(t *testing.T) {
+	f := testFleet(t, fleetConfigs()...)
+	rec := plan.NewNetworkReconciler()
+	// Hand-created ACL (no lxm marker) with stale rules.
+	liveACL := &api.NetworkACL{
+		Name:   "lxm-vmbr0",
+		Config: map[string]string{},
+		Egress: []api.NetworkACLRule{{Action: "reject", Source: "10.30.0.0/24", Destination: "10.9.9.0/24", State: "enabled"}},
+	}
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*api.Network{
+			"vmbr0": {Name: "vmbr0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{"user.lxm.managed": "true", "ipv4.address": "10.30.0.1/24", "bridge.driver": "native"}},
+		},
+		ACLs: map[string]*api.NetworkACL{"lxm-vmbr0": liveACL},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+	found := false
+	for _, w := range np.Warnings {
+		if strings.Contains(w, "without the lxm managed marker") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected overwrite warning for unmanaged ACL, got: %v", np.Warnings)
+	}
+}
+
+func TestComputeNetworks_OrphanedACL_AnnotatedAndWarned(t *testing.T) {
+	// Group removed: the orphaned lxm ACL's description must be annotated, and
+	// an lxm ACL whose vswitch vanished entirely must be surfaced as a warning.
+	ungrouped := testFleet(t, &config.Config{
+		Schema:    "lxm/config/v2",
+		Base:      true,
+		VSwitches: []config.VSwitchConfig{{Name: "br0", IPv4: "10.30.0.1/24"}}, // group removed
+	})
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(ungrouped, &plan.NetworkLiveState{
+		Networks: map[string]*api.Network{
+			"br0": {Name: "br0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{"user.lxm.managed": "true", "ipv4.address": "10.30.0.1/24", "bridge.driver": "native", "security.acls": "lxm-br0"}},
+		},
+		ACLs: map[string]*api.NetworkACL{
+			"lxm-br0":   {Name: "lxm-br0", Config: map[string]string{"user.lxm.managed": "true"}, Description: "lxm managed policy for vswitch br0 (group vms)"},
+			"lxm-ghost": {Name: "lxm-ghost", Config: map[string]string{"user.lxm.managed": "true"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+	annotated := false
+	for _, s := range np.Steps {
+		if s.Kind == "update_acl" && s.Name == "lxm-br0" {
+			if !strings.Contains(s.ACLPut.Description, "unattached") {
+				t.Fatalf("orphaned ACL description not annotated: %q", s.ACLPut.Description)
+			}
+			annotated = true
+		}
+	}
+	if !annotated {
+		t.Fatalf("expected update_acl annotation for orphaned lxm-br0")
+	}
+	ghostWarned := false
+	for _, w := range np.Warnings {
+		if strings.Contains(w, "lxm-ghost") && strings.Contains(w, "left unmanaged") {
+			ghostWarned = true
+		}
+	}
+	if !ghostWarned {
+		t.Fatalf("expected orphaned-ACL warning, got: %v", np.Warnings)
+	}
+}
+
+func TestComputeNetworks_SecurityACLs_OrderInsensitive(t *testing.T) {
+	// The live security.acls may be ordered differently from lxm's sorted
+	// desired form (foreign ACL appended by an operator, or LXD reordering);
+	// this must NOT cause a perpetual update_vswitch churn.
+	f := testFleet(t, fleetConfigs()...)
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*api.Network{
+			"vmbr0": {Name: "vmbr0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{
+				"user.lxm.managed":                     "true",
+				"ipv4.address":                         "10.30.0.1/24",
+				"bridge.driver":                        "native",
+				"ipv4.nat":                             "true",
+				"ipv4.dhcp":                            "true",
+				"ipv6.address":                         "none",
+				"dns.domain":                           "lxd",
+				"security.acls":                        "handwritten,lxm-vmbr0", // foreign first
+				"security.acls.default.ingress.action": "reject",
+				"security.acls.default.egress.action":  "reject",
+			}},
+		},
+		ACLs: map[string]*api.NetworkACL{},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+	for _, s := range np.Steps {
+		if s.Kind == "update_vswitch" && s.Name == "vmbr0" {
+			t.Fatalf("security.acls order must not cause update churn")
+		}
 	}
 }

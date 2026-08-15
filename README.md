@@ -10,6 +10,7 @@
 
 * **Plan-First Architecture**: Every infrastructure mutation is preceded by a pure, deterministic diff preview (`lxm plan`).
 * **Containers & Virtual Machines**: Unified management for lightweight LXC system containers and hardware-virtualized QEMU/KVM virtual machines (`type: container` / `type: vm`).
+* **Managed Virtual Switches & Network Segmentation**: Declare `vswitches:` (LXD managed bridges) and a group-based `network_policy:` — compiled deterministically into LXD network ACLs for isolated, mutually-communicating, and one-way networks.
 * **Declarative & Idempotent**: State reconciliation automatically handles instance creation, hardware limits (CPU, memory, disk), VM hypervisor settings, device mounting, network configuration, and image rebuilds.
 * **Structured Machine Interface**: Every command (excluding TTY shells) supports `--format json` with standardized `lxm/result/v1` result envelopes and categorized exit codes (0–7).
 * **CUE Schema Validation**: Manifest authoring is checked against CUE schemas (`#LXM_AUTHORING` and `#LXM_RESOLVED`) for strict path and security compliance.

@@ -35,8 +35,8 @@ func computeNetworkPlan(svc lxd.InstanceService, loaded []*config.Config, netRec
 
 	// Rule-count guard (§3.2): >256 reject rules per vswitch warns, proceeds.
 	for _, acl := range network.Compile(fleet) {
-		if network.RuleCount(acl) > 256 {
-			warnings = append(warnings, fmt.Sprintf("ACL %q has %d rules (>256); consider fewer inter-group carve-outs", acl.Name, network.RuleCount(acl)))
+		if n := network.RejectRuleCount(acl); n > 256 {
+			warnings = append(warnings, fmt.Sprintf("ACL %q has %d reject rules (>256); consider fewer inter-group carve-outs", acl.Name, n))
 		}
 	}
 
@@ -45,23 +45,35 @@ func computeNetworkPlan(svc lxd.InstanceService, loaded []*config.Config, netRec
 		ACLs:     map[string]*api.NetworkACL{},
 	}
 
-	// NetworkService is only required when the fleet actually declares
-	// vswitches; a vswitchess-less invocation must not demand the network
-	// surface from the LXD service.
-	if svc != nil && len(fleet.VSwitches) > 0 {
+	// Fetch live networks/ACLs whenever the service exposes the network
+	// surface: even a vswitch-less fleet needs the live network set so the
+	// NIC unknown-parent check (§4) doesn't misfire on the stock lxdbr0.
+	// The NetworkService *requirement* is only enforced when vswitches are
+	// actually declared.
+	if svc != nil {
 		netSvc, ok := svc.(lxd.NetworkService)
 		if !ok {
-			return nil, nil, &exitError{code: 4, err: fmt.Errorf("LXD service does not support network operations (network_policy unavailable)")}
-		}
-		if hasGrouped && !svc.HasExtension("network_acl") {
-			return nil, nil, &exitError{code: 4, err: fmt.Errorf("LXD server lacks the network_acl extension; grouped vswitches cannot be policy-managed (needs LXD with bridge network ACL support)")}
-		}
-		if nets, err := netSvc.GetNetworks(); err == nil {
+			if len(fleet.VSwitches) > 0 {
+				return nil, nil, &exitError{code: 4, err: fmt.Errorf("LXD service does not support network operations (network_policy unavailable)")}
+			}
+		} else {
+			if hasGrouped && !svc.HasExtension("network_acl") {
+				return nil, nil, &exitError{code: 4, err: fmt.Errorf("LXD server lacks the network_acl extension; grouped vswitches cannot be policy-managed (needs LXD with bridge network ACL support)")}
+			}
+			// Live-state listing failures are fatal (exit 4): planning against
+			// an empty live set would propose create steps for existing objects
+			// and silently skip the adoption-refusal/foreign-ACL checks (§9).
+			nets, err := netSvc.GetNetworks()
+			if err != nil {
+				return nil, nil, &exitError{code: 4, err: fmt.Errorf("listing LXD networks: %w", err)}
+			}
 			for i := range nets {
 				live.Networks[nets[i].Name] = &nets[i]
 			}
-		}
-		if acls, err := netSvc.GetNetworkACLs(); err == nil {
+			acls, err := netSvc.GetNetworkACLs()
+			if err != nil {
+				return nil, nil, &exitError{code: 4, err: fmt.Errorf("listing LXD network ACLs: %w", err)}
+			}
 			for i := range acls {
 				live.ACLs[acls[i].Name] = &acls[i]
 			}

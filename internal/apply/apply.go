@@ -126,7 +126,9 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 
 	// Phase 1: network steps (ACLs, then vswitches — §7.4, driven by C8).
 	// A network-step LXD error aborts the apply before any instance step runs
-	// (they are prerequisites) — phase-abort semantics (§9).
+	// (they are prerequisites) — phase-abort semantics (§9). Remaining network
+	// steps are skipped on the first failure so a failed create_acl doesn't
+	// cascade into noisy "ACL not found" create_vswitch errors (C8).
 	networkSteps := sortNetworkSteps(p.NetworkSteps)
 	networkFailed := false
 	for _, nstep := range networkSteps {
@@ -142,6 +144,7 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 			networkFailed = true
 			report.Errors = append(report.Errors, *errInfo)
 			worstExitCode = selectWorstExitCode(worstExitCode, errorCodeToExit(errInfo.Code))
+			break
 		}
 	}
 	if networkFailed {

@@ -55,17 +55,21 @@ func TestValidateVSwitch_MaskBounds(t *testing.T) {
 	}
 }
 
-func TestValidateVSwitch_DuplicateName(t *testing.T) {
+func TestValidateVSwitch_IdenticalDuplicate_Allowed(t *testing.T) {
+	// Design §5/§7.2: identical redeclarations deduplicate at the fleet union;
+	// they must not fail per-tree validation. Conflicting redeclarations are
+	// likewise resolved (with file attribution) at the union — see
+	// TestUnion_BaseLeafConflict.
 	c := &config.Config{
 		Name:  "box1",
 		Image: "ubuntu:24.04",
 		VSwitches: []config.VSwitchConfig{
-			{Name: "vmbr0", IPv4: "10.30.0.1/24"},
-			{Name: "vmbr0", IPv4: "10.31.0.1/24"},
+			{Name: "vmbr0", IPv4: "10.30.0.1/24", Group: "vms"},
+			{Name: "vmbr0", IPv4: "10.30.0.1/24", Group: "vms"},
 		},
 	}
-	if err := c.Validate(""); err == nil || !strings.Contains(err.Error(), "duplicate name") {
-		t.Fatalf("expected duplicate-name error, got: %v", err)
+	if err := c.Validate(""); err != nil {
+		t.Fatalf("identical redeclaration must validate, got: %v", err)
 	}
 }
 
@@ -202,4 +206,52 @@ name: box1
 
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)
+}
+
+func TestLoadConfig_IdenticalRedeclaration_Dedups(t *testing.T) {
+	// D1 end-to-end: base declares vmbr0, leaf redeclares it identically —
+	// LoadConfig must succeed and the merged config must carry a single entry
+	// that the fleet union then dedups.
+	dir := t.TempDir()
+	if err := writeFile(dir+"/_base.yaml", `schema: lxm/config/v2
+base: true
+vswitches:
+  - name: vmbr0
+    ipv4: 10.30.0.1/24
+    group: vms
+`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(dir+"/leaf.yaml", `schema: lxm/config/v2
+include: [_base.yaml]
+name: box1
+image: ubuntu:22.04
+vswitches:
+  - name: vmbr0
+    ipv4: 10.30.0.1/24
+    group: vms
+`); err != nil {
+		t.Fatal(err)
+	}
+	conf, err := config.LoadConfig(dir + "/leaf.yaml")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if err := conf.Validate(dir); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestValidateNetworkPolicy_DuplicateInternalCIDRs_Dedup(t *testing.T) {
+	// D2: duplicate internal_cidrs deduplicate silently (§2.2), not exit 3.
+	c := &config.Config{
+		Name:  "box1",
+		Image: "ubuntu:24.04",
+		NetworkPolicy: &config.NetworkPolicy{
+			InternalCIDRs: []string{"192.168.77.0/24", "192.168.77.0/24"},
+		},
+	}
+	if err := c.Validate(""); err != nil {
+		t.Fatalf("duplicate internal_cidrs must dedup silently, got: %v", err)
+	}
 }
