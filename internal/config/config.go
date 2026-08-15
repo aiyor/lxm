@@ -173,6 +173,8 @@ type Config struct {
 	User             string            `yaml:"user,omitempty"`
 	Mounts           Mounts            `yaml:"mounts,omitempty"`
 	Networks         []NetworkConfig   `yaml:"networks,omitempty"`
+	VSwitches        []VSwitchConfig   `yaml:"vswitches,omitempty"`
+	NetworkPolicy    *NetworkPolicy    `yaml:"network_policy,omitempty"`
 	CloudInitInclude []string          `yaml:"cloud-init-include,omitempty"`
 	CloudInit        string            `yaml:"cloud-init,omitempty"`
 	CloudInitFile    string            `yaml:"cloud-init-file,omitempty"`
@@ -189,6 +191,7 @@ type Config struct {
 	Replace          *ReplaceDirective `yaml:"replace,omitempty"`
 
 	ConfigBaseDir string          `yaml:"-"` // directory of root manifest for relative file resolution
+	ConfigFile    string          `yaml:"-"` // root manifest file path (fleet-union conflict attribution)
 	presence      map[string]bool `yaml:"-"`
 }
 
@@ -304,6 +307,31 @@ type NetworkConfig struct {
 	Name   string `yaml:"name"`             // Defaults to eth0
 	IPv4   string `yaml:"ipv4,omitempty"`   // e.g., 10.0.0.10
 	Parent string `yaml:"parent,omitempty"` // Defaults to lxdbr0
+}
+
+// VSwitchConfig models a managed LXD virtual switch (fleet-scoped).
+type VSwitchConfig struct {
+	Name     string `yaml:"name"`
+	Type     string `yaml:"type,omitempty"`   // "" = "bridge" (v1: only "bridge")
+	Driver   string `yaml:"driver,omitempty"` // "" = "native" (bridge.driver)
+	IPv4     string `yaml:"ipv4"`
+	IPv6     string `yaml:"ipv6,omitempty"` // "" = "none"
+	NAT      *bool  `yaml:"nat,omitempty"`  // nil = true
+	Group    string `yaml:"group,omitempty"`
+	Internet *bool  `yaml:"internet,omitempty"` // nil = true
+}
+
+// NetworkPolicyRule models one inter-group allowance.
+type NetworkPolicyRule struct {
+	From      string `yaml:"from"`
+	To        string `yaml:"to"`
+	Direction string `yaml:"direction,omitempty"` // "" = "both"
+}
+
+// NetworkPolicy is a fleet-scoped, group-based traffic policy.
+type NetworkPolicy struct {
+	InternalCIDRs []string            `yaml:"internal_cidrs,omitempty"`
+	Allow         []NetworkPolicyRule `yaml:"allow"`
 }
 
 // Recipes is the authoring surface for recipes. It normalizes string, root:,
@@ -502,6 +530,10 @@ func (conf *Config) validateCommon(configBaseDir string) error {
 		if n.IPv4 != "" && net.ParseIP(n.IPv4) == nil {
 			return fmt.Errorf("network %d: invalid IPv4 address %q", i, n.IPv4)
 		}
+	}
+
+	if err := conf.validateVSwitches(); err != nil {
+		return err
 	}
 
 	return nil
@@ -775,10 +807,14 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 	res := &Config{
 		WaitPolicy:    base.WaitPolicy,
 		ConfigBaseDir: base.ConfigBaseDir,
+		ConfigFile:    base.ConfigFile,
 		presence:      make(map[string]bool),
 	}
 	if overlay.ConfigBaseDir != "" {
 		res.ConfigBaseDir = overlay.ConfigBaseDir
+	}
+	if overlay.ConfigFile != "" {
+		res.ConfigFile = overlay.ConfigFile
 	}
 
 	res.WaitPolicy.Presence = make(map[string]bool)
@@ -1000,6 +1036,19 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 		res.Recipes = append(append(Recipes(nil), base.Recipes...), overlay.Recipes...)
 	}
 
+	// vswitches: list-concat within an include chain (like mounts/networks).
+	// Dedup + conflict resolution happen at the fleet union (§7.2).
+	res.VSwitches = append(append([]VSwitchConfig(nil), base.VSwitches...), overlay.VSwitches...)
+
+	// network_policy: whole-value presence-wins replacement within a tree
+	// (§2.2). Across sibling manifests the allow/internal_cidrs lists are
+	// unioned at the fleet union.
+	if isPresent(overlay, "network_policy", overlay.NetworkPolicy) {
+		res.NetworkPolicy = copyNetworkPolicy(overlay.NetworkPolicy)
+	} else {
+		res.NetworkPolicy = copyNetworkPolicy(base.NetworkPolicy)
+	}
+
 	res.CloudInitInclude = append(append([]string(nil), base.CloudInitInclude...), overlay.CloudInitInclude...)
 	res.Groups = append(append([]string(nil), base.Groups...), overlay.Groups...)
 
@@ -1078,6 +1127,19 @@ func applyRemoveDirectives(res *Config, remove *RemoveDirective) error {
 	return nil
 }
 
+// copyNetworkPolicy deep-copies a NetworkPolicy so merged configs never share
+// mutable slices with their inheritance parents.
+func copyNetworkPolicy(p *NetworkPolicy) *NetworkPolicy {
+	if p == nil {
+		return nil
+	}
+	cp := &NetworkPolicy{
+		InternalCIDRs: append([]string(nil), p.InternalCIDRs...),
+		Allow:         append([]NetworkPolicyRule(nil), p.Allow...),
+	}
+	return cp
+}
+
 // LoadConfig reads a YAML config file and resolves includes/templates.
 func LoadConfig(configFile string) (*Config, error) {
 	conf, err := loadConfigRecursive(configFile, nil)
@@ -1127,6 +1189,38 @@ func LoadConfig(configFile string) (*Config, error) {
 		if conf.Mounts[i].Shift == nil {
 			t := true
 			conf.Mounts[i].Shift = &t
+		}
+	}
+
+	// vswitch default normalization (mirrors #LXM_RESOLVED defaults so the
+	// strict resolved schema round-trips deterministically).
+	for i := range conf.VSwitches {
+		vs := &conf.VSwitches[i]
+		if vs.Type == "" {
+			vs.Type = "bridge"
+		}
+		if vs.Driver == "" {
+			vs.Driver = "native"
+		}
+		if vs.IPv6 == "" {
+			vs.IPv6 = "none"
+		}
+		if vs.NAT == nil {
+			t := true
+			vs.NAT = &t
+		}
+		if vs.Internet == nil {
+			t := true
+			vs.Internet = &t
+		}
+	}
+
+	// network_policy rule direction default ("both").
+	if conf.NetworkPolicy != nil {
+		for i := range conf.NetworkPolicy.Allow {
+			if conf.NetworkPolicy.Allow[i].Direction == "" {
+				conf.NetworkPolicy.Allow[i].Direction = "both"
+			}
 		}
 	}
 
@@ -1267,6 +1361,7 @@ func loadConfigRecursive(configFile string, visited map[string]bool) (*Config, e
 		return nil, err
 	}
 
+	accumulated.ConfigFile = absPath
 	return accumulated, nil
 }
 

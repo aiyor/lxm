@@ -25,5 +25,6 @@ __pycache__/
 **/.agents
 **/.logs
 
-config/
+**/.config
+**/.scratch
 

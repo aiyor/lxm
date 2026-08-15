@@ -103,6 +103,27 @@ import (
 	required?:   bool   | *true
 })
 
+// Managed virtual switch (v1: only "bridge" networks with an explicit IPv4
+// subnet). The ipv4 regex is a coarse authoring gate; numeric checks
+// (first usable host, /8–/29 mask bounds) run in Go after merge.
+#VSwitchObjAuthoring: close({
+	name:      string & =~"^[a-z][a-z0-9-]{0,30}$"
+	type?:     "bridge"                    // v1 lock; "ovn" added later (additive relaxation)
+	driver?:   "native" | "openvswitch" | *"native"
+	ipv4:      string & =~"^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3})/[0-9]{1,2}$"
+	ipv6?:     "none"                      // v1 lock; IPv6 policy compilation deferred
+	nat?:      bool | *true
+	group?:    string
+	internet?: bool | *true
+})
+
+// One inter-group allowance in network_policy.
+#PolicyRuleAuthoring: close({
+	from:      string
+	to:        string
+	direction?: "both" | "egress" | *"both"
+})
+
 // ============================================================================
 // 1. #LXM_AUTHORING — Human Authoring Schema (Used for IDE JSON Schema Export)
 // ============================================================================
@@ -132,6 +153,15 @@ import (
 		ipv4?:   string
 		parent?: string | *"lxdbr0"
 	})]
+
+	// Fleet-scoped managed virtual switches (unioned across loaded manifests)
+	vswitches?: [...#VSwitchObjAuthoring]
+
+	// Fleet-scoped group-based traffic policy (compiled to LXD network ACLs)
+	network_policy?: close({
+		internal_cidrs?: [...string]
+		allow:           [...#PolicyRuleAuthoring]
+	})
 
 	// Wait policy: accepts scalar bool (shorthand) or struct
 	wait?: bool | #WaitConfig
@@ -202,6 +232,26 @@ import (
 		ipv4?:  string
 		parent: string
 	})]
+
+	vswitches?: [...close({
+		name:     string
+		type:     "bridge"
+		driver:   "native" | "openvswitch"
+		ipv4:     string
+		ipv6:     "none"
+		nat:      bool
+		group?:   string
+		internet: bool
+	})]
+
+	network_policy?: close({
+		internal_cidrs?: [...string]
+		allow: [...close({
+			from:      string
+			to:        string
+			direction: "both" | "egress"
+		})]
+	})
 
 	wait: #WaitConfig
 

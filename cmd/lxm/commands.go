@@ -130,7 +130,20 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 					return &exitError{code: 3, err: fmt.Errorf("computing reconciliation plan: %w", err)}
 				}
 				combinedPlan.Steps = append(combinedPlan.Steps, p.Steps...)
+				combinedPlan.Warnings = append(combinedPlan.Warnings, p.Warnings...)
 			}
+
+			// Fleet-scoped network reconciliation (full loaded set, §7.2/§7.4).
+			netReconciler, netOK := reconciler.(plan.NetworkReconciler)
+			if !netOK {
+				return &exitError{code: 1, err: fmt.Errorf("reconciler does not support network operations (network_policy unavailable)")}
+			}
+			netPlan, netWarnings, netErr := computeNetworkPlan(svc, loaded, netReconciler)
+			if netErr != nil {
+				return netErr
+			}
+			combinedPlan.NetworkSteps = append(combinedPlan.NetworkSteps, netPlan.Steps...)
+			combinedPlan.Warnings = append(combinedPlan.Warnings, netWarnings...)
 
 			if opts.prune && info.IsDir() && svc != nil {
 				inv, err := fleet.GetInventory(svc)
@@ -158,7 +171,11 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			combinedPlan.Summary = computePlanSummary(combinedPlan.Steps)
 			lastComputedPlan = combinedPlan
 
-			executor := apply.NewExecutor(svc)
+			services, ok := svc.(apply.Services)
+			if !ok {
+				return &exitError{code: 4, err: fmt.Errorf("LXD service does not support network operations (network_policy unavailable)")}
+			}
+			executor := apply.NewExecutor(services)
 			report, applyErr := executor.Apply(ctx, combinedPlan, apply.ApplyOpts{
 				Jobs:         5,
 				DryRun:       opts.dryRun,
@@ -182,7 +199,18 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			}
 
 			if opts.format == "text" && report != nil {
-				fmt.Fprintf(stdout, "Applied %d step(s) across %d container(s)\n", len(report.Results), len(selectedConfigs))
+				netCount := len(report.NetworkResults)
+				msg := fmt.Sprintf("Applied %d step(s) across %d container(s)", len(report.Results), len(selectedConfigs))
+				if netCount > 0 {
+					msg += fmt.Sprintf(" and %d network step(s)", netCount)
+				}
+				fmt.Fprintln(stdout, msg)
+				for _, w := range combinedPlan.Warnings {
+					fmt.Fprintf(stderr, "Warning: %s\n", w)
+				}
+				for _, w := range report.Warnings {
+					fmt.Fprintf(stderr, "Warning: %s\n", w)
+				}
 			}
 
 			return nil
@@ -269,7 +297,20 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 					return &exitError{code: 3, err: fmt.Errorf("computing reconciliation plan: %w", err)}
 				}
 				combinedPlan.Steps = append(combinedPlan.Steps, p.Steps...)
+				combinedPlan.Warnings = append(combinedPlan.Warnings, p.Warnings...)
 			}
+
+			// Fleet-scoped network reconciliation (full loaded set, §7.2/§7.4).
+			netReconciler, netOK := reconciler.(plan.NetworkReconciler)
+			if !netOK {
+				return &exitError{code: 1, err: fmt.Errorf("reconciler does not support network operations (network_policy unavailable)")}
+			}
+			netPlan, netWarnings, netErr := computeNetworkPlan(svc, loaded, netReconciler)
+			if netErr != nil {
+				return netErr
+			}
+			combinedPlan.NetworkSteps = append(combinedPlan.NetworkSteps, netPlan.Steps...)
+			combinedPlan.Warnings = append(combinedPlan.Warnings, netWarnings...)
 
 			if opts.prune && info.IsDir() && svc != nil {
 				inv, err := fleet.GetInventory(svc)
@@ -300,6 +341,12 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			if opts.format == "text" {
 				fmt.Fprintf(stdout, "Plan: %d to create, %d to update, %d to recreate, %d to delete, %d noop across %d manifest(s)\n",
 					combinedPlan.Summary.Create, combinedPlan.Summary.Update, combinedPlan.Summary.Recreate, combinedPlan.Summary.Delete, combinedPlan.Summary.Noop, len(selectedConfigs))
+				if len(combinedPlan.NetworkSteps) > 0 {
+					fmt.Fprintf(stdout, "Network: %d step(s)\n", len(combinedPlan.NetworkSteps))
+				}
+				for _, w := range combinedPlan.Warnings {
+					fmt.Fprintf(stderr, "Warning: %s\n", w)
+				}
 			}
 
 			return nil
@@ -1435,6 +1482,32 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				}
 				_ = svc
 				checks = append(checks, "[OK] LXD socket reachable")
+
+				// Bridge network-ACL capability probe (§7.5): the network_acl
+				// extension's 4.10 floor reflects its OVN origin; bridge ACL
+				// support (the only path v1 uses) arrived later. The
+				// authoritative check is creating and deleting a throwaway
+				// bridge ACL.
+				if svc.HasExtension("network_acl") {
+					checks = append(checks, "[OK] LXD network_acl extension")
+					if netSvc, ok := svc.(lxd.NetworkService); ok {
+						probeName := fmt.Sprintf("lxm-doctor-probe-%d", time.Now().UnixNano())
+						probeErr := netSvc.CreateNetworkACL(api.NetworkACLsPost{
+							NetworkACLPost: api.NetworkACLPost{Name: probeName},
+							NetworkACLPut:  api.NetworkACLPut{Config: map[string]string{}},
+						})
+						if probeErr != nil {
+							warnings = append(warnings, fmt.Sprintf("bridge network ACL probe failed (bridge ACLs may be unsupported): %v", probeErr))
+							checks = append(checks, "[WARN] bridge network ACL capability")
+						} else {
+							_ = netSvc.DeleteNetworkACL(probeName)
+							checks = append(checks, "[OK] bridge network ACL capability (probe create/delete)")
+						}
+					}
+				} else {
+					warnings = append(warnings, "LXD server lacks the network_acl extension; network_policy (vswitches groups) is unavailable")
+					checks = append(checks, "[WARN] LXD network_acl extension")
+				}
 			} else {
 				checks = append(checks, "[SKIP] Remote LXD socket check skipped")
 			}

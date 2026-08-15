@@ -37,21 +37,35 @@ type ContainerResult struct {
 	Error      string `json:"error,omitempty"`
 }
 
+// NetworkResult records the execution outcome for a single network step
+// (create/update ACL or vswitch). Rendered in the envelope's additive
+// `network_results` field (§9).
+type NetworkResult struct {
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	Changed    bool   `json:"changed"`
+	OK         bool   `json:"ok"`
+	DurationMS int64  `json:"duration_ms"`
+	Error      string `json:"error,omitempty"`
+}
+
 // ErrorInfo describes a structured error entry for result envelope serialization.
 type ErrorInfo struct {
 	Code      string `json:"code"`
 	Container string `json:"container,omitempty"`
+	Name      string `json:"name,omitempty"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
 }
 
 // ApplyReport summarizes the overall outcome of applying a Plan.
 type ApplyReport struct {
-	Plan     *plan.Plan        `json:"plan"`
-	Results  []ContainerResult `json:"results"`
-	ExitCode int               `json:"exit_code"`
-	Errors   []ErrorInfo       `json:"errors"`
-	Warnings []string          `json:"warnings"`
+	Plan           *plan.Plan        `json:"plan"`
+	Results        []ContainerResult `json:"results"`
+	NetworkResults []NetworkResult   `json:"network_results,omitempty"`
+	ExitCode       int               `json:"exit_code"`
+	Errors         []ErrorInfo       `json:"errors"`
+	Warnings       []string          `json:"warnings"`
 }
 
 // Executor executes a reconciliation Plan against LXD.
@@ -59,13 +73,20 @@ type Executor interface {
 	Apply(ctx context.Context, p *plan.Plan, opts ApplyOpts) (*ApplyReport, error)
 }
 
-type defaultExecutor struct {
-	lxdSvc lxd.InstanceService
+// Services bundles the instance and network LXD services used by the executor.
+type Services interface {
+	lxd.InstanceService
+	lxd.NetworkService
 }
 
-// NewExecutor creates a new default Executor using the provided InstanceService.
-func NewExecutor(svc lxd.InstanceService) Executor {
-	return &defaultExecutor{lxdSvc: svc}
+type defaultExecutor struct {
+	lxdSvc lxd.InstanceService
+	netSvc lxd.NetworkService
+}
+
+// NewExecutor creates a new default Executor using the provided services.
+func NewExecutor(svc Services) Executor {
+	return &defaultExecutor{lxdSvc: svc, netSvc: svc}
 }
 
 func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpts) (*ApplyReport, error) {
@@ -74,11 +95,12 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 	}
 
 	report := &ApplyReport{
-		Plan:     p,
-		Results:  []ContainerResult{},
-		Errors:   []ErrorInfo{},
-		Warnings: []string{},
-		ExitCode: 0,
+		Plan:           p,
+		Results:        []ContainerResult{},
+		NetworkResults: []NetworkResult{},
+		Errors:         []ErrorInfo{},
+		Warnings:       []string{},
+		ExitCode:       0,
 	}
 
 	// Single-file prune restriction (C2)
@@ -102,6 +124,32 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 
 	worstExitCode := 0
 
+	// Phase 1: network steps (ACLs, then vswitches — §7.4, driven by C8).
+	// A network-step LXD error aborts the apply before any instance step runs
+	// (they are prerequisites) — phase-abort semantics (§9).
+	networkSteps := sortNetworkSteps(p.NetworkSteps)
+	networkFailed := false
+	for _, nstep := range networkSteps {
+		startTs := time.Now()
+		nres, errInfo, warnMsg := e.executeNetworkStep(ctx, nstep, opts)
+		nres.DurationMS = time.Since(startTs).Milliseconds()
+
+		report.NetworkResults = append(report.NetworkResults, nres)
+		if warnMsg != "" {
+			report.Warnings = append(report.Warnings, warnMsg)
+		}
+		if errInfo != nil {
+			networkFailed = true
+			report.Errors = append(report.Errors, *errInfo)
+			worstExitCode = selectWorstExitCode(worstExitCode, errorCodeToExit(errInfo.Code))
+		}
+	}
+	if networkFailed {
+		report.ExitCode = worstExitCode
+		return report, nil
+	}
+
+	// Phase 2: instance steps.
 	for _, step := range p.Steps {
 		wg.Add(1)
 		go func(s plan.Step) {
@@ -131,6 +179,18 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 	wg.Wait()
 	report.ExitCode = worstExitCode
 	return report, nil
+}
+
+// sortNetworkSteps orders network steps so ACL steps run before vswitch steps.
+func sortNetworkSteps(steps []plan.NetworkStep) []plan.NetworkStep {
+	out := make([]plan.NetworkStep, len(steps))
+	copy(out, steps)
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && plan.NetworkStepKindOrder(out[j-1].Kind) > plan.NetworkStepKindOrder(out[j].Kind); j-- {
+			out[j-1], out[j] = out[j], out[j-1]
+		}
+	}
+	return out
 }
 
 // stopBeforeDelete stops the instance so a non-forced delete can proceed.

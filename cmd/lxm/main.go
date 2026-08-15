@@ -165,7 +165,8 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 					"stop":     lastComputedPlan.Summary.Stop,
 					"noop":     lastComputedPlan.Summary.Noop,
 				},
-				Steps: lastComputedPlan.Steps,
+				Steps:        lastComputedPlan.Steps,
+				NetworkSteps: lastComputedPlan.NetworkSteps,
 			}
 		}
 
@@ -179,10 +180,27 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 					DurationMS: r.DurationMS,
 				})
 			}
+			for _, n := range lastApplyReport.NetworkResults {
+				env.NetworkResults = append(env.NetworkResults, output.NetworkResult{
+					Name:       n.Name,
+					Kind:       n.Kind,
+					Changed:    n.Changed,
+					OK:         n.OK,
+					DurationMS: n.DurationMS,
+					Error:      n.Error,
+				})
+			}
 		}
 
 		if len(lastCommandResults) > 0 {
 			env.Results = append(env.Results, lastCommandResults...)
+		}
+
+		if lastComputedPlan != nil && len(lastComputedPlan.Warnings) > 0 {
+			env.Warnings = append(env.Warnings, lastComputedPlan.Warnings...)
+		}
+		if lastApplyReport != nil && len(lastApplyReport.Warnings) > 0 {
+			env.Warnings = append(env.Warnings, lastApplyReport.Warnings...)
 		}
 
 		if exitCode != 0 {
