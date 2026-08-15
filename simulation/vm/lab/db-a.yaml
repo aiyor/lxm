@@ -1,0 +1,7 @@
+schema: lxm/config/v2
+include: [_base.yaml]
+name: db-a
+groups: [db]
+networks:
+  - name: eth0
+    parent: svcbr0

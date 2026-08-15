@@ -22,8 +22,9 @@
 
 ## Specifications
 
-* **[NETWORK-SPEC.md](NETWORK-SPEC.md)** — the authoritative spec for `vswitches:` (declarative LXD bridge management) and `network_policy:` (group-based traffic policy compiled into LXD network ACLs): schema, generator matrix, CIDR decomposition, reconciliation/execution model, and verified integration results.
+* **[NETWORK-SPEC.md](NETWORK-SPEC.md)** — the authoritative spec for the `vswitches:` / `network_policy:` **feature**: group-based traffic policy compiled into LXD network ACLs, the generator matrix, CIDR decomposition, reconciliation/execution model, and verified integration results.
 * **[VM-SPEC.md](VM-SPEC.md)** — the authoritative spec for virtual-machine fleet management: VM manifest fields, hardware limits, hypervisor settings, data disks, and the VM apply/verify lifecycle.
+* **[SPEC_MANIFEST.md](SPEC_MANIFEST.md)** — the canonical **manifest schema** contract (all fields, CUE validation, inheritance) — including the authoritative `vswitches:`/`network_policy:` field tables that `NETWORK-SPEC.md` references.
 
 ---
 

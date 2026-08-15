@@ -75,6 +75,11 @@ Fields allowed: `name` (required string), `ipv4` (optional IPv4 address string),
 
 ### 3.6 Virtual Switches (`#VSwitchObjAuthoring` / fleet-scoped)
 
+> This section is the **canonical manifest-schema reference** for `vswitches:` and `network_policy:`
+> (it mirrors the CUE schemas in `internal/config/schemas/v2.cue`). The feature-level spec — the
+> generator matrix, CIDR decomposition, reconciliation/execution model, and verification — lives in
+> [`NETWORK-SPEC.md`](NETWORK-SPEC.md). Keep the two schema tables in sync when either changes.
+
 `vswitches:` declares LXD managed bridges that lxm creates and owns. It is **fleet-scoped**: the
 union of every loaded manifest's `vswitches:` is compiled (identical duplicates dedup; conflicting
 specs exit 3 citing both files). Usually declared in a `_base.yaml` and inherited via `include`.
@@ -109,17 +114,26 @@ and deduplicated across manifests (identical dedup; conflicting `(from,to)` with
 
 ```yaml
 network_policy:
-  internal_cidrs:
+  internal_cidrs:              # optional; ADDITIVE to the locked default internal set (§3.6/NETWORK-SPEC §5.2)
     - 192.168.77.0/24
   allow:
-    - from: vms
-      to: services
-      direction: both    # "both" | "egress"
+    - from: vms                # required; a group with ≥1 vswitch
+      to: services             # required; a group with ≥1 vswitch
+      direction: both          # "both" (default, mutual) | "egress" (one-way initiation)
 ```
 
-Rules: `from`/`to` must reference a group with ≥1 vswitch (exit 3); `from == to` is a no-op
-(warning); `internal_cidrs` is additive to the locked default internal set (RFC1918 supernets,
-`100.64/10`, loopback, link-local) that `internet: true` groups may not reach.
+`allow` entries reference network groups (from `vswitches[].group`):
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `from` | string | — (required) | A group with ≥1 vswitch; unknown group ⇒ exit 3. |
+| `to` | string | — (required) | A group with ≥1 vswitch; unknown group ⇒ exit 3. |
+| `direction` | string | `"both"` | `"both"` (mutual) \| `"egress"` (one-way initiation). |
+
+Rules: `from == to` is a no-op (intra-group is already allowed; plan warning); `internal_cidrs`
+entries must be valid CIDRs, are additive to the locked default internal set (RFC1918 supernets,
+`100.64/10`, loopback, link-local) that `internet: true` groups may not reach, and duplicates dedup
+silently.
 
 ### 3.8 List Directives (`remove` and `replace`)
 List fields (`mounts`, `networks`, `recipes`) concatenate by default. Inheritance behavior can be modified using directives:

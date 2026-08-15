@@ -76,6 +76,11 @@ Constraints were verified against the LXD 6.x reference documentation:
 
 ## 3. Manifest Schema
 
+> **Schema authority.** The canonical manifest-schema reference for `vswitches:` and
+> `network_policy:` is [`SPEC_MANIFEST.md`](SPEC_MANIFEST.md) (§3.6/§3.7), which mirrors the CUE
+> schemas in `internal/config/schemas/v2.cue`. The tables below are a self-contained summary for
+> this feature spec and must be kept in sync with `SPEC_MANIFEST.md`.
+
 Both new sections are **fleet-scoped** and typically live in `_base.yaml`; they are unioned across
 all loaded manifests for an invocation (§7).
 
@@ -468,6 +473,10 @@ In-memory fakes back the same interface for unit/integration tests.
 
 ## 12. Implementation Notes
 
+> The manifest-side details below (Go structs, merge semantics, CUE schemas) are documented
+> canonically in [`SPEC_MANIFEST.md`](SPEC_MANIFEST.md); they are summarized here for the feature
+> spec.
+
 **Go structs (`internal/config`)** — `VSwitchConfig` (`Name`, `Type`, `Driver`, `IPv4`, `IPv6`,
 `NAT *bool`, `Group`, `Internet *bool`; `NAT`/`Internet` nil defaults to `true`),
 `NetworkPolicyRule` (`From`, `To`, `Direction`; empty = `both`), `NetworkPolicy` (`InternalCIDRs`,
@@ -500,7 +509,9 @@ executor ordering/phase-abort/`network_results`; CLI end-to-end (envelope `netwo
 `network_results`, extension gate, NIC-subnet exit 3, live-state listing error exit 4,
 vswitch-less no-false-warning). `task lint` clean; full suite race-clean.
 
-Integration gates on a real LXD 6.9 daemon (in the `simulation/` nested-LXD harness):
+Integration gates on a real LXD 6.9 daemon, run in a disposable nested-LXD harness (the
+`simulation/` tree in the working checkout — a per-host development artifact that is not shipped
+with the repository):
 
 | Gate | Result |
 | :-- | :-- |

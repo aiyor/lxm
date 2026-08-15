@@ -1,0 +1,7 @@
+schema: lxm/config/v2
+include: [_base.yaml]
+name: app-a
+groups: [app]
+networks:
+  - name: eth0
+    parent: cbr0

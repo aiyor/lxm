@@ -1,0 +1,31 @@
+schema: lxm/config/v2
+base: true
+image: ubuntu:22.04
+user: ubuntu
+wait:
+  agent: 1m
+
+vswitches:
+  - name: vmbr0
+    ipv4: 10.30.0.1/24
+    group: vms
+  - name: vmbr1
+    ipv4: 10.31.0.1/24
+    group: vms
+  - name: cbr0
+    ipv4: 10.40.0.1/24
+    group: containers
+  - name: svcbr0
+    ipv4: 10.50.0.1/24
+    group: services
+  - name: labbr0
+    ipv4: 10.60.0.1/24
+    group: quarantine
+
+network_policy:
+  allow:
+    - from: vms
+      to: services                  # mutual
+    - from: containers
+      to: services
+      direction: egress             # one-way
