@@ -62,13 +62,17 @@ func TestReconciler_Create_DeviceShape(t *testing.T) {
 		t.Errorf("filesystem device must not carry io.bus, got %q", d["io.bus"])
 	}
 
-	// block managed: pool+source+io.bus, no path, no size
+	// block managed: pool+source, no path, no size, no io.bus (the default
+	// virtio-scsi bus is LXD's own default and is omitted from the device map).
 	d = post.Devices["disk-wal"]
-	if d == nil || d["type"] != "disk" || d["pool"] != "default" || d["source"] != "db-vm-wal" || d["io.bus"] != "virtio-scsi" {
+	if d == nil || d["type"] != "disk" || d["pool"] != "default" || d["source"] != "db-vm-wal" {
 		t.Fatalf("unexpected disk-wal device: %v", d)
 	}
 	if d["path"] != "" || d["size"] != "" {
 		t.Errorf("block device must not carry path/size, got path=%q size=%q", d["path"], d["size"])
+	}
+	if d["io.bus"] != "" {
+		t.Errorf("default-bus block device must not carry io.bus, got %q", d["io.bus"])
 	}
 
 	// filesystem external: source+path+readonly, no size
@@ -91,6 +95,58 @@ func TestReconciler_Create_DeviceShape(t *testing.T) {
 	}
 	if op := found["db-vm-wal"]; op.Op != "create" || op.ContentType != "block" || op.Size != "20GiB" {
 		t.Errorf("unexpected db-vm-wal op: %+v", op)
+	}
+}
+
+func TestReconciler_Create_ExplicitBus_EmitsIOBus(t *testing.T) {
+	rec := plan.NewReconciler()
+	conf := &config.Config{
+		Name:  "db-vm",
+		Type:  "virtual-machine",
+		Image: "ubuntu:24.04",
+		User:  "ubuntu",
+		Disks: []config.DiskConfig{
+			{Name: "wal", Size: "20GiB", Pool: "default", Bus: "nvme", Source: "db-vm-wal"},
+			{Name: "scsi", Size: "20GiB", Pool: "default", Bus: "virtio-scsi", Source: "db-vm-scsi"},
+		},
+	}
+	p, err := rec.Compute(conf, nil, nil, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	devs := p.Steps[0].InstancesPost.Devices
+	// Explicit non-default bus is emitted; explicit default bus is omitted.
+	if devs["disk-wal"]["io.bus"] != "nvme" {
+		t.Errorf("expected io.bus nvme, got %q", devs["disk-wal"]["io.bus"])
+	}
+	if devs["disk-scsi"]["io.bus"] != "" {
+		t.Errorf("explicit virtio-scsi is LXD's default and must be omitted, got %q", devs["disk-scsi"]["io.bus"])
+	}
+}
+
+func TestReconciler_Update_DefaultBusReconstructed(t *testing.T) {
+	// A live block device without io.bus (LXD default) must reconstruct as
+	// virtio-scsi so it converges with the manifest's materialized default.
+	rec := plan.NewReconciler()
+	conf := normalizedDisksVM()
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
+		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
+		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "", ""), // no io.bus
+		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
+	}, map[string]map[string]*api.StorageVolume{
+		"default": {
+			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
+			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
+		},
+		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
+	})
+
+	p, err := rec.Compute(conf, live, volumes, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Steps[0].Action != "noop" {
+		t.Errorf("expected noop when default bus is absent on the live device, got %q (diff: %+v)", p.Steps[0].Action, p.Steps[0].Diff)
 	}
 }
 

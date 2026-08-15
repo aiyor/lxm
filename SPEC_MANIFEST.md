@@ -207,7 +207,7 @@ disks:
 | `path` | string | — | Guest mount path (`#CleanMountPath`). **Presence selects filesystem mode**; absence selects block mode. Allowed with or without `source`. |
 | `source` | string | — | Name of a pre-existing custom storage volume in `pool`. **Presence selects external ownership**; absence selects lxm-managed (volume `<instance>-<name>`). Mutually exclusive with `size`. |
 | `readonly` | bool | `false` | Maps to device `readonly: "true"`. |
-| `bus` | string | `"virtio-scsi"` | `"virtio-scsi" \| "virtio-blk" \| "nvme"` → device `io.bus`. **Block mode only**; rejected when `path` is set. |
+| `bus` | string | `"virtio-scsi"` | `"virtio-scsi" \| "virtio-blk" \| "nvme"` → device `io.bus`. **Block mode only**; rejected when `path` is set. The default `virtio-scsi` is LXD's own bus default and is omitted from the device map (`io.bus` is emitted only for non-default buses). |
 
 Mode × ownership matrix (see [`STORAGE-SPEC.md`](STORAGE-SPEC.md) §3 for the full device shape):
 

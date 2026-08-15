@@ -102,8 +102,8 @@ disks:
 | :-- | :-- | :-- | :-- | :-- | :-- |
 | **FS (managed)** | derived `<inst>-<name>` | set | required | `filesystem` | `{type: disk, pool, source, path, readonly?}` |
 | **FS (external)** | set | set | forbidden | `filesystem` | `{type: disk, pool, source, path, readonly?}` |
-| **Block (managed)** | derived `<inst>-<name>` | — | required | `block` | `{type: disk, pool, source, io.bus, readonly?}` |
-| **Block (external)** | set | — | forbidden | `block` | `{type: disk, pool, source, io.bus, readonly?}` |
+| **Block (managed)** | derived `<inst>-<name>` | — | required | `block` | `{type: disk, pool, source, io.bus?, readonly?}` |
+| **Block (external)** | set | — | forbidden | `block` | `{type: disk, pool, source, io.bus?, readonly?}` |
 
 Two hard invariants:
 
@@ -111,6 +111,10 @@ Two hard invariants:
    declared name for external.
 2. **`size` never appears on a device map** (C2) — it is read/written via the storage-volume API
    only.
+3. **`io.bus` is emitted only for non-default buses.** `virtio-scsi` is LXD's own block-disk
+   default, so it is omitted from the device map — keeping the device valid on servers without the
+   `disk_io_bus` extension. Live reconstruction defaults a missing `io.bus` back to `virtio-scsi`
+   for block disks (§5.1).
 
 ### 3.1 Field reference (summary)
 
@@ -122,7 +126,7 @@ Two hard invariants:
 | `path` | string | — | Guest mount path (`#CleanMountPath`). Presence ⇒ filesystem mode; absence ⇒ block mode. |
 | `source` | string | — | Pre-existing custom volume name in `pool`. Presence ⇒ external ownership. |
 | `readonly` | bool | `false` | → device `readonly: "true"`. |
-| `bus` | string | `"virtio-scsi"` | `"virtio-scsi" \| "virtio-blk" \| "nvme"` → `io.bus`. **Block mode only**; rejected with `path`. |
+| `bus` | string | `"virtio-scsi"` | `"virtio-scsi" \| "virtio-blk" \| "nvme"` → `io.bus`. **Block mode only**; rejected with `path`. The default `virtio-scsi` is LXD's own bus default and is omitted from the device map. |
 
 ---
 

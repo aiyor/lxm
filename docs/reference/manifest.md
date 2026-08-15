@@ -381,7 +381,7 @@ disks:
 | `path` | string | — | Guest mount path. **Presence ⇒ filesystem mode**; absence ⇒ block mode. |
 | `source` | string | — | Pre-existing custom volume name in `pool`. **Presence ⇒ external ownership**. |
 | `readonly` | bool | `false` | Maps to device `readonly: "true"`. |
-| `bus` | string | `"virtio-scsi"` | `"virtio-scsi" \| "virtio-blk" \| "nvme"` → `io.bus`. **Block mode only**; rejected with `path`. |
+| `bus` | string | `"virtio-scsi"` | `"virtio-scsi" \| "virtio-blk" \| "nvme"` → `io.bus`. **Block mode only**; rejected with `path`. The default `virtio-scsi` is LXD's own bus default and is omitted from the device map. |
 
 Managed volumes are named `<instance>-<name>`; their `size` is managed via the storage-volume API
 (`size` never appears on the LXD device map). External volumes are probed at plan time — a missing

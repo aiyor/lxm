@@ -642,7 +642,11 @@ func buildDiskDevice(d config.DiskConfig) map[string]string {
 	}
 	if d.Path != "" {
 		props["path"] = d.Path
-	} else {
+	} else if d.Bus != "" && d.Bus != "virtio-scsi" {
+		// Only non-default io.bus values are emitted. virtio-scsi is LXD's own
+		// block-disk default, so omitting it keeps the device valid on servers
+		// without the disk_io_bus extension — the default needs no gate
+		// (STORAGE-SPEC §3).
 		props["io.bus"] = d.Bus
 	}
 	if d.Readonly {
@@ -1161,6 +1165,11 @@ func getLiveDisks(live *InstanceSnapshot, volumes map[string]map[string]*api.Sto
 			Source:   devProps["source"],
 			Readonly: devProps["readonly"] == "true",
 			Bus:      devProps["io.bus"],
+		}
+		if d.Path == "" && d.Bus == "" {
+			// Block-mode disks default to virtio-scsi (LXD's bus default); lxm
+			// omits the key on the device map, so reconstruct it here.
+			d.Bus = "virtio-scsi"
 		}
 		if vol := lookupVolume(volumes, d.Pool, d.Source); vol != nil {
 			d.Size = vol.Config["size"]
