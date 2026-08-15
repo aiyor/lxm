@@ -65,6 +65,44 @@ import (
 	shift?:     bool | *true
 })
 
+// Authoring disk object (VM-only data disk, STORAGE-SPEC §3). Two orthogonal
+// axes: mode (filesystem vs block, by `path`) and ownership (managed vs
+// external, by `source`). `path` and `source` are NOT mutually exclusive
+// (external filesystem volumes carry both); `size` and `bus` are conditional.
+// Forbidden-field guards use the established `!= _|_` pattern; the
+// complementary "size REQUIRED when source is unset" guard runs Go-side in
+// LoadConfig normalization (managed disks must declare a size).
+#DiskObjAuthoring: close({
+	name:      string & =~"^[a-z][a-z0-9-]{0,30}$" & != "root"
+	size?:     #ByteSize
+	pool?:     string | *"default"
+	P1="path"?:     #CleanMountPath
+	S1="source"?:   string
+	readonly?: bool | *false
+	B1="bus"?:      "virtio-scsi" | "virtio-blk" | "nvme"
+
+	// size is FORBIDDEN when the disk is external (source set)
+	if S1 != _|_ && size != _|_ {
+		_|_
+	}
+
+	// bus is FORBIDDEN in filesystem mode (path set)
+	if P1 != _|_ && B1 != _|_ {
+		_|_
+	}
+})
+
+// Resolved disk object (defaults materialized by the Go normalizer).
+#DiskObjResolved: close({
+	name:      string & =~"^[a-z][a-z0-9-]{0,30}$" & != "root"
+	size?:     #ByteSize
+	pool:      string
+	path?:     #CleanMountPath
+	source?:   string
+	readonly?: bool | *false
+	bus?:      "virtio-scsi" | "virtio-blk" | "nvme"
+})
+
 #LimitsAuthoring: close({
 	cpu?:    #CPUCountAuthoring
 	memory?: #ByteSize
@@ -154,6 +192,9 @@ import (
 		parent?: string | *"lxdbr0"
 	})]
 
+	// Data disks (VM-only, STORAGE-SPEC §3)
+	disks?: [...#DiskObjAuthoring]
+
 	// Fleet-scoped managed virtual switches (unioned across loaded manifests)
 	vswitches?: [...#VSwitchObjAuthoring]
 
@@ -192,11 +233,13 @@ import (
 		mounts?:   [...string]
 		networks?: [...string]
 		recipes?:  [...string]
+		disks?:    [...string]
 	})
 	replace?: close({
 		mounts?:   [...(#MountStr | #MountObjAuthoring)]
 		networks?: [...]
 		recipes?:  [...]
+		disks?:    [...#DiskObjAuthoring]
 	})
 
 	groups?: [...string]
@@ -232,6 +275,8 @@ import (
 		ipv4?:  string
 		parent: string
 	})]
+
+	disks?: [...#DiskObjResolved]
 
 	vswitches?: [...close({
 		name:     string

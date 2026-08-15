@@ -14,6 +14,7 @@ import (
 	"github.com/aiyor/lxm/internal/plan"
 	"github.com/aiyor/lxm/internal/recipe"
 	"github.com/canonical/lxd/shared/api"
+	"github.com/canonical/lxd/shared/units"
 )
 
 // ApplyOpts configures execution behavior.
@@ -73,20 +74,23 @@ type Executor interface {
 	Apply(ctx context.Context, p *plan.Plan, opts ApplyOpts) (*ApplyReport, error)
 }
 
-// Services bundles the instance and network LXD services used by the executor.
+// Services bundles the instance, network, and storage LXD services used by the
+// executor.
 type Services interface {
 	lxd.InstanceService
 	lxd.NetworkService
+	lxd.StorageService
 }
 
 type defaultExecutor struct {
-	lxdSvc lxd.InstanceService
-	netSvc lxd.NetworkService
+	lxdSvc     lxd.InstanceService
+	netSvc     lxd.NetworkService
+	storageSvc lxd.StorageService
 }
 
 // NewExecutor creates a new default Executor using the provided services.
 func NewExecutor(svc Services) Executor {
-	return &defaultExecutor{lxdSvc: svc, netSvc: svc}
+	return &defaultExecutor{lxdSvc: svc, netSvc: svc, storageSvc: svc}
 }
 
 func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpts) (*ApplyReport, error) {
@@ -123,6 +127,36 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 	var wg sync.WaitGroup
 
 	worstExitCode := 0
+
+	// Phase 0: storage volume ops (STORAGE-SPEC §10). VolumeOps must complete
+	// before any instance mutation (create/attach references the volumes) and
+	// before the network phase. A failure aborts the apply (phase-abort
+	// semantics, like the network phase) with exit 4. Dry-run never touches
+	// storage volumes (mirrors the executeStep/executeNetworkStep guards).
+	if !opts.DryRun {
+		storageFailed := false
+		for _, step := range p.Steps {
+			for _, op := range step.VolumeOps {
+				if err := e.executeVolumeOp(ctx, op); err != nil {
+					storageFailed = true
+					report.Errors = append(report.Errors, ErrorInfo{
+						Code:      "LXD_ERROR",
+						Container: step.Container,
+						Message:   fmt.Sprintf("storage volume %q in pool %q: %v", op.Name, op.Pool, err),
+					})
+					worstExitCode = selectWorstExitCode(worstExitCode, 4)
+					break
+				}
+			}
+			if storageFailed {
+				break
+			}
+		}
+		if storageFailed {
+			report.ExitCode = worstExitCode
+			return report, nil
+		}
+	}
 
 	// Phase 1: network steps (ACLs, then vswitches — §7.4, driven by C8).
 	// A network-step LXD error aborts the apply before any instance step runs
@@ -194,6 +228,79 @@ func sortNetworkSteps(steps []plan.NetworkStep) []plan.NetworkStep {
 		}
 	}
 	return out
+}
+
+// executeVolumeOp applies one idempotent storage-volume mutation (Phase 0,
+// STORAGE-SPEC §10). "create" ensures the volume exists with the right content
+// type and grows it when smaller; "grow" requires the volume to exist and grows
+// it when smaller. Shrink never happens here (rejected at plan time).
+func (e *defaultExecutor) executeVolumeOp(ctx context.Context, op plan.VolumeOp) error {
+	switch op.Op {
+	case "create":
+		vol, _, err := e.storageSvc.GetStoragePoolVolume(op.Pool, "custom", op.Name)
+		if err != nil {
+			if code, _ := e.lxdSvc.ClassifyLXDError(err, "lookup"); code == 5 {
+				return e.createVolume(ctx, op)
+			}
+			return err
+		}
+		if vol.ContentType != op.ContentType {
+			return fmt.Errorf("volume exists with content type %q, disk requires %q", vol.ContentType, op.ContentType)
+		}
+		return e.growIfNeeded(ctx, op)
+	case "grow":
+		return e.growIfNeeded(ctx, op)
+	default:
+		return fmt.Errorf("unknown volume op %q", op.Op)
+	}
+}
+
+func (e *defaultExecutor) createVolume(ctx context.Context, op plan.VolumeOp) error {
+	req := api.StorageVolumesPost{
+		Name:        op.Name,
+		Type:        "custom",
+		ContentType: op.ContentType,
+		StorageVolumePut: api.StorageVolumePut{
+			Config: map[string]string{},
+		},
+	}
+	if op.Size != "" {
+		req.Config["size"] = op.Size
+	}
+	return e.storageSvc.CreateStoragePoolVolume(op.Pool, req)
+}
+
+// growIfNeeded grows the volume when the desired size exceeds the live size.
+// No-ops when sizes are unparsable or already satisfied.
+func (e *defaultExecutor) growIfNeeded(ctx context.Context, op plan.VolumeOp) error {
+	vol, etag, err := e.storageSvc.GetStoragePoolVolume(op.Pool, "custom", op.Name)
+	if err != nil {
+		return err
+	}
+	if op.Size == "" {
+		return nil
+	}
+	liveSize := vol.Config["size"]
+	if liveSize == "" {
+		return nil
+	}
+	liveBytes, err := units.ParseByteSizeString(liveSize)
+	if err != nil {
+		return fmt.Errorf("parsing live size %q for volume %q: %w", liveSize, op.Name, err)
+	}
+	desiredBytes, err := units.ParseByteSizeString(op.Size)
+	if err != nil {
+		return fmt.Errorf("parsing desired size %q for volume %q: %w", op.Size, op.Name, err)
+	}
+	if desiredBytes <= liveBytes {
+		return nil
+	}
+	put := api.StorageVolumePut{Config: make(map[string]string, len(vol.Config)+1)}
+	for k, v := range vol.Config {
+		put.Config[k] = v
+	}
+	put.Config["size"] = op.Size
+	return e.storageSvc.UpdateStoragePoolVolume(op.Pool, "custom", op.Name, put, etag)
 }
 
 // stopBeforeDelete stops the instance so a non-forced delete can proceed.

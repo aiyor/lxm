@@ -176,7 +176,7 @@ name: dev-station
 
 ### `remove`
 
-Removes specific items from an inherited list. Matching rules: `remove.mounts` matches by normalized container path, `remove.networks` by interface name, `remove.recipes` by exact script path. A `remove` entry that matches nothing fails compilation.
+Removes specific items from an inherited list. Matching rules: `remove.mounts` matches by normalized container path, `remove.networks` by interface name, `remove.recipes` by exact script path, `remove.disks` by disk name. A `remove` entry that matches nothing fails compilation.
 
 ```yaml
 remove:
@@ -341,6 +341,55 @@ See [Configuring Networking → Managed virtual switches & network segmentation]
 the `parent:` join pattern, and the caveats.
 
 ---
+
+## Data disks (`disks`)
+
+Additional storage-pool volumes attached to **virtual machines** (VM-only in v1 — declaring `disks:`
+on a `type: container` fails with `exit 3`). Each disk is one of four combinations of two
+orthogonal axes:
+
+* **Mode** — filesystem (guest-mounted) vs block (raw device) — selected by `path` presence.
+* **Ownership** — lxm-managed (lxm provisions the volume) vs external (a pre-existing custom volume)
+  — selected by `source` presence.
+
+```yaml
+disks:
+  - name: data                    # filesystem (managed)
+    size: 100GiB                  # required (managed); forbidden when source set
+    path: /var/lib/postgresql     # presence ⇒ filesystem mode
+
+  - name: wal                     # block (managed)
+    size: 20GiB
+    bus: nvme                     # block-only; default "virtio-scsi"
+
+  - name: shared-fs               # filesystem (external)
+    source: web-root-vol          # pre-existing custom volume
+    pool: fast-pool
+    path: /srv/www
+    readonly: true
+
+  - name: shared-block            # block (external)
+    source: ceph-osd-vol
+    pool: fast-pool
+```
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `name` | string | — (required) | `^[a-z][a-z0-9-]{0,30}$`; not `root`. LXD device key `disk-<name>`. |
+| `size` | string | — | `#ByteSize`. **Required** when `source` unset (managed). **Forbidden** when `source` set (external). |
+| `pool` | string | `"default"` | Storage pool name. |
+| `path` | string | — | Guest mount path. **Presence ⇒ filesystem mode**; absence ⇒ block mode. |
+| `source` | string | — | Pre-existing custom volume name in `pool`. **Presence ⇒ external ownership**. |
+| `readonly` | bool | `false` | Maps to device `readonly: "true"`. |
+| `bus` | string | `"virtio-scsi"` | `"virtio-scsi" \| "virtio-blk" \| "nvme"` → `io.bus`. **Block mode only**; rejected with `path`. The default `virtio-scsi` is LXD's own bus default and is omitted from the device map. |
+
+Managed volumes are named `<instance>-<name>`; their `size` is managed via the storage-volume API
+(`size` never appears on the LXD device map). External volumes are probed at plan time — a missing
+external volume fails with `exit 4`. Growing a managed volume is an online update (no restart);
+shrinking is rejected at plan time (`exit 3`). Removing a disk from the manifest detaches the device
+only — lxm never deletes storage volumes.
+
+See `STORAGE-SPEC.md` (repository root) for the authoritative feature specification.
 
 ## Recipes
 
@@ -520,6 +569,10 @@ ssh_keys:
 | Mount source that is not absolute (resolved) | `exit 3` |
 | Mount destination `/`, `/proc`, `/sys`, `/dev` | `exit 3` |
 | Duplicate mount path or network name | `exit 3` |
+| Duplicate disk name / `disk` named `root` / mount–disk path collision | `exit 3` |
+| `disks:` on a `type: container` | `exit 3` |
+| Managed disk (`disks`) without `size`, or external disk (`source`) with `size` | `exit 3` |
+| Disk `bus` set in filesystem mode (`path`) | `exit 3` |
 | `remove` matching nothing | `exit 3` |
 | `cloud-init` and `cloud-init-file` both set | `exit 3` |
 | Unbound `{{ .Vars.* }}` / `{{ .Env.* }}` | `exit 3` |

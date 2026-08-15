@@ -24,6 +24,7 @@ type FakeInstanceServer struct {
 	RebuiltLogs []string
 	Snapshots   map[string]map[string]*api.InstanceSnapshot // containerName -> snapName -> snapshot
 	Nets        *Networks                                   // network + ACL backing state
+	Vols        *VolumeStore                                // custom storage volume backing state
 
 	// Optional custom hook functions
 	GetInstanceFunc         func(name string) (*api.Instance, string, error)
@@ -46,10 +47,11 @@ func NewFakeInstanceServer() *FakeInstanceServer {
 		ETags:      make(map[string]string),
 		Files:      make(map[string]map[string][]byte),
 		IPs:        make(map[string]string),
-		Extensions: map[string]bool{"instances_rebuild": true},
+		Extensions: map[string]bool{"instances_rebuild": true, "custom_block_volumes": true},
 		Snapshots:  make(map[string]map[string]*api.InstanceSnapshot),
 	}
 	f.AddNetworks()
+	f.AddStorage()
 	return f
 }
 
