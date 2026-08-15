@@ -121,7 +121,7 @@ Rules: `from`/`to` must reference a group with ≥1 vswitch (exit 3); `from == t
 (warning); `internal_cidrs` is additive to the locked default internal set (RFC1918 supernets,
 `100.64/10`, loopback, link-local) that `internet: true` groups may not reach.
 
-### 3.3 List Directives (`remove` and `replace`)
+### 3.8 List Directives (`remove` and `replace`)
 List fields (`mounts`, `networks`, `recipes`) concatenate by default. Inheritance behavior can be modified using directives:
 
 ```yaml

@@ -282,3 +282,27 @@ name: web-a
 		t.Fatalf("expected listing-error message, got: %s", stderr.String())
 	}
 }
+
+// TestRun_NoNetworkACLExtension_VswitchlessStillPlans is the N2 regression:
+// on a server without the network_acl extension the ACL listing must be
+// skipped (not 404-fail), so a vswitch-less fleet still plans cleanly.
+func TestRun_NoNetworkACLExtension_VswitchlessStillPlans(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer() // no network_acl extension
+	// Force the ACL endpoint to fail if it is ever called.
+	fake.GetNetworkACLsFunc = func() ([]api.NetworkACL, error) {
+		return nil, errors.New("network ACLs endpoint not found")
+	}
+	tmpDir := t.TempDir()
+	writeTestFile(t, filepath.Join(tmpDir, "inst-a.yaml"), `schema: lxm/config/v2
+name: inst-a
+image: ubuntu:22.04
+networks:
+  - name: eth0
+    parent: lxdbr0
+`)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"plan", tmpDir, "--format", "json"}, &stdout, &stderr, fake)
+	if code != 0 {
+		t.Fatalf("plan returned %d, want 0 (ACL listing must be gated on the extension). Stderr: %s", code, stderr.String())
+	}
+}

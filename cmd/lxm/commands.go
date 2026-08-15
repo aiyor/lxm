@@ -1503,23 +1503,6 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 							_ = netSvc.DeleteNetworkACL(probeName)
 							checks = append(checks, "[OK] bridge network ACL capability (probe create/delete)")
 						}
-
-						// D5 (§7.5, C6): warn when a managed bridge runs the
-						// iptables firewall driver — the compiler never emits
-						// a–b range subjects, so this is informational, but
-						// it is a specified doctor check.
-						if nets, err := netSvc.GetNetworks(); err == nil {
-							iptablesBridges := []string{}
-							for _, n := range nets {
-								if n.Type == "bridge" && n.Config["bridge.firewall"] == "iptables" {
-									iptablesBridges = append(iptablesBridges, n.Name)
-								}
-							}
-							if len(iptablesBridges) > 0 {
-								warnings = append(warnings, fmt.Sprintf("bridges %v use the iptables firewall driver (C6: a-b IP-range subjects unsupported; lxm emits CIDR subjects only)", iptablesBridges))
-								checks = append(checks, "[WARN] iptables firewall backend")
-							}
-						}
 					}
 				} else {
 					warnings = append(warnings, "LXD server lacks the network_acl extension; network_policy (vswitches groups) is unavailable")

@@ -70,12 +70,18 @@ func computeNetworkPlan(svc lxd.InstanceService, loaded []*config.Config, netRec
 			for i := range nets {
 				live.Networks[nets[i].Name] = &nets[i]
 			}
-			acls, err := netSvc.GetNetworkACLs()
-			if err != nil {
-				return nil, nil, &exitError{code: 4, err: fmt.Errorf("listing LXD network ACLs: %w", err)}
-			}
-			for i := range acls {
-				live.ACLs[acls[i].Name] = &acls[i]
+			// The ACL listing is only meaningful (and only safe to call) when
+			// the server actually has the network_acl extension; otherwise the
+			// endpoint 404s and would turn every vswitch-less plan into exit 4
+			// (round-2 review N2).
+			if svc.HasExtension("network_acl") {
+				acls, err := netSvc.GetNetworkACLs()
+				if err != nil {
+					return nil, nil, &exitError{code: 4, err: fmt.Errorf("listing LXD network ACLs: %w", err)}
+				}
+				for i := range acls {
+					live.ACLs[acls[i].Name] = &acls[i]
+				}
 			}
 		}
 	}
