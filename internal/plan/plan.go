@@ -29,6 +29,22 @@ type InstanceSnapshot struct {
 	Ephemeral       bool                         `json:"ephemeral"`
 	ETag            string                       `json:"etag"`
 	HasSnapshots    bool                         `json:"has_snapshots"`
+	// StorageVolumes carries live custom-volume metadata (pool → name →
+	// volume) for the pools referenced by loaded manifests. Populated by
+	// fetchLiveSnapshots so Reconciler.Compute stays a pure offline function
+	// (STORAGE-SPEC §5.1). Data disks read their live `size` from here, never
+	// from the device map (LXD forbids `size` on non-root device maps).
+	StorageVolumes map[string]map[string]*api.StorageVolume `json:"storage_volumes,omitempty"`
+}
+
+// VolumeOp is a storage-volume mutation that must complete before the owning
+// instance step runs (Phase 0, STORAGE-SPEC §10). Ops are idempotent.
+type VolumeOp struct {
+	Op          string `json:"op"` // "create" | "grow"
+	Pool        string `json:"pool"`
+	Name        string `json:"name"`
+	ContentType string `json:"content_type"` // "filesystem" | "block"
+	Size        string `json:"size,omitempty"`
 }
 
 // Plan represents a complete, serializable reconciliation plan.
@@ -56,9 +72,23 @@ type Step struct {
 	RebuildFallback bool                     `json:"rebuild_fallback,omitempty"`
 	PurgeSnapshots  bool                     `json:"purge_snapshots,omitempty"`
 	PowerTransition string                   `json:"power_transition,omitempty"` // "start" | "stop" | "restart"
+	VolumeOps       []VolumeOp               `json:"volume_ops,omitempty"`
 	InstancesPost   *api.InstancesPost       `json:"instances_post,omitempty"`
 	InstancePut     *api.InstancePut         `json:"instance_put,omitempty"`
 	RebuildPost     *api.InstanceRebuildPost `json:"rebuild_post,omitempty"`
+}
+
+// MissingVolumeError reports an external (source-referenced) custom storage
+// volume that does not exist at plan time. Surfaced as exit 4 (LXD_ERROR).
+type MissingVolumeError struct {
+	Instance string
+	Disk     string
+	Pool     string
+	Volume   string
+}
+
+func (e *MissingVolumeError) Error() string {
+	return fmt.Sprintf(`external volume "%s/%s" referenced by disk "%s" of instance "%s" does not exist`, e.Pool, e.Volume, e.Disk, e.Instance)
 }
 
 // FieldDiff records an exact field-level delta between desired and live state.
@@ -165,6 +195,14 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		}
 		step.InstancesPost = postPayload
 
+		// Storage volume pre-provisioning (managed disks) and external-volume
+		// existence probe (STORAGE-SPEC §5.3/§7.6). Volumes live on the live
+		// map's snapshots; the instance itself does not exist yet.
+		step.VolumeOps = buildCreateVolumeOps(manifest)
+		if err := checkExternalVolumes(manifest, liveStorageVolumes(live)); err != nil {
+			return nil, err
+		}
+
 		// Attach recipe steps for new container
 		step.Recipes = buildRecipeSteps(manifest)
 
@@ -180,7 +218,11 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 
 	// 3. Instance exists — compare live state against desired state
 	step.ETag = liveInst.ETag
-	diffs, requiresRecreate := computeDiffs(manifest, liveInst)
+	diffs, requiresRecreate, volumeOps, err := computeDiffs(manifest, liveInst)
+	if err != nil {
+		return nil, err
+	}
+	step.VolumeOps = volumeOps
 
 	// Check image change (RequiresRecreate)
 	if requiresRecreate {
@@ -214,6 +256,14 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 			return nil, fmt.Errorf("building recreate payload: %w", err)
 		}
 		step.InstancesPost = postPayload
+
+		// Managed volumes persist across an instance recreate (never deleted);
+		// idempotent create keeps them provisioned. External volumes are probed
+		// so a recreate does not fail late at apply.
+		step.VolumeOps = buildCreateVolumeOps(manifest)
+		if err := checkExternalVolumes(manifest, liveStorageVolumes(live)); err != nil {
+			return nil, err
+		}
 
 		// Recipes must be re-run on recreate
 		step.Recipes = buildRecipeSteps(manifest)
@@ -263,7 +313,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 			step.Diff = append(step.Diff, FieldDiff{
 				Field: "state", Old: liveState, New: desiredState,
 			})
-		} else if liveState == "running" && hasVMConfigDiff(diffs) {
+		} else if liveState == "running" && (hasVMConfigDiff(diffs) || hasDiskRestartDiff(diffs)) {
 			step.PowerTransition = "restart"
 		}
 	case powerStateChanged:
@@ -408,6 +458,11 @@ func buildInstancesPost(manifest *config.Config) (*api.InstancesPost, error) {
 		post.Devices[devName] = props
 	}
 
+	// 6. Disks (data disks carry source, never size — STORAGE-SPEC §3)
+	for _, d := range manifest.Disks {
+		post.Devices["disk-"+d.Name] = buildDiskDevice(d)
+	}
+
 	return post, nil
 }
 
@@ -495,7 +550,11 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.Ins
 		}
 	}
 
-	// 5. Copy live non-managed devices (preserving root and custom non-lxm devices)
+	// 5. Copy live non-managed devices (preserving root and custom non-lxm
+	// devices). NIC devices are rebuilt from the manifest (step 7). Disk
+	// devices are partitioned by key prefix (STORAGE-SPEC §5.1): mount*
+	// (rebuilt as mounts), disk-* (rebuilt as data disks), and foreign
+	// hand-added disk devices (preserved verbatim).
 	for dev, props := range live.Devices {
 		if dev == "root" {
 			if manifest.Limits == nil || manifest.Limits.Disk == "" {
@@ -508,6 +567,15 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.Ins
 			continue
 		}
 		if props["type"] != "disk" && props["type"] != "nic" {
+			devCopy := make(map[string]string)
+			for k, v := range props {
+				devCopy[k] = v
+			}
+			put.Devices[dev] = devCopy
+			continue
+		}
+		// Disk devices: preserve only foreign ones (no mount* / disk-* prefix).
+		if props["type"] == "disk" && !strings.HasPrefix(dev, "mount") && !strings.HasPrefix(dev, "disk-") {
 			devCopy := make(map[string]string)
 			for k, v := range props {
 				devCopy[k] = v
@@ -560,7 +628,32 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.Ins
 		put.Devices[devName] = props
 	}
 
+	// 8. Rebuild Disks (data disks carry source, never size)
+	for _, d := range manifest.Disks {
+		put.Devices["disk-"+d.Name] = buildDiskDevice(d)
+	}
+
 	return put, nil
+}
+
+// buildDiskDevice renders a DiskConfig as a LXD device map. It always carries
+// `source` and never `size` (LXD forbids `size` on non-root device maps);
+// filesystem mode adds `path`, block mode adds `io.bus` (STORAGE-SPEC §3).
+func buildDiskDevice(d config.DiskConfig) map[string]string {
+	props := map[string]string{
+		"type":   "disk",
+		"pool":   d.Pool,
+		"source": d.Source,
+	}
+	if d.Path != "" {
+		props["path"] = d.Path
+	} else {
+		props["io.bus"] = d.Bus
+	}
+	if d.Readonly {
+		props["readonly"] = "true"
+	}
+	return props
 }
 
 func isTypeChange(diffs []FieldDiff) bool {
@@ -624,9 +717,10 @@ func areMountsEqual(manifestMounts, liveMounts []config.Mount) bool {
 	return true
 }
 
-func computeDiffs(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff, bool) {
+func computeDiffs(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff, bool, []VolumeOp, error) {
 	var diffs []FieldDiff
 	requiresRecreate := false
+	var volumeOps []VolumeOp
 
 	// 1. Instance Type Invariant
 	if live.Type != "" && manifest.Type != "" && live.Type != manifest.Type {
@@ -768,7 +862,171 @@ func computeDiffs(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff,
 		})
 	}
 
-	return diffs, requiresRecreate
+	// 5. Disks (data disks, STORAGE-SPEC §5.2)
+	diskDiffs, diskOps, err := diffDisks(manifest, live)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	diffs = append(diffs, diskDiffs...)
+	volumeOps = append(volumeOps, diskOps...)
+
+	return diffs, requiresRecreate, volumeOps, nil
+}
+
+// diffDisks compares resolved manifest disks against live data-disk devices
+// order-insensitively and returns the field diffs plus any storage-volume
+// operations required (create/grow). Errors are config-level (shrink, mode
+// switch) or state-level (missing external volume).
+func diffDisks(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff, []VolumeOp, error) {
+	var diffs []FieldDiff
+	var ops []VolumeOp
+
+	// External volumes referenced by the manifest must exist regardless of
+	// whether the disk is being added or updated (STORAGE-SPEC §7.6).
+	if err := checkExternalVolumes(manifest, live.StorageVolumes); err != nil {
+		return nil, nil, err
+	}
+
+	liveByName := make(map[string]config.DiskConfig)
+	for _, ld := range getLiveDisks(live) {
+		liveByName[ld.Name] = ld
+	}
+
+	for _, md := range manifest.Disks {
+		ld, exists := liveByName[md.Name]
+		if !exists {
+			// Disk added: hotplug (update) or part of create. Managed disks
+			// need their volume provisioned first (Phase 0).
+			diffs = append(diffs, FieldDiff{Field: "disks[" + md.Name + "]", Old: nil, New: md})
+			ops = append(ops, managedDiskCreateOps(manifest, md)...)
+			continue
+		}
+
+		if md.Pool != ld.Pool {
+			diffs = append(diffs, FieldDiff{Field: fmt.Sprintf("disks[%s].pool", md.Name), Old: ld.Pool, New: md.Pool})
+			// Managed: provision a fresh volume in the new pool (old volume
+			// orphaned, never deleted). External: device re-points only.
+			ops = append(ops, managedDiskCreateOps(manifest, md)...)
+		}
+
+		if md.Path != ld.Path {
+			if md.Path == "" || ld.Path == "" {
+				// filesystem ⇄ block switch: volume name + content type are
+				// fixed per pool — re-provisioning needs manual disposal.
+				return nil, nil, fmt.Errorf(`disk %q of instance %q mode switch (filesystem ⇄ block) cannot be reconciled automatically; remove the disk, re-provision the volume manually, and re-add it with the new mode`, md.Name, manifest.Name)
+			}
+			diffs = append(diffs, FieldDiff{Field: fmt.Sprintf("disks[%s].path", md.Name), Old: ld.Path, New: md.Path})
+		}
+
+		if md.Source != ld.Source {
+			diffs = append(diffs, FieldDiff{Field: fmt.Sprintf("disks[%s].source", md.Name), Old: ld.Source, New: md.Source})
+		}
+
+		if md.Readonly != ld.Readonly {
+			diffs = append(diffs, FieldDiff{Field: fmt.Sprintf("disks[%s].readonly", md.Name), Old: ld.Readonly, New: md.Readonly})
+		}
+
+		if md.Bus != ld.Bus {
+			diffs = append(diffs, FieldDiff{Field: fmt.Sprintf("disks[%s].bus", md.Name), Old: ld.Bus, New: md.Bus})
+		}
+
+		// size is compared only for managed disks (external size is unmanaged).
+		if md.Size != "" && md.Size != ld.Size {
+			if isDiskShrink(ld.Size, md.Size) {
+				return nil, nil, fmt.Errorf(`disk %q of instance %q cannot be shrunk (%s → %s); storage volumes cannot be shrunk in place — delete and recreate the volume to provision a smaller disk`, md.Name, manifest.Name, ld.Size, md.Size)
+			}
+			diffs = append(diffs, FieldDiff{Field: fmt.Sprintf("disks[%s].size", md.Name), Old: ld.Size, New: md.Size})
+			ops = append(ops, VolumeOp{Op: "grow", Pool: md.Pool, Name: md.Source, ContentType: diskContentType(md), Size: md.Size})
+		}
+	}
+
+	// Disks removed from the manifest: detach only (never delete the volume).
+	manifestByName := make(map[string]config.DiskConfig)
+	for _, md := range manifest.Disks {
+		manifestByName[md.Name] = md
+	}
+	for _, ld := range getLiveDisks(live) {
+		if _, exists := manifestByName[ld.Name]; !exists {
+			diffs = append(diffs, FieldDiff{Field: "disks[" + ld.Name + "]", Old: ld, New: nil})
+		}
+	}
+
+	return diffs, ops, nil
+}
+
+// buildCreateVolumeOps returns the idempotent create ops for all managed disks
+// in a create/recreate plan (external disks need no provisioning).
+func buildCreateVolumeOps(manifest *config.Config) []VolumeOp {
+	var ops []VolumeOp
+	for _, d := range manifest.Disks {
+		ops = append(ops, managedDiskCreateOps(manifest, d)...)
+	}
+	return ops
+}
+
+// managedDiskCreateOps returns a create op for a managed disk (size set), or
+// none for an external disk. A create op is idempotent: create if absent, grow
+// if smaller.
+func managedDiskCreateOps(manifest *config.Config, d config.DiskConfig) []VolumeOp {
+	if d.Size == "" {
+		return nil // external: volume is not provisioned by lxm
+	}
+	return []VolumeOp{{
+		Op:          "create",
+		Pool:        d.Pool,
+		Name:        d.Source,
+		ContentType: diskContentType(d),
+		Size:        d.Size,
+	}}
+}
+
+// diskContentType returns the LXD volume content type for a disk's mode.
+func diskContentType(d config.DiskConfig) string {
+	if d.Path != "" {
+		return "filesystem"
+	}
+	return "block"
+}
+
+// checkExternalVolumes verifies every external (source-referenced) disk has a
+// live custom volume. A missing volume is a plan-time error surfaced as exit 4
+// (STORAGE-SPEC §7.6).
+func checkExternalVolumes(manifest *config.Config, volumes map[string]map[string]*api.StorageVolume) error {
+	if manifest == nil {
+		return nil
+	}
+	for _, d := range manifest.Disks {
+		if d.Size != "" {
+			continue // managed: volume is provisioned by lxm
+		}
+		var found bool
+		if volumes != nil {
+			if poolVols, ok := volumes[d.Pool]; ok {
+				if _, ok := poolVols[d.Source]; ok {
+					found = true
+				}
+			}
+		}
+		if !found {
+			return &MissingVolumeError{Instance: manifest.Name, Disk: d.Name, Pool: d.Pool, Volume: d.Source}
+		}
+	}
+	return nil
+}
+
+// hasDiskRestartDiff reports whether a disk field change requires a running VM
+// restart (QEMU device re-plug or agent remount on boot): path (filesystem
+// remount), source (external volume re-point), or bus (block re-plug).
+func hasDiskRestartDiff(diffs []FieldDiff) bool {
+	for _, d := range diffs {
+		if !strings.HasPrefix(d.Field, "disks[") {
+			continue
+		}
+		if strings.HasSuffix(d.Field, ".path") || strings.HasSuffix(d.Field, ".source") || strings.HasSuffix(d.Field, ".bus") {
+			return true
+		}
+	}
+	return false
 }
 
 func getLiveImage(live *InstanceSnapshot) string {
@@ -849,7 +1107,11 @@ func isHexFingerprint(s string) bool {
 func getLiveMounts(live *InstanceSnapshot) config.Mounts {
 	var mounts config.Mounts
 	for devName, devProps := range live.Devices {
-		if devProps["type"] == "disk" && devName != "root" {
+		// Partition by device-key prefix (STORAGE-SPEC §5.1): only mount*
+		// devices (mount%d and legacy mount-<path>) are host mounts. Non-root
+		// disk devices with other keys (disk-* data disks, foreign
+		// hand-added disks) are not mounts and are ignored here.
+		if devProps["type"] == "disk" && devName != "root" && strings.HasPrefix(devName, "mount") {
 			rec := devProps["recursive"] == "true"
 			ro := devProps["readonly"] == "true"
 			shiftVal := (devProps["shift"] == "true" || devProps["shift"] == "")
@@ -864,6 +1126,56 @@ func getLiveMounts(live *InstanceSnapshot) config.Mounts {
 	}
 	sortMounts(mounts)
 	return mounts
+}
+
+// getLiveDisks reconstructs DiskConfig values from live devices whose key
+// starts with "disk-" (data disks, STORAGE-SPEC §5.1). `size` is read from the
+// storage-volume metadata on the snapshot, never from the device map (LXD
+// forbids `size` on non-root device maps).
+func getLiveDisks(live *InstanceSnapshot) []config.DiskConfig {
+	var disks []config.DiskConfig
+	for devName, devProps := range live.Devices {
+		if devProps["type"] != "disk" || !strings.HasPrefix(devName, "disk-") {
+			continue
+		}
+		d := config.DiskConfig{
+			Name:     strings.TrimPrefix(devName, "disk-"),
+			Pool:     devProps["pool"],
+			Path:     devProps["path"],
+			Source:   devProps["source"],
+			Readonly: devProps["readonly"] == "true",
+			Bus:      devProps["io.bus"],
+		}
+		if vol := lookupVolume(live, d.Pool, d.Source); vol != nil {
+			d.Size = vol.Config["size"]
+		}
+		disks = append(disks, d)
+	}
+	sort.Slice(disks, func(i, j int) bool { return disks[i].Name < disks[j].Name })
+	return disks
+}
+
+// lookupVolume returns the live custom volume for pool/name, or nil.
+func lookupVolume(live *InstanceSnapshot, pool, name string) *api.StorageVolume {
+	if live == nil || live.StorageVolumes == nil {
+		return nil
+	}
+	if poolVols, ok := live.StorageVolumes[pool]; ok {
+		return poolVols[name]
+	}
+	return nil
+}
+
+// liveStorageVolumes extracts the shared custom-volume map from any snapshot in
+// the live map (all snapshots carry the same map, STORAGE-SPEC §5.1). Used for
+// the create path where the instance itself has no snapshot yet.
+func liveStorageVolumes(live map[string]*InstanceSnapshot) map[string]map[string]*api.StorageVolume {
+	for _, snap := range live {
+		if snap != nil && snap.StorageVolumes != nil {
+			return snap.StorageVolumes
+		}
+	}
+	return nil
 }
 
 func getLiveNetworks(live *InstanceSnapshot) []config.NetworkConfig {

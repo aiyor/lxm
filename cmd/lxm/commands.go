@@ -111,7 +111,11 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				return err
 			}
 
-			liveSnapshots, err := fetchLiveSnapshots(svc)
+			if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
+				return err
+			}
+
+			liveSnapshots, err := fetchLiveSnapshots(svc, selectedConfigs)
 			if err != nil {
 				return &exitError{code: 4, err: fmt.Errorf("fetching live instance state: %w", err)}
 			}
@@ -127,7 +131,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			for _, conf := range selectedConfigs {
 				p, err := reconciler.Compute(conf, liveSnapshots, hasRebuild)
 				if err != nil {
-					return &exitError{code: 3, err: fmt.Errorf("computing reconciliation plan: %w", err)}
+					return planComputeError(err)
 				}
 				combinedPlan.Steps = append(combinedPlan.Steps, p.Steps...)
 				combinedPlan.Warnings = append(combinedPlan.Warnings, p.Warnings...)
@@ -281,7 +285,10 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 
 			svc, err := getSvc()
 			if err == nil && svc != nil {
-				liveSnapshots, _ = fetchLiveSnapshots(svc)
+				if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
+					return err
+				}
+				liveSnapshots, _ = fetchLiveSnapshots(svc, selectedConfigs)
 				hasRebuild = svc.HasExtension("instances_rebuild")
 			}
 
@@ -294,7 +301,7 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			for _, conf := range selectedConfigs {
 				p, err := reconciler.Compute(conf, liveSnapshots, hasRebuild)
 				if err != nil {
-					return &exitError{code: 3, err: fmt.Errorf("computing reconciliation plan: %w", err)}
+					return planComputeError(err)
 				}
 				combinedPlan.Steps = append(combinedPlan.Steps, p.Steps...)
 				combinedPlan.Warnings = append(combinedPlan.Warnings, p.Warnings...)
@@ -382,14 +389,17 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 
 			svc, err := getSvc()
 			if err == nil && svc != nil {
-				liveSnapshots, _ = fetchLiveSnapshots(svc)
+				if err := checkDiskExtensions(svc, []*config.Config{conf}); err != nil {
+					return err
+				}
+				liveSnapshots, _ = fetchLiveSnapshots(svc, []*config.Config{conf})
 				hasRebuild = svc.HasExtension("instances_rebuild")
 			}
 
 			reconciler := plan.NewReconciler()
 			p, err := reconciler.Compute(conf, liveSnapshots, hasRebuild)
 			if err != nil {
-				return &exitError{code: 3, err: fmt.Errorf("computing diff: %w", err)}
+				return planComputeError(err)
 			}
 			lastComputedPlan = p
 
@@ -1608,10 +1618,71 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 	return cmd
 }
 
-func fetchLiveSnapshots(svc lxd.InstanceService) (map[string]*plan.InstanceSnapshot, error) {
+// planComputeError maps a reconciler.Compute error to its exit code. A missing
+// external storage volume is a state-level error (exit 4, LXD_ERROR); every
+// other plan error is a manifest/config-level error (exit 3, CONFIG_ERROR) —
+// STORAGE-SPEC §7.6/§11.
+func planComputeError(err error) error {
+	var mve *plan.MissingVolumeError
+	if errors.As(err, &mve) {
+		return &exitError{code: 4, err: err}
+	}
+	return &exitError{code: 3, err: err}
+}
+
+// checkDiskExtensions gates block-mode disks on the LXD custom_block_volumes
+// extension (STORAGE-SPEC §9). A block-mode disk (path unset) declared while
+// the extension is absent is a plan-time error, exit 4.
+func checkDiskExtensions(svc lxd.InstanceService, configs []*config.Config) error {
+	if svc == nil {
+		return nil
+	}
+	hasBlock := false
+	for _, conf := range configs {
+		for _, d := range conf.Disks {
+			if d.Path == "" {
+				hasBlock = true
+				break
+			}
+		}
+		if hasBlock {
+			break
+		}
+	}
+	if hasBlock && !svc.HasExtension("custom_block_volumes") {
+		return &exitError{code: 4, err: fmt.Errorf("LXD server lacks the custom_block_volumes extension; block-mode disks require LXD with custom block volume support")}
+	}
+	return nil
+}
+
+func fetchLiveSnapshots(svc lxd.InstanceService, configs []*config.Config) (map[string]*plan.InstanceSnapshot, error) {
 	instances, err := svc.ListInstances()
 	if err != nil {
 		return nil, err
+	}
+
+	// Live custom-volume metadata for the pools referenced by loaded manifests,
+	// so disk size diffs and the external-volume probe work offline (plan).
+	volumes := make(map[string]map[string]*api.StorageVolume)
+	if storageSvc, ok := svc.(lxd.StorageService); ok {
+		seenPool := make(map[string]bool)
+		for _, conf := range configs {
+			for _, d := range conf.Disks {
+				if d.Pool == "" || seenPool[d.Pool] {
+					continue
+				}
+				seenPool[d.Pool] = true
+				poolVols := make(map[string]*api.StorageVolume)
+				if vols, err := storageSvc.GetStoragePoolVolumes(d.Pool); err == nil {
+					for i := range vols {
+						if vols[i].Type == "custom" {
+							poolVols[vols[i].Name] = &vols[i]
+						}
+					}
+				}
+				volumes[d.Pool] = poolVols
+			}
+		}
 	}
 
 	result := make(map[string]*plan.InstanceSnapshot)
@@ -1643,6 +1714,7 @@ func fetchLiveSnapshots(svc lxd.InstanceService) (map[string]*plan.InstanceSnaps
 			Ephemeral:       inst.Ephemeral,
 			ETag:            etag,
 			HasSnapshots:    len(full.Snapshots) > 0,
+			StorageVolumes:  volumes,
 		}
 	}
 	return result, nil

@@ -105,6 +105,17 @@ type NetworkService interface {
 	DeleteNetworkACL(name string) error
 }
 
+// StorageService defines the interface for interacting with LXD storage pools
+// and custom volumes (the disks: feature surface, STORAGE-SPEC §9). Volume
+// mutations return asynchronous LXD Operations that must be awaited.
+type StorageService interface {
+	GetStoragePoolVolume(pool, volType, name string) (*api.StorageVolume, string, error)
+	GetStoragePoolVolumes(pool string) ([]api.StorageVolume, error)
+	CreateStoragePoolVolume(pool string, vol api.StorageVolumesPost) error
+	UpdateStoragePoolVolume(pool, volType, name string, vol api.StorageVolumePut, etag string) error
+	DeleteStoragePoolVolume(pool, volType, name string) error
+}
+
 type lxdService struct {
 	client lxd_client.InstanceServer
 }
@@ -294,6 +305,38 @@ func (s *lxdService) UpdateNetworkACL(name string, acl api.NetworkACLPut, etag s
 
 func (s *lxdService) DeleteNetworkACL(name string) error {
 	return s.client.DeleteNetworkACL(name)
+}
+
+func (s *lxdService) GetStoragePoolVolume(pool, volType, name string) (*api.StorageVolume, string, error) {
+	return s.client.GetStoragePoolVolume(pool, volType, name)
+}
+
+func (s *lxdService) GetStoragePoolVolumes(pool string) ([]api.StorageVolume, error) {
+	return s.client.GetStoragePoolVolumes(pool)
+}
+
+func (s *lxdService) CreateStoragePoolVolume(pool string, vol api.StorageVolumesPost) error {
+	op, err := s.client.CreateStoragePoolVolume(pool, vol)
+	if err != nil {
+		return err
+	}
+	return waitOpContext(context.Background(), op)
+}
+
+func (s *lxdService) UpdateStoragePoolVolume(pool, volType, name string, vol api.StorageVolumePut, etag string) error {
+	op, err := s.client.UpdateStoragePoolVolume(pool, volType, name, vol, etag)
+	if err != nil {
+		return err
+	}
+	return waitOpContext(context.Background(), op)
+}
+
+func (s *lxdService) DeleteStoragePoolVolume(pool, volType, name string) error {
+	op, err := s.client.DeleteStoragePoolVolume(pool, volType, name)
+	if err != nil {
+		return err
+	}
+	return waitOpContext(context.Background(), op)
 }
 
 func (s *lxdService) HasExtension(name string) bool {

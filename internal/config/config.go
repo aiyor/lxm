@@ -149,6 +149,7 @@ type RemoveDirective struct {
 	Mounts   []string `yaml:"mounts,omitempty"`
 	Networks []string `yaml:"networks,omitempty"`
 	Recipes  []string `yaml:"recipes,omitempty"`
+	Disks    []string `yaml:"disks,omitempty"`
 }
 
 // ReplaceDirective defines wholesale replacements for inherited lists.
@@ -156,6 +157,7 @@ type ReplaceDirective struct {
 	Mounts   []Mount         `yaml:"mounts,omitempty"`
 	Networks []NetworkConfig `yaml:"networks,omitempty"`
 	Recipes  []RecipeGroup   `yaml:"recipes,omitempty"`
+	Disks    []DiskConfig    `yaml:"disks,omitempty"`
 }
 
 // Config defines the desired state for an instance.
@@ -173,6 +175,7 @@ type Config struct {
 	User             string            `yaml:"user,omitempty"`
 	Mounts           Mounts            `yaml:"mounts,omitempty"`
 	Networks         []NetworkConfig   `yaml:"networks,omitempty"`
+	Disks            []DiskConfig      `yaml:"disks,omitempty"`
 	VSwitches        []VSwitchConfig   `yaml:"vswitches,omitempty"`
 	NetworkPolicy    *NetworkPolicy    `yaml:"network_policy,omitempty"`
 	CloudInitInclude []string          `yaml:"cloud-init-include,omitempty"`
@@ -307,6 +310,19 @@ type NetworkConfig struct {
 	Name   string `yaml:"name"`             // Defaults to eth0
 	IPv4   string `yaml:"ipv4,omitempty"`   // e.g., 10.0.0.10
 	Parent string `yaml:"parent,omitempty"` // Defaults to lxdbr0
+}
+
+// DiskConfig models an additional managed storage disk (VMs only). The two
+// orthogonal axes — mode (filesystem vs block, by Path) and ownership (managed
+// vs external, by Source) — are documented in STORAGE-SPEC.md §3.
+type DiskConfig struct {
+	Name     string `yaml:"name"`
+	Size     string `yaml:"size,omitempty"`
+	Pool     string `yaml:"pool,omitempty"`
+	Path     string `yaml:"path,omitempty"`
+	Source   string `yaml:"source,omitempty"`
+	Readonly bool   `yaml:"readonly,omitempty"`
+	Bus      string `yaml:"bus,omitempty"`
 }
 
 // VSwitchConfig models a managed LXD virtual switch (fleet-scoped).
@@ -541,13 +557,26 @@ func (conf *Config) validateCommon(configBaseDir string) error {
 
 // ValidatePostMerge checks constraints that only make sense after config resolution.
 func ValidatePostMerge(conf *Config) error {
-	seenMounts := make(map[string]bool)
-	for i, m := range conf.Mounts {
+	// Union of mount and filesystem-disk destination paths must be unique
+	// (STORAGE-SPEC §7.2): LXD rejects duplicate device paths, and silently
+	// shadowing one with the other would be a correctness hazard.
+	seenPaths := make(map[string]string) // cleaned path -> origin
+	for _, m := range conf.Mounts {
 		cleanP := filepath.Clean(m.Path)
-		if seenMounts[cleanP] {
-			return fmt.Errorf("duplicate mount path %q (mount %d)", m.Path, i)
+		if origin, exists := seenPaths[cleanP]; exists {
+			return fmt.Errorf("duplicate mount path %q (defined in %s and mounts)", m.Path, origin)
 		}
-		seenMounts[cleanP] = true
+		seenPaths[cleanP] = "mounts"
+	}
+	for _, d := range conf.Disks {
+		if d.Path == "" {
+			continue
+		}
+		cleanP := filepath.Clean(d.Path)
+		if origin, exists := seenPaths[cleanP]; exists {
+			return fmt.Errorf("duplicate mount path %q (defined in %s and disk %q)", d.Path, origin, d.Name)
+		}
+		seenPaths[cleanP] = fmt.Sprintf("disk %q", d.Name)
 	}
 
 	seenNetworks := make(map[string]bool)
@@ -560,6 +589,20 @@ func ValidatePostMerge(conf *Config) error {
 			return fmt.Errorf("duplicate network name %q (network %d)", name, i)
 		}
 		seenNetworks[name] = true
+	}
+
+	seenDisks := make(map[string]bool)
+	for i, d := range conf.Disks {
+		if d.Name == "" {
+			return fmt.Errorf("disk %d: name is required", i)
+		}
+		if d.Name == "root" {
+			return fmt.Errorf("disk %d: name %q is reserved for the root volume", i, d.Name)
+		}
+		if seenDisks[d.Name] {
+			return fmt.Errorf("duplicate disk name %q (disk %d)", d.Name, i)
+		}
+		seenDisks[d.Name] = true
 	}
 
 	return nil
@@ -1030,6 +1073,12 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 		res.Networks = append(append([]NetworkConfig(nil), base.Networks...), overlay.Networks...)
 	}
 
+	if overlay.Replace != nil && len(overlay.Replace.Disks) > 0 {
+		res.Disks = overlay.Replace.Disks
+	} else {
+		res.Disks = append(append([]DiskConfig(nil), base.Disks...), overlay.Disks...)
+	}
+
 	if overlay.Replace != nil && len(overlay.Replace.Recipes) > 0 {
 		res.Recipes = overlay.Replace.Recipes
 	} else {
@@ -1124,6 +1173,22 @@ func applyRemoveDirectives(res *Config, remove *RemoveDirective) error {
 		res.Recipes = filtered
 	}
 
+	for _, dropName := range remove.Disks {
+		matched := false
+		var filtered []DiskConfig
+		for _, d := range res.Disks {
+			if d.Name == dropName {
+				matched = true
+			} else {
+				filtered = append(filtered, d)
+			}
+		}
+		if !matched {
+			return fmt.Errorf("remove.disks: name %q matched no disk", dropName)
+		}
+		res.Disks = filtered
+	}
+
 	return nil
 }
 
@@ -1185,10 +1250,49 @@ func LoadConfig(configFile string) (*Config, error) {
 		}
 	}
 
+	// disks is VM-only in v1 (STORAGE-SPEC §8). Go-side rather than CUE-side
+	// because type normalization (vm → virtual-machine) happens before CUE
+	// resolved validation and a CUE cross-field guard on sibling top-level
+	// keys with defaults is brittle here.
+	if len(conf.Disks) > 0 && conf.Type == "container" {
+		return nil, fmt.Errorf(`field "disks" is only supported for type: virtual-machine (instance %q)`, conf.Name)
+	}
+
 	for i := range conf.Mounts {
 		if conf.Mounts[i].Shift == nil {
 			t := true
 			conf.Mounts[i].Shift = &t
+		}
+	}
+
+	// disks default normalization (mirrors #LXM_RESOLVED defaults so the
+	// strict resolved schema round-trips deterministically, STORAGE-SPEC §4).
+	for i := range conf.Disks {
+		d := &conf.Disks[i]
+		if d.Pool == "" {
+			d.Pool = "default"
+		}
+		if d.Source == "" {
+			// Managed disk: derive the volume name from the instance and
+			// materialize the size it provisions.
+			if conf.Name != "" && d.Name != "" {
+				d.Source = conf.Name + "-" + d.Name
+			}
+			if d.Size == "" {
+				return nil, fmt.Errorf("disk %q of instance %q: size is required when source is unset (managed disk)", d.Name, conf.Name)
+			}
+		} else {
+			// External disk: the volume size is managed outside lxm.
+			d.Size = ""
+		}
+		if d.Path == "" {
+			// Block mode: default io.bus.
+			if d.Bus == "" {
+				d.Bus = "virtio-scsi"
+			}
+		} else {
+			// Filesystem mode: io.bus is forbidden (CUE-enforced).
+			d.Bus = ""
 		}
 	}
 

@@ -136,21 +136,92 @@ entries must be valid CIDRs, are additive to the locked default internal set (RF
 silently.
 
 ### 3.8 List Directives (`remove` and `replace`)
-List fields (`mounts`, `networks`, `recipes`) concatenate by default. Inheritance behavior can be modified using directives:
+List fields (`mounts`, `networks`, `recipes`, `disks`) concatenate by default. Inheritance behavior can be modified using directives:
 
 ```yaml
 remove:
   mounts: ["/var/data"]
   recipes: ["recipes/db/install.sh"]
+  disks: ["data"]
 replace:
   networks:
     - name: eth0
       ipv4: 10.10.10.50
       parent: lxdbr0
+  disks:
+    - name: data
+      size: 100GiB
+      path: /var/lib/postgresql
 ```
 
-* **`remove` Matching**: `remove.mounts` matches by normalized destination path (`filepath.Clean`), `remove.networks` matches by network interface `name`, and `remove.recipes` matches by exact resolved script path or recipe metadata `name`. Non-matching `remove` directives fail compilation with **exit code 3**.
+* **`remove` Matching**: `remove.mounts` matches by normalized destination path (`filepath.Clean`), `remove.networks` matches by network interface `name`, `remove.recipes` matches by exact resolved script path or recipe metadata `name`, and `remove.disks` matches by disk `name`. Non-matching `remove` directives fail compilation with **exit code 3**.
 * **`replace` Directive**: Completely replaces inherited list items with the newly declared items.
+
+### 3.9 Data Disks (`disks` / VM-only)
+
+> This section is the **canonical manifest-schema reference** for `disks:` (it mirrors the CUE
+> schemas in `internal/config/schemas/v2.cue`). The feature-level spec — the mode × ownership
+> matrix, verified LXD constraints, reconciliation/execution model, and locked behavioral rules —
+> lives in [`STORAGE-SPEC.md`](STORAGE-SPEC.md). Keep the two schema tables in sync when either
+> changes.
+
+`disks:` attaches **additional storage-pool volumes** to virtual machines. It is **instance-scoped**
+(declared on the leaf manifest, inherited like other lists) and **VM-only in v1** (declaring it on a
+`type: container` is a compile error, exit 3). Each disk is one of four combinations of two
+orthogonal axes:
+
+* **Mode** — filesystem (guest-mounted) vs block (raw device) — selected by `path` presence.
+* **Ownership** — lxm-managed (lxm provisions the volume) vs external (a pre-existing custom volume)
+  — selected by `source` presence.
+
+```yaml
+schema: lxm/config/v2
+name: db-vm
+type: vm
+
+disks:
+  - name: data                    # filesystem (managed)
+    size: 100GiB                  # required (managed); forbidden when source set
+    path: /var/lib/postgresql     # presence ⇒ filesystem mode
+
+  - name: wal                     # block (managed)
+    size: 20GiB
+    bus: nvme                     # block-only; default "virtio-scsi"
+
+  - name: shared-fs               # filesystem (external)
+    source: web-root-vol          # pre-existing custom volume
+    pool: fast-pool
+    path: /srv/www
+    readonly: true
+
+  - name: shared-block            # block (external)
+    source: ceph-osd-vol
+    pool: fast-pool
+```
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `name` | string | — (required) | `=~"^[a-z][a-z0-9-]{0,30}$"`, must not be `root`. Primary identity; LXD device key `disk-<name>`. |
+| `size` | string | — | `#ByteSize` (same grammar as `limits.disk`). **Required** when `source` is unset (managed). **Forbidden** when `source` is set (external). Never written to the device map. |
+| `pool` | string | `"default"` | Storage pool name. |
+| `path` | string | — | Guest mount path (`#CleanMountPath`). **Presence selects filesystem mode**; absence selects block mode. Allowed with or without `source`. |
+| `source` | string | — | Name of a pre-existing custom storage volume in `pool`. **Presence selects external ownership**; absence selects lxm-managed (volume `<instance>-<name>`). Mutually exclusive with `size`. |
+| `readonly` | bool | `false` | Maps to device `readonly: "true"`. |
+| `bus` | string | `"virtio-scsi"` | `"virtio-scsi" \| "virtio-blk" \| "nvme"` → device `io.bus`. **Block mode only**; rejected when `path` is set. |
+
+Mode × ownership matrix (see [`STORAGE-SPEC.md`](STORAGE-SPEC.md) §3 for the full device shape):
+
+| Mode | `source` | `path` | `size` | Volume content type |
+| :-- | :-- | :-- | :-- | :-- |
+| FS (managed) | derived `<inst>-<name>` | set | required | `filesystem` |
+| FS (external) | set | set | forbidden | `filesystem` |
+| Block (managed) | derived `<inst>-<name>` | — | required | `block` |
+| Block (external) | set | — | forbidden | `block` |
+
+Post-merge validation (`ValidatePostMerge`): `name` required, `!= "root"`, unique within `disks`;
+the union of `mounts[].path` and filesystem `disks[].path` (cleaned) has no duplicate mount paths
+(exit 3). Size rules: `size` with `source` is forbidden by CUE; `size` required for managed disks
+(`source` unset) is enforced Go-side in `LoadConfig` normalization.
 
 ---
 
