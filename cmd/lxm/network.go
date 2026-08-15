@@ -45,7 +45,10 @@ func computeNetworkPlan(svc lxd.InstanceService, loaded []*config.Config, netRec
 		ACLs:     map[string]*api.NetworkACL{},
 	}
 
-	if svc != nil {
+	// NetworkService is only required when the fleet actually declares
+	// vswitches; a vswitchess-less invocation must not demand the network
+	// surface from the LXD service.
+	if svc != nil && len(fleet.VSwitches) > 0 {
 		netSvc, ok := svc.(lxd.NetworkService)
 		if !ok {
 			return nil, nil, &exitError{code: 4, err: fmt.Errorf("LXD service does not support network operations (network_policy unavailable)")}

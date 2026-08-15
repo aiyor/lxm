@@ -50,6 +50,7 @@ type NetworkResult struct {
 type ErrorInfo struct {
 	Code      string `json:"code"`
 	Container string `json:"container,omitempty"`
+	Name      string `json:"name,omitempty"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
 }

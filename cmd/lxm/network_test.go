@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/output"
+	"github.com/canonical/lxd/shared/api"
 )
 
 func writeTestFile(t *testing.T, path, content string) {
@@ -165,5 +167,50 @@ networks:
 	}
 	if !strings.Contains(stderr.String(), "outside parent vswitch") {
 		t.Fatalf("expected NIC-outside-subnet message, got: %s", stderr.String())
+	}
+}
+
+// TestRun_VSwitches_NetworkErrorEnvelopeName is the regression test for the
+// code-review finding: a failed network step must surface the offending
+// vswitch/ACL name in the JSON envelope's error entry, not an empty
+// container field.
+func TestRun_VSwitches_NetworkErrorEnvelopeName(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+	fake.Extensions["network_acl"] = true
+	fake.CreateNetworkFunc = func(req api.NetworksPost) error {
+		return errors.New("network create rejected by external policy")
+	}
+
+	tmpDir := t.TempDir()
+	writeTestFile(t, filepath.Join(tmpDir, "_base.yaml"), `schema: lxm/config/v2
+base: true
+image: ubuntu:22.04
+vswitches:
+  - name: vmbr0
+    ipv4: 10.30.0.1/24
+    group: vms
+`)
+	writeTestFile(t, filepath.Join(tmpDir, "web-a.yaml"), `schema: lxm/config/v2
+include: [_base.yaml]
+name: web-a
+`)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"apply", tmpDir, "--format", "json"}, &stdout, &stderr, fake)
+	if code != 4 {
+		t.Fatalf("expected exit 4 (LXD_ERROR), got %d. Stderr: %s", code, stderr.String())
+	}
+	var env output.Envelope
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if len(env.Errors) == 0 {
+		t.Fatalf("expected at least one error in envelope")
+	}
+	if env.Errors[0].Name != "vmbr0" {
+		t.Fatalf("expected error name vmbr0, got %q (container=%q)", env.Errors[0].Name, env.Errors[0].Container)
+	}
+	if !strings.Contains(env.Errors[0].Message, "rejected by external policy") {
+		t.Fatalf("unexpected error message: %s", env.Errors[0].Message)
 	}
 }

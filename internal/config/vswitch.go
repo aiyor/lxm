@@ -24,10 +24,6 @@ func (conf *Config) validateVSwitches() error {
 			return err
 		}
 
-		if !vs.NATRequired() {
-			return fmt.Errorf("vswitch %q: nat is required (boolean)", vs.Name)
-		}
-
 		if vs.Group == "" && vs.Internet != nil && !*vs.Internet {
 			return fmt.Errorf("vswitch %q: internet: false requires a group (ungrouped vswitches are not policy-managed)", vs.Name)
 		}
@@ -96,20 +92,4 @@ func incrementIPv4(ip net.IP) {
 // cidrsOverlap reports whether two IPv4 networks share any address.
 func cidrsOverlap(a, b *net.IPNet) bool {
 	return a.Contains(b.IP) || b.Contains(a.IP)
-}
-
-// NATRequired reports the effective nat value (nil pointer defaults to true).
-func (v *VSwitchConfig) NATRequired() bool {
-	if v == nil || v.NAT == nil {
-		return true
-	}
-	return *v.NAT
-}
-
-// InternetRequired reports the effective internet value (nil pointer defaults to true).
-func (v *VSwitchConfig) InternetRequired() bool {
-	if v == nil || v.Internet == nil {
-		return true
-	}
-	return *v.Internet
 }

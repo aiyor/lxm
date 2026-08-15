@@ -96,6 +96,36 @@ func TestValidateVSwitch_InternetWithoutGroup(t *testing.T) {
 	}
 }
 
+func TestValidateVSwitch_NATFalse_Allowed(t *testing.T) {
+	// Regression for the code review finding: nat: false is a documented,
+	// CUE-valid configuration (§2.1) and must not be rejected.
+	c := &config.Config{
+		Name:  "box1",
+		Image: "ubuntu:24.04",
+		VSwitches: []config.VSwitchConfig{
+			{Name: "vmbr0", IPv4: "10.30.0.1/24", Group: "vms", NAT: boolPtr(false)},
+		},
+	}
+	if err := c.Validate(""); err != nil {
+		t.Fatalf("unexpected error for nat: false: %v", err)
+	}
+}
+
+func TestValidateVSwitch_NATTrueAndNil_Allowed(t *testing.T) {
+	for _, nat := range []*bool{boolPtr(true), nil} {
+		c := &config.Config{
+			Name:  "box1",
+			Image: "ubuntu:24.04",
+			VSwitches: []config.VSwitchConfig{
+				{Name: "vmbr0", IPv4: "10.30.0.1/24", Group: "vms", NAT: nat},
+			},
+		}
+		if err := c.Validate(""); err != nil {
+			t.Fatalf("unexpected error for nat=%v: %v", nat, err)
+		}
+	}
+}
+
 func TestValidateNetworkPolicy_InvalidInternalCIDR(t *testing.T) {
 	c := &config.Config{
 		Name:  "box1",

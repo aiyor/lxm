@@ -33,6 +33,8 @@ type FakeInstanceServer struct {
 	UpdateInstanceStateFunc func(name string, action string, force bool) error
 	RebuildInstanceFunc     func(name string, req api.InstanceRebuildPost) error
 	ExecInstanceFunc        func(name string, cmd []string, uid uint32, env map[string]string) (ExecResult, error)
+	CreateNetworkFunc       func(req api.NetworksPost) error
+	CreateNetworkACLFunc    func(acl api.NetworkACLsPost) error
 }
 
 // NewFakeInstanceServer creates a new initialized FakeInstanceServer.

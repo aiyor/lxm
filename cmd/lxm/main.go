@@ -222,6 +222,7 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 					env.Errors = append(env.Errors, output.ErrorInfo{
 						Code:      rerr.Code,
 						Container: rerr.Container,
+						Name:      rerr.Name,
 						Message:   rerr.Message,
 						Retryable: rerr.Retryable,
 					})

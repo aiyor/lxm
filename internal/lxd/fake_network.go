@@ -65,6 +65,9 @@ func (f *FakeInstanceServer) GetNetwork(name string) (*api.Network, string, erro
 func (f *FakeInstanceServer) CreateNetwork(req api.NetworksPost) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.CreateNetworkFunc != nil {
+		return f.CreateNetworkFunc(req)
+	}
 	f.AddNetworksLocked()
 	if _, ok := f.Nets.Networks[req.Name]; ok {
 		return fmt.Errorf("network %q already exists", req.Name)
@@ -136,6 +139,9 @@ func (f *FakeInstanceServer) GetNetworkACL(name string) (*api.NetworkACL, string
 func (f *FakeInstanceServer) CreateNetworkACL(acl api.NetworkACLsPost) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.CreateNetworkACLFunc != nil {
+		return f.CreateNetworkACLFunc(acl)
+	}
 	f.AddNetworksLocked()
 	if _, ok := f.Nets.ACLs[acl.Name]; ok {
 		return fmt.Errorf("network ACL %q already exists", acl.Name)

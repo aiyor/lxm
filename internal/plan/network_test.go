@@ -279,6 +279,31 @@ func TestComputeNetworks_Noop(t *testing.T) {
 	}
 }
 
+func TestComputeNetworks_NATFalse_FlowsToCreatePayload(t *testing.T) {
+	// Regression for the code review finding: nat: false must be accepted and
+	// rendered as ipv4.nat=false on the created vswitch.
+	boolPtr := func(b bool) *bool { return &b }
+	f := testFleet(t, &config.Config{
+		Schema:    "lxm/config/v2",
+		Base:      true,
+		VSwitches: []config.VSwitchConfig{{Name: "routed0", IPv4: "10.30.0.1/24", Group: "routed", NAT: boolPtr(false)}},
+	})
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{Networks: map[string]*api.Network{}, ACLs: map[string]*api.NetworkACL{}})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+	for _, s := range np.Steps {
+		if s.Kind == "create_vswitch" && s.Name == "routed0" {
+			if s.NetPost.Config["ipv4.nat"] != "false" {
+				t.Fatalf("expected ipv4.nat=false, got %q", s.NetPost.Config["ipv4.nat"])
+			}
+			return
+		}
+	}
+	t.Fatalf("no create_vswitch for routed0")
+}
+
 func TestComputeNetworks_ExtensionNotRequiredForUngrouped(t *testing.T) {
 	// computeNetworkPlan gates on grouped vswitches; the reconciler itself has
 	// no extension dependency. Ungrouped vswitches produce only create_vswitch.
