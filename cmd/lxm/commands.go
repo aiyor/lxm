@@ -115,7 +115,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				return err
 			}
 
-			liveSnapshots, err := fetchLiveSnapshots(svc, selectedConfigs)
+			liveSnapshots, liveVolumes, err := fetchLiveSnapshots(svc, selectedConfigs)
 			if err != nil {
 				return &exitError{code: 4, err: fmt.Errorf("fetching live instance state: %w", err)}
 			}
@@ -129,7 +129,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			}
 
 			for _, conf := range selectedConfigs {
-				p, err := reconciler.Compute(conf, liveSnapshots, hasRebuild)
+				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, hasRebuild)
 				if err != nil {
 					return planComputeError(err)
 				}
@@ -281,6 +281,7 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			}
 
 			liveSnapshots := make(map[string]*plan.InstanceSnapshot)
+			liveVolumes := make(map[string]map[string]*api.StorageVolume)
 			hasRebuild := false
 
 			svc, err := getSvc()
@@ -288,7 +289,7 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
 					return err
 				}
-				liveSnapshots, _ = fetchLiveSnapshots(svc, selectedConfigs)
+				liveSnapshots, liveVolumes, _ = fetchLiveSnapshots(svc, selectedConfigs)
 				hasRebuild = svc.HasExtension("instances_rebuild")
 			}
 
@@ -299,7 +300,7 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			}
 
 			for _, conf := range selectedConfigs {
-				p, err := reconciler.Compute(conf, liveSnapshots, hasRebuild)
+				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, hasRebuild)
 				if err != nil {
 					return planComputeError(err)
 				}
@@ -385,6 +386,7 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			conf.Name = containerName
 
 			liveSnapshots := make(map[string]*plan.InstanceSnapshot)
+			liveVolumes := make(map[string]map[string]*api.StorageVolume)
 			hasRebuild := false
 
 			svc, err := getSvc()
@@ -392,12 +394,12 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				if err := checkDiskExtensions(svc, []*config.Config{conf}); err != nil {
 					return err
 				}
-				liveSnapshots, _ = fetchLiveSnapshots(svc, []*config.Config{conf})
+				liveSnapshots, liveVolumes, _ = fetchLiveSnapshots(svc, []*config.Config{conf})
 				hasRebuild = svc.HasExtension("instances_rebuild")
 			}
 
 			reconciler := plan.NewReconciler()
-			p, err := reconciler.Compute(conf, liveSnapshots, hasRebuild)
+			p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, hasRebuild)
 			if err != nil {
 				return planComputeError(err)
 			}
@@ -1630,35 +1632,53 @@ func planComputeError(err error) error {
 	return &exitError{code: 3, err: err}
 }
 
-// checkDiskExtensions gates block-mode disks on the LXD custom_block_volumes
-// extension (STORAGE-SPEC §9). A block-mode disk (path unset) declared while
-// the extension is absent is a plan-time error, exit 4.
+// checkDiskExtensions gates disk features on the LXD API extensions they need
+// (STORAGE-SPEC §9). Block-mode disks require `custom_block_volumes`; a
+// non-default `io.bus` (`nvme`/`virtio-blk`) additionally requires the
+// `disk_io_bus` / `disk_io_bus_virtio_blk` markers. A gate failure is a
+// plan-time error, exit 4.
 func checkDiskExtensions(svc lxd.InstanceService, configs []*config.Config) error {
 	if svc == nil {
 		return nil
 	}
 	hasBlock := false
+	hasNonDefaultBus := false
+	hasVirtioBlk := false
 	for _, conf := range configs {
 		for _, d := range conf.Disks {
 			if d.Path == "" {
 				hasBlock = true
-				break
+				switch d.Bus {
+				case "nvme":
+					hasNonDefaultBus = true
+				case "virtio-blk":
+					hasNonDefaultBus = true
+					hasVirtioBlk = true
+				}
 			}
-		}
-		if hasBlock {
-			break
 		}
 	}
 	if hasBlock && !svc.HasExtension("custom_block_volumes") {
 		return &exitError{code: 4, err: fmt.Errorf("LXD server lacks the custom_block_volumes extension; block-mode disks require LXD with custom block volume support")}
 	}
+	if hasNonDefaultBus && !svc.HasExtension("disk_io_bus") {
+		return &exitError{code: 4, err: fmt.Errorf("LXD server lacks the disk_io_bus extension; io.bus values other than virtio-scsi require a newer LXD")}
+	}
+	if hasVirtioBlk && !svc.HasExtension("disk_io_bus_virtio_blk") {
+		return &exitError{code: 4, err: fmt.Errorf("LXD server lacks the disk_io_bus_virtio_blk extension; io.bus virtio-blk requires a newer LXD")}
+	}
 	return nil
 }
 
-func fetchLiveSnapshots(svc lxd.InstanceService, configs []*config.Config) (map[string]*plan.InstanceSnapshot, error) {
+// fetchLiveSnapshots returns live instance snapshots and the custom-volume
+// metadata (pool → name → volume) for the pools referenced by loaded
+// manifests. Volumes are returned alongside the snapshots — not attached to
+// them — so they survive an empty instance list (the create path probes
+// external volumes on a fresh LXD with zero live instances).
+func fetchLiveSnapshots(svc lxd.InstanceService, configs []*config.Config) (map[string]*plan.InstanceSnapshot, map[string]map[string]*api.StorageVolume, error) {
 	instances, err := svc.ListInstances()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Live custom-volume metadata for the pools referenced by loaded manifests,
@@ -1714,10 +1734,9 @@ func fetchLiveSnapshots(svc lxd.InstanceService, configs []*config.Config) (map[
 			Ephemeral:       inst.Ephemeral,
 			ETag:            etag,
 			HasSnapshots:    len(full.Snapshots) > 0,
-			StorageVolumes:  volumes,
 		}
 	}
-	return result, nil
+	return result, volumes, nil
 }
 
 func computePlanSummary(steps []plan.Step) plan.PlanSummary {

@@ -143,9 +143,10 @@ type DiskConfig struct {
 * `Config.Disks []DiskConfig`; no custom `UnmarshalYAML` (plain closed-object list).
 * `RemoveDirective.Disks []string` / `ReplaceDirective.Disks []DiskConfig` — `remove.disks` matches
   by `name`; non-matching ⇒ exit 3.
-* **Normalization** (post-merge, in `LoadConfig`): materialize `pool` → `"default"`, `readonly` →
-  `false`, `bus` → `"virtio-scsi"` (block mode only), and derived `source` → `<instance>-<name>`
-  for managed disks. Managed disks keep their declared `size`; external disks clear `size`.
+* **Normalization** (post-merge, in `LoadConfig`): materialize `pool` → `"default"`, `bus` →
+  `"virtio-scsi"` (block mode only), and derived `source` → `<instance>-<name>` for managed disks.
+  Managed disks keep their declared `size`; external disks clear `size`. `readonly` is a zero-value
+  bool resolved by the CUE `*false` default (no explicit assignment needed).
 * **VM-only guard**: `disks:` on a `container` ⇒ compile error, exit 3.
 * **`ValidatePostMerge`**: `name` required, `!= "root"`, unique; the union of `mounts[].path` and
   filesystem `disks[].path` (cleaned) contains no duplicates.
@@ -163,9 +164,11 @@ type DiskConfig struct {
   from the device map (`pool`, `path`, `source`, `readonly`, `io.bus`); **`size` is read from
   storage-volume metadata**, never the device map (C2).
 * `fetchLiveSnapshots` (`cmd/lxm/commands.go`) additionally queries custom volumes (via the
-  `StorageService`) for every pool referenced by a loaded manifest and stores them on
-  `InstanceSnapshot.StorageVolumes` (pool → volume-name → `api.StorageVolume`), keeping
-  `Reconciler.Compute` a pure offline function.
+  `StorageService`) for every pool referenced by a loaded manifest and returns them **as a dedicated
+  parameter** to `Reconciler.Compute` (pool → volume-name → `api.StorageVolume`). Volumes are not
+  carried on `InstanceSnapshot`, so they survive an **empty instance list** — the create path probes
+  external volumes on a fresh LXD with zero live instances — while keeping `Compute` a pure offline
+  function.
 * **Foreign devices**: non-root `type: disk` devices with no `mount*` / no `disk-*` prefix are
   ignored by both live readers and preserved verbatim by `buildInstancePut`.
 
@@ -177,10 +180,10 @@ Identity = `name`. Order-insensitive comparison (mirrors `areMountsEqual`).
 | :-- | :-- | :-- |
 | disk added | `disks[<name>]` (old `∅`) | `update` (or `create`) + `VolumeOps{create}` for managed |
 | disk removed | `disks[<name>]` (new `∅`) | `update` (detach only; volume NOT deleted, §7.5) |
-| `size` grow (managed) | `disks[<name>].size` | `update` + `VolumeOps{grow}` — online, no restart (C7) |
+| `size` grow (managed) | `disks[<name>].size` | `update` + `VolumeOps{grow}` — online, no restart (C7). Compared by parsed bytes, so reworded-equal sizes (`10GiB` vs `10737418240`) never produce a perpetual diff. |
 | `size` shrink (managed) | `disks[<name>].size` | **plan-time config error, exit 3** (§7.4) |
-| `pool` change (external) | `disks[<name>].pool` | `update` (device re-points; existence probed at plan time) |
-| `pool` change (managed) | `disks[<name>].pool` | `VolumeOps{create}` in new pool + detach/attach (old volume orphaned) |
+| `pool` change (external) | `disks[<name>].pool` | `update` + restart if running (device re-points to another pool; existence probed at plan time) |
+| `pool` change (managed) | `disks[<name>].pool` | `VolumeOps{create}` in new pool + detach/attach (old volume orphaned) + restart if running |
 | `path` change (fs→fs) | `disks[<name>].path` | `update` + restart if running (agent remount) |
 | `readonly` change | `disks[<name>].readonly` | `update` (device property) |
 | `bus` change (block) | `disks[<name>].bus` | `update` + restart if running (QEMU re-plug) |
@@ -269,6 +272,9 @@ volumes, in any code path. Orphaned-volume cleanup is a future `lxm disk gc` con
 `lxm plan` probes external volumes via the storage API; a missing volume is a plan-time error,
 exit 4 (`LXD_ERROR`):
 `external volume "<pool>/<source>" referenced by disk "<name>" of instance "<name>" does not exist`.
+A same-name volume with the **wrong content type** (e.g. a block volume adopted as filesystem) is
+detected at apply time (`VolumeOps` create-or-adopt, exit 4) rather than plan time — the content
+type is not probed at plan time in v1.
 
 ---
 
@@ -285,12 +291,11 @@ relaxed in a future release (the schema is type-agnostic).
 
 ```go
 type StorageService interface {
-    GetStoragePools() ([]api.StoragePool, error)
     GetStoragePoolVolume(pool, volType, name string) (*api.StorageVolume, string, error)
     GetStoragePoolVolumes(pool string) ([]api.StorageVolume, error)
     CreateStoragePoolVolume(pool string, vol api.StorageVolumesPost) error
     UpdateStoragePoolVolume(pool, volType, name string, vol api.StorageVolumePut, etag string) error
-    DeleteStoragePoolVolume(pool, volType, name string) error
+    DeleteStoragePoolVolume(pool, volType, name string) error // reserved for future `lxm disk gc`
 }
 ```
 
@@ -298,7 +303,9 @@ type StorageService interface {
   matching the existing `waitOpContext` pattern.
 * Managed volumes: `api.StorageVolumesPost{Name, Type: "custom", ContentType: "filesystem"|"block",
   StorageVolumePut: {Config: {"size": …}}}`.
-* Block mode gated on `HasExtension("custom_block_volumes")`; missing ⇒ exit 4.
+* Block mode gated on `HasExtension("custom_block_volumes")`; a non-default `io.bus`
+  (`nvme`/`virtio-blk`) additionally requires `disk_io_bus` / `disk_io_bus_virtio_blk`; missing ⇒
+  exit 4.
 * `internal/lxd/fake.go` gains in-memory volume storage + `StorageService` methods for tests.
 
 ---
@@ -309,11 +316,12 @@ type StorageService interface {
 2. VolumeOps execute as **Phase 0** (before network steps, before instance steps), idempotently:
    `create` no-ops if a volume of the right content type exists (grow-if-smaller); a same-name
    volume with a *different* content type is an error. `grow` requires the volume to exist and
-   grows only when desired > live.
+   grows only when desired > live. **Dry-run skips Phase 0 entirely** (no volume mutation).
 3. Disk device add/remove/repoint rides `PUT /1.0/instances/{name}` with ETag re-verification —
    LXD hotplugs virtio disks on running VMs.
-4. `PowerTransition: "restart"` for disk `path`/`bus`/`source` changes on running VMs reuses the
-   existing restart plumbing.
+4. `PowerTransition: "restart"` for disk `path`/`pool`/`source`/`bus` changes on running VMs reuses
+   the existing restart plumbing (a pool change detaches a volume in one pool and attaches a fresh
+   one in another, which invalidates the guest mount/device).
 
 ---
 
@@ -322,7 +330,8 @@ type StorageService interface {
 * Disk diffs appear as regular `FieldDiff` entries (`disks[data].size` …); `VolumeOps` are part of
   the owning step — no envelope change.
 * Exit codes: manifest/policy violations ⇒ 3 (`CONFIG_ERROR`); missing external volume / missing
-  `custom_block_volumes` extension / API errors ⇒ 4 (`LXD_ERROR`). No new codes.
+  disk extensions (`custom_block_volumes`, `disk_io_bus`, `disk_io_bus_virtio_blk`) / API errors ⇒ 4
+  (`LXD_ERROR`). No new codes.
 
 ---
 
@@ -331,6 +340,6 @@ type StorageService interface {
 | Area | Cases |
 | :-- | :-- |
 | `config` | `disks` parsing; defaults materialization; size guards; bus-with-path rejection; container guard; duplicate name; mount-path collision; include/remove/replace directives; resolved round-trip. |
-| `plan` | create payload device shape (4 modes); add/remove/update diffs; grow → `VolumeOps{grow}`; shrink → exit 3; pool/mode-switch semantics; restart flags; `getLiveMounts` no longer sees `disk-*`; foreign device preserved; live size from volume metadata. |
-| `apply` | VolumeOps Phase-0 ordering; idempotent create/grow; ETag conflict on concurrent change; external volume missing ⇒ exit 4; block extension missing ⇒ exit 4. |
+| `plan` | create payload device shape (4 modes); add/remove/update diffs; grow → `VolumeOps{grow}`; shrink → exit 3; pool/mode-switch semantics; restart flags (`path`/`pool`/`source`/`bus`); reworded-equal size no-diff; external volume present on empty live map; `getLiveMounts` no longer sees `disk-*`; foreign device preserved; live size from volume metadata. |
+| `apply` | VolumeOps Phase-0 ordering; idempotent create/grow; ETag conflict on concurrent change; dry-run no volume mutation; external volume missing ⇒ exit 4; disk extension missing ⇒ exit 4. |
 | `lxd/fake` | volume CRUD (filesystem + block); grow no-op when live ≥ desired. |

@@ -33,6 +33,30 @@ func volumeOpPlan(ops []plan.VolumeOp) *plan.Plan {
 	}
 }
 
+func TestApply_DryRun_NoVolumeMutation(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+	exec := apply.NewExecutor(fake)
+
+	p := volumeOpPlan([]plan.VolumeOp{
+		{Op: "create", Pool: "default", Name: "db-vm-data", ContentType: "filesystem", Size: "100GiB"},
+		{Op: "grow", Pool: "default", Name: "db-vm-wal", ContentType: "block", Size: "40GiB"},
+	})
+	report, err := exec.Apply(context.Background(), p, apply.ApplyOpts{Jobs: 1, DryRun: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.ExitCode != 0 {
+		t.Fatalf("expected exit 0 on dry-run, got %d (%+v)", report.ExitCode, report.Errors)
+	}
+	// No volume must be created or grown; no instance must be created.
+	if _, _, err := fake.GetStoragePoolVolume("default", "custom", "db-vm-data"); err == nil {
+		t.Errorf("dry-run created a volume; storage volume ops must be skipped")
+	}
+	if _, ok := fake.Instances["db-vm"]; ok {
+		t.Errorf("dry-run created the instance; instance steps must be skipped")
+	}
+}
+
 func TestApply_VolumeOps_CreatedBeforeInstance(t *testing.T) {
 	fake := lxd.NewFakeInstanceServer()
 	exec := apply.NewExecutor(fake)

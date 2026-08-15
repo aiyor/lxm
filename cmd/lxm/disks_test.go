@@ -80,6 +80,44 @@ func TestCheckDiskExtensions_BlockModeGate(t *testing.T) {
 	}
 }
 
+func TestCheckDiskExtensions_IOBusGate(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+	fake.Extensions["custom_block_volumes"] = true
+	delete(fake.Extensions, "disk_io_bus")
+	delete(fake.Extensions, "disk_io_bus_virtio_blk")
+
+	nvmeDisk := &config.Config{Name: "db-vm", Type: "virtual-machine", Disks: []config.DiskConfig{{Name: "wal", Path: "", Size: "20GiB", Bus: "nvme"}}}
+	virtioBlkDisk := &config.Config{Name: "db-vm", Type: "virtual-machine", Disks: []config.DiskConfig{{Name: "wal", Path: "", Size: "20GiB", Bus: "virtio-blk"}}}
+	scsiDisk := &config.Config{Name: "db-vm", Type: "virtual-machine", Disks: []config.DiskConfig{{Name: "wal", Path: "", Size: "20GiB", Bus: "virtio-scsi"}}}
+
+	// Non-default io.bus requires disk_io_bus.
+	err := checkDiskExtensions(fake, []*config.Config{nvmeDisk})
+	if err == nil {
+		t.Fatal("expected disk_io_bus gate failure for nvme")
+	}
+	var ee *exitError
+	if !errors.As(err, &ee) || ee.code != 4 {
+		t.Errorf("expected exit 4, got %+v", err)
+	}
+
+	// virtio-blk additionally requires disk_io_bus_virtio_blk.
+	fake.Extensions["disk_io_bus"] = true
+	if err := checkDiskExtensions(fake, []*config.Config{virtioBlkDisk}); err == nil {
+		t.Error("expected disk_io_bus_virtio_blk gate failure for virtio-blk")
+	}
+	fake.Extensions["disk_io_bus_virtio_blk"] = true
+	if err := checkDiskExtensions(fake, []*config.Config{virtioBlkDisk}); err != nil {
+		t.Errorf("expected no error for virtio-blk with both extensions, got %v", err)
+	}
+
+	// Default virtio-scsi needs no extra gate.
+	delete(fake.Extensions, "disk_io_bus")
+	delete(fake.Extensions, "disk_io_bus_virtio_blk")
+	if err := checkDiskExtensions(fake, []*config.Config{scsiDisk}); err != nil {
+		t.Errorf("expected no error for default bus, got %v", err)
+	}
+}
+
 func TestCheckDiskExtensions_Message(t *testing.T) {
 	fake := lxd.NewFakeInstanceServer()
 	delete(fake.Extensions, "custom_block_volumes")

@@ -506,7 +506,7 @@ func TestReconcilerToExecutor_Integration_PowerTransitions(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("Compute error: %v", err)
 	}

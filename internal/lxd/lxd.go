@@ -113,6 +113,8 @@ type StorageService interface {
 	GetStoragePoolVolumes(pool string) ([]api.StorageVolume, error)
 	CreateStoragePoolVolume(pool string, vol api.StorageVolumesPost) error
 	UpdateStoragePoolVolume(pool, volType, name string, vol api.StorageVolumePut, etag string) error
+	// DeleteStoragePoolVolume is reserved for a future `lxm disk gc`; the disks
+	// feature never deletes volumes (STORAGE-SPEC §7.5).
 	DeleteStoragePoolVolume(pool, volType, name string) error
 }
 

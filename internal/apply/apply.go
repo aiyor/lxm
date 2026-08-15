@@ -131,28 +131,31 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 	// Phase 0: storage volume ops (STORAGE-SPEC §10). VolumeOps must complete
 	// before any instance mutation (create/attach references the volumes) and
 	// before the network phase. A failure aborts the apply (phase-abort
-	// semantics, like the network phase) with exit 4.
-	storageFailed := false
-	for _, step := range p.Steps {
-		for _, op := range step.VolumeOps {
-			if err := e.executeVolumeOp(ctx, op); err != nil {
-				storageFailed = true
-				report.Errors = append(report.Errors, ErrorInfo{
-					Code:      "LXD_ERROR",
-					Container: step.Container,
-					Message:   fmt.Sprintf("storage volume %q in pool %q: %v", op.Name, op.Pool, err),
-				})
-				worstExitCode = selectWorstExitCode(worstExitCode, 4)
+	// semantics, like the network phase) with exit 4. Dry-run never touches
+	// storage volumes (mirrors the executeStep/executeNetworkStep guards).
+	if !opts.DryRun {
+		storageFailed := false
+		for _, step := range p.Steps {
+			for _, op := range step.VolumeOps {
+				if err := e.executeVolumeOp(ctx, op); err != nil {
+					storageFailed = true
+					report.Errors = append(report.Errors, ErrorInfo{
+						Code:      "LXD_ERROR",
+						Container: step.Container,
+						Message:   fmt.Sprintf("storage volume %q in pool %q: %v", op.Name, op.Pool, err),
+					})
+					worstExitCode = selectWorstExitCode(worstExitCode, 4)
+					break
+				}
+			}
+			if storageFailed {
 				break
 			}
 		}
 		if storageFailed {
-			break
+			report.ExitCode = worstExitCode
+			return report, nil
 		}
-	}
-	if storageFailed {
-		report.ExitCode = worstExitCode
-		return report, nil
 	}
 
 	// Phase 1: network steps (ACLs, then vswitches — §7.4, driven by C8).

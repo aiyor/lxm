@@ -12,7 +12,7 @@ import (
 
 func TestReconciler_NilManifest_Error(t *testing.T) {
 	r := plan.NewReconciler()
-	_, err := r.Compute(nil, nil, false)
+	_, err := r.Compute(nil, nil, nil, false)
 	if err == nil {
 		t.Fatalf("expected error for nil manifest")
 	}
@@ -30,7 +30,7 @@ func TestReconciler_Compute_Create(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, nil, false)
+	p, err := rec.Compute(conf, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestReconciler_Compute_AbsentStatus(t *testing.T) {
 	}
 
 	// Absent status when instance doesn't exist -> noop
-	p, err := rec.Compute(conf, nil, false)
+	p, err := rec.Compute(conf, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestReconciler_Compute_AbsentStatus(t *testing.T) {
 	live := map[string]*plan.InstanceSnapshot{
 		"box1": {Name: "box1", Status: "Running", ETag: "etag1"},
 	}
-	p2, err := rec.Compute(conf, live, false)
+	p2, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestReconciler_Compute_Update_UserGroupsMountsNetworks(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestReconciler_Compute_MountAndNicDeviceProps(t *testing.T) {
 	}
 
 	// Create path
-	p, err := rec.Compute(conf, nil, false)
+	p, err := rec.Compute(conf, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestReconciler_Compute_MountAndNicDeviceProps(t *testing.T) {
 			},
 		},
 	}
-	p2, err := rec.Compute(conf, live, false)
+	p2, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestReconciler_Compute_NetworkConfig_EmittedAndDiffed(t *testing.T) {
 	}
 
 	// Create path: user.network-config present in the create payload.
-	p, err := rec.Compute(conf, nil, false)
+	p, err := rec.Compute(conf, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestReconciler_Compute_NetworkConfig_EmittedAndDiffed(t *testing.T) {
 			},
 		},
 	}
-	p2, err := rec.Compute(conf, live, false)
+	p2, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestReconciler_Compute_NetworkConfig_EmittedAndDiffed(t *testing.T) {
 			},
 		},
 	}
-	p3, err := rec.Compute(conf, liveMatch, false)
+	p3, err := rec.Compute(conf, liveMatch, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestReconciler_Compute_NetworkConfig_EmittedAndDiffed(t *testing.T) {
 			},
 		},
 	}
-	p4, err := rec.Compute(confNoNet, liveStale, false)
+	p4, err := rec.Compute(confNoNet, liveStale, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestReconciler_Compute_Recreate_ImageChange(t *testing.T) {
 	}
 
 	// Without LXD rebuild extension -> RebuildFallback = true
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestReconciler_Compute_Recreate_ImageChange(t *testing.T) {
 	}
 
 	// With LXD rebuild extension -> RebuildFallback = false
-	p2, _ := rec.Compute(conf, live, true)
+	p2, _ := rec.Compute(conf, live, nil, true)
 	if p2.Steps[0].RebuildFallback {
 		t.Errorf("expected RebuildFallback=false when rebuild extension present")
 	}
@@ -387,7 +387,7 @@ func TestReconciler_Compute_NoSpuriousMountDiff(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestReconciler_Compute_PowerStateStop(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestReconciler_Compute_CreateStoppedContainer_SetsStopPowerTransition(t *te
 		State: "stopped",
 	}
 
-	p, err := rec.Compute(conf, nil, false)
+	p, err := rec.Compute(conf, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -476,12 +476,12 @@ func TestReconciler_Compute_RecreatePowerTransitions(t *testing.T) {
 		},
 	}
 
-	pRun, err := rec.Compute(confRunning, liveRunning, false)
+	pRun, err := rec.Compute(confRunning, liveRunning, nil, false)
 	if err != nil || pRun.Steps[0].PowerTransition != "start" {
 		t.Errorf("expected PowerTransition 'start' for running recreate, got %q", pRun.Steps[0].PowerTransition)
 	}
 
-	pStop, err := rec.Compute(confStopped, liveStopped, false)
+	pStop, err := rec.Compute(confStopped, liveStopped, nil, false)
 	if err != nil || pStop.Steps[0].PowerTransition != "stop" {
 		t.Errorf("expected PowerTransition 'stop' for stopped recreate, got %q", pStop.Steps[0].PowerTransition)
 	}
@@ -506,7 +506,7 @@ func TestReconciler_Compute_ImageDescriptionFallback(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestReconciler_Compute_AliasImage_ReplanNoop(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestReconciler_Compute_AliasImage_ReplanNoop(t *testing.T) {
 			},
 		},
 	}
-	p2, err := rec.Compute(conf, liveAlpine, false)
+	p2, err := rec.Compute(conf, liveAlpine, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -594,7 +594,7 @@ func TestReconciler_Compute_FingerprintImage_ReplanNoop(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -609,7 +609,7 @@ func TestReconciler_Compute_FingerprintImage_ReplanNoop(t *testing.T) {
 		Image: fp[:12],
 		User:  "ubuntu",
 	}
-	pPrefix, err := rec.Compute(confPrefix, live, false)
+	pPrefix, err := rec.Compute(confPrefix, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -633,7 +633,7 @@ func TestReconciler_Compute_NilConfigSnapshot(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -669,7 +669,7 @@ func TestReconciler_Compute_CloudInitError_ReturnsError(t *testing.T) {
 		CloudInit: "nonexistent_file_path_12345.yaml",
 	}
 
-	_, err := rec.Compute(conf, nil, false)
+	_, err := rec.Compute(conf, nil, nil, false)
 	if err == nil {
 		t.Fatalf("expected error when CloudInit file resolution fails")
 	}
@@ -687,7 +687,7 @@ func TestReconciler_Compute_CloudInitError_ReturnsError(t *testing.T) {
 		User:      "newuser",
 		CloudInit: "nonexistent_file_path_12345.yaml",
 	}
-	_, err = rec.Compute(confUpdate, live, false)
+	_, err = rec.Compute(confUpdate, live, nil, false)
 	if err == nil {
 		t.Fatalf("expected error when CloudInit file resolution fails on existing container update")
 	}
@@ -720,7 +720,7 @@ func TestReconciler_Compute_MountsAndNetworksDiff(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -745,7 +745,7 @@ func TestReconciler_Compute_RecipeYAML(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, nil, false)
+	p, err := rec.Compute(conf, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -765,14 +765,14 @@ func TestReconciler_Compute_AllSummaryActions(t *testing.T) {
 	liveRecreate := map[string]*plan.InstanceSnapshot{
 		"box1": {Name: "box1", Status: "Running", Config: map[string]string{"image.os": "ubuntu", "image.release": "22.04"}},
 	}
-	p1, _ := rec.Compute(confRecreate, liveRecreate, false)
+	p1, _ := rec.Compute(confRecreate, liveRecreate, nil, false)
 	if p1.Summary.Recreate != 1 {
 		t.Errorf("expected summary Recreate=1, got %d", p1.Summary.Recreate)
 	}
 
 	// Test delete
 	confDelete := &config.Config{Name: "box1", Status: "absent"}
-	p2, _ := rec.Compute(confDelete, liveRecreate, false)
+	p2, _ := rec.Compute(confDelete, liveRecreate, nil, false)
 	if p2.Summary.Delete != 1 {
 		t.Errorf("expected summary Delete=1, got %d", p2.Summary.Delete)
 	}
@@ -782,7 +782,7 @@ func TestReconciler_Compute_AllSummaryActions(t *testing.T) {
 	liveStopped := map[string]*plan.InstanceSnapshot{
 		"box1": {Name: "box1", Status: "Stopped", Config: map[string]string{"image.os": "ubuntu", "image.release": "22.04"}},
 	}
-	p3, _ := rec.Compute(confStart, liveStopped, false)
+	p3, _ := rec.Compute(confStart, liveStopped, nil, false)
 	if p3.Summary.Start != 1 {
 		t.Errorf("expected summary Start=1, got %d", p3.Summary.Start)
 	}
@@ -805,7 +805,7 @@ func TestReconciler_Compute_RecreateBuildPayloadError(t *testing.T) {
 		},
 	}
 
-	_, err := rec.Compute(conf, live, false)
+	_, err := rec.Compute(conf, live, nil, false)
 	if err == nil {
 		t.Fatalf("expected error when building recreate payload fails due to cloud-init error")
 	}
@@ -832,7 +832,7 @@ func TestReconciler_Compute_EmptyGroupsClearsKey(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -859,7 +859,7 @@ func TestReconciler_Compute_UpdateWithPowerStateTransition(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -883,7 +883,7 @@ func TestReconciler_Compute_UpdateWithPowerStateTransition(t *testing.T) {
 			Config: map[string]string{"image.os": "ubuntu", "image.release": "24.04", "user.lxm.user": "olduser"},
 		},
 	}
-	pStart, err := rec.Compute(confStart, liveStopped, false)
+	pStart, err := rec.Compute(confStart, liveStopped, nil, false)
 	if err != nil || pStart.Steps[0].PowerTransition != "start" {
 		t.Errorf("expected PowerTransition 'start', got %q", pStart.Steps[0].PowerTransition)
 	}
@@ -893,7 +893,7 @@ func TestReconciler_NilManifestAndRebuildExtension(t *testing.T) {
 	rec := plan.NewReconciler()
 
 	// Nil manifest error
-	if _, err := rec.Compute(nil, nil, false); err == nil {
+	if _, err := rec.Compute(nil, nil, nil, false); err == nil {
 		t.Errorf("expected error for nil manifest")
 	}
 
@@ -912,7 +912,7 @@ func TestReconciler_NilManifestAndRebuildExtension(t *testing.T) {
 	}
 
 	// hasRebuildExt = true
-	pExt, err := rec.Compute(confRecreate, liveSnap, true)
+	pExt, err := rec.Compute(confRecreate, liveSnap, nil, true)
 	if err != nil {
 		t.Fatalf("Compute failed: %v", err)
 	}
@@ -924,7 +924,7 @@ func TestReconciler_NilManifestAndRebuildExtension(t *testing.T) {
 	}
 
 	// hasRebuildExt = false
-	pFallback, err := rec.Compute(confRecreate, liveSnap, false)
+	pFallback, err := rec.Compute(confRecreate, liveSnap, nil, false)
 	if err != nil {
 		t.Fatalf("Compute failed: %v", err)
 	}
@@ -940,7 +940,7 @@ func TestReconciler_NilManifestAndRebuildExtension(t *testing.T) {
 			Config: map[string]string{"image.description": "ubuntu 24.04 lts"},
 		},
 	}
-	pDesc, err := rec.Compute(confRecreate, liveDesc, true)
+	pDesc, err := rec.Compute(confRecreate, liveDesc, nil, true)
 	if err != nil {
 		t.Fatalf("Compute failed: %v", err)
 	}
@@ -960,7 +960,7 @@ func TestReconciler_NilManifestAndRebuildExtension(t *testing.T) {
 			{RunAs: "root", Scripts: []string{"setup.yaml"}},
 		},
 	}
-	pYAMLRecipe, err := rec.Compute(confYAMLRecipe, nil, false)
+	pYAMLRecipe, err := rec.Compute(confYAMLRecipe, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Compute failed: %v", err)
 	}
@@ -988,7 +988,7 @@ func TestReconciler_NilManifestAndRebuildExtension(t *testing.T) {
 			Config: map[string]string{"image.os": "ubuntu", "image.release": "24.04", "user.lxm.user": "ubuntu"},
 		},
 	}
-	pStop, err := rec.Compute(confStop, liveRunning, false)
+	pStop, err := rec.Compute(confStop, liveRunning, nil, false)
 	if err != nil || pStop.Steps[0].Action != "stop" {
 		t.Errorf("expected action 'stop' for pure power state change, got %v, err %v", pStop, err)
 	}
@@ -999,7 +999,7 @@ func TestReconciler_NilManifestAndRebuildExtension(t *testing.T) {
 		Image:            "ubuntu:24.04",
 		CloudInitInclude: []string{"nonexistent_file_9999.yaml"},
 	}
-	if _, err := rec.Compute(confBadCloudInit, nil, false); err == nil {
+	if _, err := rec.Compute(confBadCloudInit, nil, nil, false); err == nil {
 		t.Errorf("expected error when cloud-init resolution fails during create")
 	}
 
@@ -1016,7 +1016,7 @@ func TestReconciler_NilManifestAndRebuildExtension(t *testing.T) {
 			{IPv4: "10.0.0.50", Parent: "custombr0"},
 		},
 	}
-	pFull, err := rec.Compute(confFullProps, nil, false)
+	pFull, err := rec.Compute(confFullProps, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Compute failed: %v", err)
 	}
@@ -1053,7 +1053,7 @@ func TestReconciler_Compute_VM_Create(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, nil, false)
+	p, err := rec.Compute(conf, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Compute failed: %v", err)
 	}
@@ -1114,7 +1114,7 @@ func TestReconciler_Compute_TypeChange_ForcesRebuildFallback(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, true) // hasRebuildExt = true
+	p, err := rec.Compute(conf, live, nil, true) // hasRebuildExt = true
 	if err != nil {
 		t.Fatalf("Compute failed: %v", err)
 	}
@@ -1155,7 +1155,7 @@ func TestReconciler_Compute_BootMode_RunningRestart(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("Compute failed: %v", err)
 	}
@@ -1197,7 +1197,7 @@ func TestReconciler_Compute_DiskShrink_Recreate(t *testing.T) {
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("Compute failed: %v", err)
 	}
@@ -1236,7 +1236,7 @@ func TestReconciler_Compute_VM_HugepagesAndRawQEMU_DiffAndRestart(t *testing.T) 
 		},
 	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, nil, false)
 	if err != nil {
 		t.Fatalf("Compute failed: %v", err)
 	}

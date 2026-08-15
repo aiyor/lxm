@@ -26,20 +26,18 @@ func normalizedDisksVM() *config.Config {
 	}
 }
 
-func volSnapshot(volumes map[string]map[string]*api.StorageVolume) map[string]*plan.InstanceSnapshot {
-	return map[string]*plan.InstanceSnapshot{
-		"carrier": {Name: "carrier", StorageVolumes: volumes},
-	}
-}
-
+// TestReconciler_Create_DeviceShape verifies the four-mode device shape and
+// managed-disk create ops. The volume map is passed to Reconciler.Compute as a
+// dedicated parameter (it is not carried on instance snapshots, so it survives
+// an empty instance list).
 func TestReconciler_Create_DeviceShape(t *testing.T) {
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
-	live := volSnapshot(map[string]map[string]*api.StorageVolume{
+	volumes := map[string]map[string]*api.StorageVolume{
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Type: "custom", ContentType: "filesystem"}},
-	})
+	}
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, nil, volumes, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +98,7 @@ func TestReconciler_Create_ExternalVolumeMissing(t *testing.T) {
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
 	// No volumes at all: external web-root-vol is missing.
-	_, err := rec.Compute(conf, map[string]*plan.InstanceSnapshot{}, false)
+	_, err := rec.Compute(conf, map[string]*plan.InstanceSnapshot{}, nil, false)
 	if err == nil {
 		t.Fatal("expected MissingVolumeError for absent external volume")
 	}
@@ -110,6 +108,83 @@ func TestReconciler_Create_ExternalVolumeMissing(t *testing.T) {
 	}
 	if mve.Volume != "web-root-vol" || mve.Disk != "shared-fs" || mve.Instance != "db-vm" {
 		t.Errorf("unexpected MissingVolumeError: %+v", mve)
+	}
+}
+
+func TestReconciler_Create_ExternalVolume_PresentOnEmptyLive(t *testing.T) {
+	// Zero live instances (fresh LXD) attaching an existing external volume:
+	// the volume map is a dedicated Compute parameter, so it survives an empty
+	// instance list (regression: previously dropped when no snapshot carried it).
+	rec := plan.NewReconciler()
+	conf := normalizedDisksVM()
+	volumes := map[string]map[string]*api.StorageVolume{
+		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Type: "custom", ContentType: "filesystem"}},
+	}
+	p, err := rec.Compute(conf, map[string]*plan.InstanceSnapshot{}, volumes, false)
+	if err != nil {
+		t.Fatalf("expected create to succeed with the external volume present, got: %v", err)
+	}
+	if p.Steps[0].Action != "create" {
+		t.Fatalf("expected create, got %q", p.Steps[0].Action)
+	}
+}
+
+func TestReconciler_Update_RewordedEqualSize_NoDiff(t *testing.T) {
+	// A semantically-equal size reworded differently (10GiB vs 10737418240)
+	// must not produce a perpetual size diff (M3).
+	rec := plan.NewReconciler()
+	conf := normalizedDisksVM()
+	conf.Disks[0].Size = "10737418240" // == 10GiB
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
+		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
+		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
+		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
+	}, map[string]map[string]*api.StorageVolume{
+		"default": {
+			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "10GiB"}},
+			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
+		},
+		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
+	})
+
+	p, err := rec.Compute(conf, live, volumes, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Steps[0].Action != "noop" {
+		t.Errorf("expected noop for reworded-equal size, got %q (diff: %+v)", p.Steps[0].Action, p.Steps[0].Diff)
+	}
+}
+
+func TestReconciler_Update_ManagedPoolChange_Restart(t *testing.T) {
+	// A managed pool change re-points the device to a fresh volume in another
+	// pool; on a running VM this detaches/attaches a device, so a restart is
+	// required (M4).
+	rec := plan.NewReconciler()
+	conf := normalizedDisksVM()
+	conf.Disks[0].Pool = "fast-pool"
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
+		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
+		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
+		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
+	}, map[string]map[string]*api.StorageVolume{
+		"default": {
+			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
+			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
+		},
+		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
+	})
+
+	p, err := rec.Compute(conf, live, volumes, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	step := p.Steps[0]
+	if step.Action != "update" {
+		t.Fatalf("expected update, got %q", step.Action)
+	}
+	if step.PowerTransition != "restart" {
+		t.Errorf("managed pool change on a running VM must restart, got %q", step.PowerTransition)
 	}
 }
 
@@ -126,7 +201,7 @@ func TestReconciler_Create_NoExternalVolumesProbed(t *testing.T) {
 		},
 	}
 	// Only managed disks: no volumes needed, nil live map is fine.
-	p, err := rec.Compute(conf, nil, false)
+	p, err := rec.Compute(conf, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -135,7 +210,7 @@ func TestReconciler_Create_NoExternalVolumesProbed(t *testing.T) {
 	}
 }
 
-func liveVMWithDisk(devices map[string]map[string]string, volumes map[string]map[string]*api.StorageVolume) map[string]*plan.InstanceSnapshot {
+func liveVMWithDisk(devices map[string]map[string]string, volumes map[string]map[string]*api.StorageVolume) (map[string]*plan.InstanceSnapshot, map[string]map[string]*api.StorageVolume) {
 	return map[string]*plan.InstanceSnapshot{
 		"db-vm": {
 			Name:            "db-vm",
@@ -146,9 +221,8 @@ func liveVMWithDisk(devices map[string]map[string]string, volumes map[string]map
 			Devices:         devices,
 			ExpandedDevices: devices,
 			ETag:            "etag-1",
-			StorageVolumes:  volumes,
 		},
-	}
+	}, volumes
 }
 
 func diskDev(name, pool, source, path, bus, readonly string) map[string]string {
@@ -168,7 +242,7 @@ func diskDev(name, pool, source, path, bus, readonly string) map[string]string {
 func TestReconciler_Update_NoDiskDiff(t *testing.T) {
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
-	live := liveVMWithDisk(map[string]map[string]string{
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
@@ -180,7 +254,7 @@ func TestReconciler_Update_NoDiskDiff(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, volumes, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,14 +271,14 @@ func TestReconciler_Update_DiskAdded(t *testing.T) {
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
 	// live has only the wal disk; data (managed) and shared-fs (external) added.
-	live := liveVMWithDisk(map[string]map[string]string{
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
 		"disk-wal": diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 	}, map[string]map[string]*api.StorageVolume{
 		"default":   {"db-vm-wal": {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}}},
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, volumes, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -231,7 +305,7 @@ func TestReconciler_Update_DiskRemoved(t *testing.T) {
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
 	// live has an extra foreign-to-manifest disk disk-gone.
-	live := liveVMWithDisk(map[string]map[string]string{
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
@@ -244,7 +318,7 @@ func TestReconciler_Update_DiskRemoved(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, volumes, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -273,7 +347,7 @@ func TestReconciler_Update_Grow(t *testing.T) {
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
 	conf.Disks[0].Size = "150GiB" // grow data 100GiB → 150GiB
-	live := liveVMWithDisk(map[string]map[string]string{
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
@@ -285,7 +359,7 @@ func TestReconciler_Update_Grow(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, volumes, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -311,7 +385,7 @@ func TestReconciler_Update_Shrink_Error(t *testing.T) {
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
 	conf.Disks[0].Size = "50GiB" // shrink data 100GiB → 50GiB
-	live := liveVMWithDisk(map[string]map[string]string{
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
@@ -323,7 +397,7 @@ func TestReconciler_Update_Shrink_Error(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	_, err := rec.Compute(conf, live, false)
+	_, err := rec.Compute(conf, live, volumes, false)
 	if err == nil {
 		t.Fatal("expected shrink to be rejected")
 	}
@@ -338,7 +412,7 @@ func TestReconciler_Update_ModeSwitch_Error(t *testing.T) {
 	// Switch wal from block to filesystem (add path).
 	conf.Disks[1].Path = "/var/lib/wal"
 	conf.Disks[1].Bus = ""
-	live := liveVMWithDisk(map[string]map[string]string{
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
@@ -350,7 +424,7 @@ func TestReconciler_Update_ModeSwitch_Error(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	_, err := rec.Compute(conf, live, false)
+	_, err := rec.Compute(conf, live, volumes, false)
 	if err == nil {
 		t.Fatal("expected mode switch to be rejected")
 	}
@@ -363,7 +437,7 @@ func TestReconciler_Update_PathChange_Restart(t *testing.T) {
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
 	conf.Disks[0].Path = "/var/lib/new-path"
-	live := liveVMWithDisk(map[string]map[string]string{
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
@@ -375,7 +449,7 @@ func TestReconciler_Update_PathChange_Restart(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, volumes, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -393,7 +467,7 @@ func TestReconciler_Update_ManagedPoolChange_CreateOp(t *testing.T) {
 	conf := normalizedDisksVM()
 	conf.Disks[0].Pool = "fast-pool" // move managed data disk to fast-pool
 	conf.Disks[0].Source = "db-vm-data"
-	live := liveVMWithDisk(map[string]map[string]string{
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
@@ -405,7 +479,7 @@ func TestReconciler_Update_ManagedPoolChange_CreateOp(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, false)
+	p, err := rec.Compute(conf, live, volumes, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -428,7 +502,7 @@ func TestReconciler_Update_ExternalMissing_Error(t *testing.T) {
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
 	// shared-fs external volume disappears from the pool.
-	live := liveVMWithDisk(map[string]map[string]string{
+	live, volumes := liveVMWithDisk(map[string]map[string]string{
 		"disk-data": diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":  diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 	}, map[string]map[string]*api.StorageVolume{
@@ -438,7 +512,7 @@ func TestReconciler_Update_ExternalMissing_Error(t *testing.T) {
 		},
 	})
 
-	_, err := rec.Compute(conf, live, false)
+	_, err := rec.Compute(conf, live, volumes, false)
 	if err == nil {
 		t.Fatal("expected error for missing external volume")
 	}
