@@ -120,6 +120,15 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				return &exitError{code: 4, err: fmt.Errorf("fetching live instance state: %w", err)}
 			}
 
+			// Effective image-remotes registry (builtins ∪ declared union) and
+			// the live local-alias inventory drive the remote:alias fetch
+			// decision (§4.1/§4.3).
+			imageRemotes, err := config.EffectiveImageRemotes(loaded)
+			if err != nil {
+				return &exitError{code: 3, err: err}
+			}
+			imageAliases := fetchImageAliases(svc)
+
 			reconciler := plan.NewReconciler()
 			hasRebuild := svc.HasExtension("instances_rebuild")
 
@@ -129,7 +138,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			}
 
 			for _, conf := range selectedConfigs {
-				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, hasRebuild)
+				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, imageAliases, imageRemotes, hasRebuild)
 				if err != nil {
 					return planComputeError(err)
 				}
@@ -299,8 +308,14 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				Steps:  []plan.Step{},
 			}
 
+			imageRemotes, err := config.EffectiveImageRemotes(loaded)
+			if err != nil {
+				return &exitError{code: 3, err: err}
+			}
+			imageAliases := fetchImageAliases(svc)
+
 			for _, conf := range selectedConfigs {
-				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, hasRebuild)
+				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, imageAliases, imageRemotes, hasRebuild)
 				if err != nil {
 					return planComputeError(err)
 				}
@@ -399,7 +414,12 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			}
 
 			reconciler := plan.NewReconciler()
-			p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, hasRebuild)
+			imageRemotes, err := config.EffectiveImageRemotes([]*config.Config{conf})
+			if err != nil {
+				return &exitError{code: 3, err: err}
+			}
+			imageAliases := fetchImageAliases(svc)
+			p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, imageAliases, imageRemotes, hasRebuild)
 			if err != nil {
 				return planComputeError(err)
 			}
@@ -1737,6 +1757,28 @@ func fetchLiveSnapshots(svc lxd.InstanceService, configs []*config.Config) (map[
 		}
 	}
 	return result, volumes, nil
+}
+
+// fetchImageAliases returns the live local-alias inventory — the set of alias
+// NAMES from the LXD image store (IMAGE-SPEC §8) — that keys the remote:alias
+// cache probe. The plan/diff commands may run without a service (degraded
+// offline mode), in which case the inventory is empty and every remote
+// reference plans a fetch. A listing failure is treated the same way: the
+// subsequent fetch is idempotent, so an empty probe is safe.
+func fetchImageAliases(svc lxd.InstanceService) map[string]bool {
+	imgSvc, ok := svc.(lxd.ImageService)
+	if !ok {
+		return nil
+	}
+	aliases, err := imgSvc.GetImageAliases()
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]bool, len(aliases))
+	for _, a := range aliases {
+		out[a.Name] = true
+	}
+	return out
 }
 
 func computePlanSummary(steps []plan.Step) plan.PlanSummary {

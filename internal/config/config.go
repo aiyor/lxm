@@ -16,6 +16,14 @@ import (
 
 var cpuRegex = regexp.MustCompile(`^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$`)
 
+// imageRemoteNameRe locks the image_remotes remote-name charset, mirroring the
+// remote part of #RemoteAlias (IMAGE-SPEC §2.2). CUE enforces the rule as the
+// resolved-form contract (#LXM_RESOLVED pairs #ImageRemoteName with
+// #ImageRemoteNameInvalid); this Go-side check is the precise-diagnostic
+// layer — CUE's _|_ error does not name the offending key — and it also covers
+// no-schema (v1-compat) manifests, which skip CUE entirely.
+var imageRemoteNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
+
 // CPUCount handles custom unmarshaling and validation for int or string CPU allocations.
 type CPUCount string
 
@@ -178,6 +186,7 @@ type Config struct {
 	Disks            []DiskConfig      `yaml:"disks,omitempty"`
 	VSwitches        []VSwitchConfig   `yaml:"vswitches,omitempty"`
 	NetworkPolicy    *NetworkPolicy    `yaml:"network_policy,omitempty"`
+	ImageRemotes     map[string]string `yaml:"image_remotes,omitempty"`
 	CloudInitInclude []string          `yaml:"cloud-init-include,omitempty"`
 	CloudInit        string            `yaml:"cloud-init,omitempty"`
 	CloudInitFile    string            `yaml:"cloud-init-file,omitempty"`
@@ -603,6 +612,24 @@ func ValidatePostMerge(conf *Config) error {
 			return fmt.Errorf("duplicate disk name %q (disk %d)", d.Name, i)
 		}
 		seenDisks[d.Name] = true
+	}
+
+	// image_remotes validation + canonicalization (§7.2): every value must be
+	// a valid https (or loopback http) URL with a non-empty host, and every
+	// key must match the remote-name charset (CUE enforces it as the
+	// resolved-form contract; validateImageRemoteNames gives the precise
+	// message, since CUE's _|_ error does not name the key). Values are
+	// canonicalized in place so the fleet-union conflict check and resolution
+	// both operate on a stable canonical form.
+	if err := validateImageRemoteNames(conf.ImageRemotes); err != nil {
+		return err
+	}
+	for name, raw := range conf.ImageRemotes {
+		canon, err := CanonicalizeImageRemoteURL(name, raw)
+		if err != nil {
+			return err
+		}
+		conf.ImageRemotes[name] = canon
 	}
 
 	return nil
@@ -1096,6 +1123,20 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 		res.NetworkPolicy = copyNetworkPolicy(overlay.NetworkPolicy)
 	} else {
 		res.NetworkPolicy = copyNetworkPolicy(base.NetworkPolicy)
+	}
+
+	// image_remotes: key-wise merge within an include chain (IMAGE-SPEC §2.2)
+	// — a presence-wins merge per remote name, so an overlay redeclares only
+	// the remotes it overrides and inherits the rest. Fleet-wide dedup +
+	// conflict resolution happen at the fleet union (EffectiveImageRemotes).
+	if len(base.ImageRemotes) > 0 || len(overlay.ImageRemotes) > 0 {
+		res.ImageRemotes = make(map[string]string, len(base.ImageRemotes)+len(overlay.ImageRemotes))
+		for k, v := range base.ImageRemotes {
+			res.ImageRemotes[k] = v
+		}
+		for k, v := range overlay.ImageRemotes {
+			res.ImageRemotes[k] = v
+		}
 	}
 
 	res.CloudInitInclude = append(append([]string(nil), base.CloudInitInclude...), overlay.CloudInitInclude...)

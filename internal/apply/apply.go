@@ -74,23 +74,25 @@ type Executor interface {
 	Apply(ctx context.Context, p *plan.Plan, opts ApplyOpts) (*ApplyReport, error)
 }
 
-// Services bundles the instance, network, and storage LXD services used by the
-// executor.
+// Services bundles the instance, network, storage, and image LXD services used
+// by the executor.
 type Services interface {
 	lxd.InstanceService
 	lxd.NetworkService
 	lxd.StorageService
+	lxd.ImageService
 }
 
 type defaultExecutor struct {
 	lxdSvc     lxd.InstanceService
 	netSvc     lxd.NetworkService
 	storageSvc lxd.StorageService
+	imageSvc   lxd.ImageService
 }
 
 // NewExecutor creates a new default Executor using the provided services.
 func NewExecutor(svc Services) Executor {
-	return &defaultExecutor{lxdSvc: svc, netSvc: svc, storageSvc: svc}
+	return &defaultExecutor{lxdSvc: svc, netSvc: svc, storageSvc: svc, imageSvc: svc}
 }
 
 func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpts) (*ApplyReport, error) {
@@ -127,6 +129,34 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 	var wg sync.WaitGroup
 
 	worstExitCode := 0
+
+	// Phase -1: remote-image fetch ops (image: remote:alias, IMAGE-SPEC §9).
+	// Every fetch must land before any instance mutation, so it runs first —
+	// before the volume and network phases. Ops are deduplicated by
+	// (RemoteURL, Alias, Type) so a shared base image across a fleet is
+	// fetched once. A fetch failure aborts the apply (phase-abort semantics)
+	// with exit 4; "Alias already exists" is treated as success (§7.7).
+	// Dry-run never touches the remote.
+	if !opts.DryRun {
+		imageFailed := false
+		for _, op := range dedupImageOps(p.Steps) {
+			if err := e.executeImageOp(ctx, op); err != nil {
+				imageFailed = true
+				_, retryable := e.lxdSvc.ClassifyLXDError(err, "update")
+				report.Errors = append(report.Errors, ErrorInfo{
+					Code:      "LXD_ERROR",
+					Message:   fmt.Sprintf("fetching image %q from remote %q: %v", op.Alias, op.RemoteURL, err),
+					Retryable: retryable,
+				})
+				worstExitCode = selectWorstExitCode(worstExitCode, 4)
+				break
+			}
+		}
+		if imageFailed {
+			report.ExitCode = worstExitCode
+			return report, nil
+		}
+	}
 
 	// Phase 0: storage volume ops (STORAGE-SPEC §10). VolumeOps must complete
 	// before any instance mutation (create/attach references the volumes) and
@@ -268,6 +298,36 @@ func (e *defaultExecutor) createVolume(ctx context.Context, op plan.VolumeOp) er
 		req.Config["size"] = op.Size
 	}
 	return e.storageSvc.CreateStoragePoolVolume(op.Pool, req)
+}
+
+// dedupImageOps collects the distinct fetch ops across all steps,
+// deduplicated by (RemoteURL, Alias, Type) so a shared base image is fetched
+// once per apply (IMAGE-SPEC §9). Order follows plan step order.
+func dedupImageOps(steps []plan.Step) []plan.ImageOp {
+	seen := make(map[string]bool)
+	var out []plan.ImageOp
+	for _, step := range steps {
+		for _, op := range step.ImageOps {
+			key := op.RemoteURL + "\x00" + op.Alias + "\x00" + op.Type
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
+// executeImageOp applies one idempotent remote-image fetch (Phase -1,
+// IMAGE-SPEC §9). LXD's "Alias already exists" is a success/no-op: it means
+// another concurrent apply already fetched and tagged the image (§7.7).
+func (e *defaultExecutor) executeImageOp(ctx context.Context, op plan.ImageOp) error {
+	err := e.imageSvc.CopyRemoteImage(ctx, op.RemoteURL, op.Alias, op.Type, op.LocalAlias)
+	if err != nil && strings.Contains(err.Error(), "Alias already exists") {
+		return nil
+	}
+	return err
 }
 
 // growIfNeeded grows the volume when the desired size exceeds the live size.

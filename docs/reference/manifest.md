@@ -120,11 +120,40 @@ vm:
 
 ### `image`
 
-The base image the instance is created from, as a LXD image reference: a hex fingerprint, a local alias, or a `remote:alias`. The image must already be present in your LXD host; lxm refers to it by that reference.
+The base image the instance is created from, as a LXD image reference: a hex fingerprint, a local
+alias, or a `remote:alias`.
+
+* **Fingerprint / bare alias** (local): the image must already be present in your LXD host; lxm
+  refers to it by that exact reference.
+* **`remote:alias`**: when the image is not already cached locally, lxm looks it up on the named
+  remote (a simplestreams image server) and fetches it into the local store before creating or
+  rebuilding the instance. The fetched image is tagged with a deterministic, **type-qualified**
+  local alias (`<remote>/<alias>` for containers, `<remote>/<alias>/vm` for virtual machines),
+  which is what create/rebuild payloads use. Once cached, the reference never re-fetches.
 
 ```yaml
 image: ubuntu:24.04
 ```
+
+The named remote resolves to a URL from `image_remotes:` (below) or the built-in remotes
+(`ubuntu`, `ubuntu-daily`, `images`). Referencing an undeclared remote is a plan-time error
+(exit 3); set `LXM_IMAGE_FETCH=0` to disable fetching and turn an uncached remote reference into
+the same error.
+
+### `image_remotes`
+
+Fleet-scoped mapping of remote **name** to simplestreams **URL**, for the `remote:alias` image
+form. Usually declared in a `_base.yaml` and inherited via `include`. A declaration overrides a
+same-named built-in; across the fleet, identical `(name, url)` duplicates dedup silently and a
+name with conflicting URLs fails (exit 3).
+
+```yaml
+image_remotes:
+  corp-images: https://images.corp.example.com
+```
+
+URLs must be `https://` (or `http://` for loopback hosts) with a non-empty host; they are
+canonicalized (lowercase scheme+host, trailing `/` trimmed) before comparison.
 
 ### `user`
 

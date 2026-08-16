@@ -118,6 +118,16 @@ type StorageService interface {
 	DeleteStoragePoolVolume(pool, volType, name string) error
 }
 
+// ImageService exposes the local image store for cache probing and remote
+// simplestreams fetch (the image: remote:alias feature surface, IMAGE-SPEC §8).
+type ImageService interface {
+	GetImages() ([]api.Image, error)
+	GetImageAliases() ([]api.ImageAliasesEntry, error)
+	// CopyRemoteImage pulls a remote simplestreams image into the local store
+	// and creates the canonical local alias. The async operation is awaited.
+	CopyRemoteImage(ctx context.Context, remoteURL, alias, imageType, localAlias string) error
+}
+
 type lxdService struct {
 	client lxd_client.InstanceServer
 }
@@ -339,6 +349,40 @@ func (s *lxdService) DeleteStoragePoolVolume(pool, volType, name string) error {
 		return err
 	}
 	return waitOpContext(context.Background(), op)
+}
+
+func (s *lxdService) GetImages() ([]api.Image, error) {
+	return s.client.GetImages()
+}
+
+func (s *lxdService) GetImageAliases() ([]api.ImageAliasesEntry, error) {
+	return s.client.GetImageAliases()
+}
+
+// CopyRemoteImage pulls a remote simplestreams image into the local store and
+// tags it with the canonical local alias (IMAGE-SPEC §8). The LXD daemon
+// performs the download and arch/variant selection — the same mechanism as
+// `lxc image copy` — and the async operation is awaited. A concurrent fetch of
+// the same alias surfaces LXD's "Alias already exists", which the executor
+// treats as a no-op (§7.7).
+func (s *lxdService) CopyRemoteImage(ctx context.Context, remoteURL, alias, imageType, localAlias string) error {
+	op, err := s.client.CreateImage(api.ImagesPost{
+		Source: &api.ImagesPostSource{
+			ImageSource: api.ImageSource{
+				Protocol:  "simplestreams",
+				Server:    remoteURL,
+				Alias:     alias,
+				ImageType: imageType,
+			},
+			Mode: "pull",
+			Type: api.SourceTypeImage,
+		},
+		Aliases: []api.ImageAlias{{Name: localAlias}},
+	}, nil)
+	if err != nil {
+		return err
+	}
+	return waitOpContext(ctx, op)
 }
 
 func (s *lxdService) HasExtension(name string) bool {

@@ -25,6 +25,7 @@ type FakeInstanceServer struct {
 	Snapshots   map[string]map[string]*api.InstanceSnapshot // containerName -> snapName -> snapshot
 	Nets        *Networks                                   // network + ACL backing state
 	Vols        *VolumeStore                                // custom storage volume backing state
+	Images      *ImageStore                                 // image + alias backing state
 
 	// Optional custom hook functions
 	GetInstanceFunc         func(name string) (*api.Instance, string, error)
@@ -38,6 +39,7 @@ type FakeInstanceServer struct {
 	CreateNetworkACLFunc    func(acl api.NetworkACLsPost) error
 	GetNetworksFunc         func() ([]api.Network, error)
 	GetNetworkACLsFunc      func() ([]api.NetworkACL, error)
+	CopyRemoteImageFunc     func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error
 }
 
 // NewFakeInstanceServer creates a new initialized FakeInstanceServer.
@@ -52,6 +54,7 @@ func NewFakeInstanceServer() *FakeInstanceServer {
 	}
 	f.AddNetworks()
 	f.AddStorage()
+	f.AddImages()
 	return f
 }
 

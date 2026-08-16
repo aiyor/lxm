@@ -15,15 +15,17 @@ You need:
 * lxm installed ([Installation](installation.md))
 * LXD 5.0+ installed and running
 * Your user in the `lxd` group
-* An Ubuntu base image available to LXD
 
-lxm creates containers from images that are already present in your LXD host (it refers to them by alias or fingerprint). If you have not pulled an image yet, fetch one now — this is a one-time step:
+lxm creates containers from images. A `remote:alias` reference like `ubuntu:22.04` is **fetched
+automatically** from its simplestreams remote when it is not already cached locally, so no manual
+pull step is required:
 
-```bash
-lxc image copy ubuntu:22.04 local: --alias ubuntu:22.04
+```yaml
+image: ubuntu:22.04   # lxm looks it up and fetches it on first use
 ```
 
-You can use any image you already have instead; the rest of this tour only assumes the image is available.
+You can also reference a local alias or fingerprint — those must already be present in your LXD host,
+and lxm refers to them by that exact reference. (To skip the automatic fetch, set `LXM_IMAGE_FETCH=0`.)
 
 ## 1. Initialize a fleet directory
 

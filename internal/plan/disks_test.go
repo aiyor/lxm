@@ -37,7 +37,7 @@ func TestReconciler_Create_DeviceShape(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Type: "custom", ContentType: "filesystem"}},
 	}
 
-	p, err := rec.Compute(conf, nil, volumes, false)
+	p, err := rec.Compute(conf, nil, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestReconciler_Create_ExplicitBus_EmitsIOBus(t *testing.T) {
 			{Name: "scsi", Size: "20GiB", Pool: "default", Bus: "virtio-scsi", Source: "db-vm-scsi"},
 		},
 	}
-	p, err := rec.Compute(conf, nil, nil, false)
+	p, err := rec.Compute(conf, nil, nil, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestReconciler_Update_DefaultBusReconstructed(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, volumes, false)
+	p, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestReconciler_Create_ExternalVolumeMissing(t *testing.T) {
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
 	// No volumes at all: external web-root-vol is missing.
-	_, err := rec.Compute(conf, map[string]*plan.InstanceSnapshot{}, nil, false)
+	_, err := rec.Compute(conf, map[string]*plan.InstanceSnapshot{}, nil, nil, config.BuiltinImageRemotes(), false)
 	if err == nil {
 		t.Fatal("expected MissingVolumeError for absent external volume")
 	}
@@ -176,7 +176,7 @@ func TestReconciler_Create_ExternalVolume_PresentOnEmptyLive(t *testing.T) {
 	volumes := map[string]map[string]*api.StorageVolume{
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Type: "custom", ContentType: "filesystem"}},
 	}
-	p, err := rec.Compute(conf, map[string]*plan.InstanceSnapshot{}, volumes, false)
+	p, err := rec.Compute(conf, map[string]*plan.InstanceSnapshot{}, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("expected create to succeed with the external volume present, got: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestReconciler_Update_RewordedEqualSize_NoDiff(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, volumes, false)
+	p, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestReconciler_Update_ManagedPoolChange_Restart(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, volumes, false)
+	p, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestReconciler_Create_NoExternalVolumesProbed(t *testing.T) {
 		},
 	}
 	// Only managed disks: no volumes needed, nil live map is fine.
-	p, err := rec.Compute(conf, nil, nil, false)
+	p, err := rec.Compute(conf, nil, nil, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestReconciler_Update_NoDiskDiff(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, volumes, false)
+	p, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestReconciler_Update_DiskAdded(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, volumes, false)
+	p, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestReconciler_Update_DiskRemoved(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, volumes, false)
+	p, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestReconciler_Update_Grow(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, volumes, false)
+	p, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestReconciler_Update_Shrink_Error(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	_, err := rec.Compute(conf, live, volumes, false)
+	_, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err == nil {
 		t.Fatal("expected shrink to be rejected")
 	}
@@ -480,7 +480,7 @@ func TestReconciler_Update_ModeSwitch_Error(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	_, err := rec.Compute(conf, live, volumes, false)
+	_, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err == nil {
 		t.Fatal("expected mode switch to be rejected")
 	}
@@ -505,7 +505,7 @@ func TestReconciler_Update_PathChange_Restart(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, volumes, false)
+	p, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestReconciler_Update_ManagedPoolChange_CreateOp(t *testing.T) {
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
 
-	p, err := rec.Compute(conf, live, volumes, false)
+	p, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestReconciler_Update_ExternalMissing_Error(t *testing.T) {
 		},
 	})
 
-	_, err := rec.Compute(conf, live, volumes, false)
+	_, err := rec.Compute(conf, live, volumes, nil, config.BuiltinImageRemotes(), false)
 	if err == nil {
 		t.Fatal("expected error for missing external volume")
 	}

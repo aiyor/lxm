@@ -223,6 +223,57 @@ the union of `mounts[].path` and filesystem `disks[].path` (cleaned) has no dupl
 (exit 3). Size rules: `size` with `source` is forbidden by CUE; `size` required for managed disks
 (`source` unset) is enforced Go-side in `LoadConfig` normalization.
 
+### 3.10 Image References & Remotes (`image` / `image_remotes` / fleet-scoped)
+
+> This section is the **canonical manifest-schema reference** for `image:` and `image_remotes:`
+> (it mirrors the CUE schemas in `internal/config/schemas/v2.cue`). The feature-level spec — remote
+> resolution order, the canonical type-qualified local alias, the fetch decision, and the Phase −1
+> execution model — lives in [`IMAGE-SPEC.md`](IMAGE-SPEC.md). Keep the two schema tables in sync
+> when either changes.
+
+`image:` is a LXD image reference. Its interpretation depends on its form:
+
+| Form | CUE match | Behaviour |
+| :-- | :-- | :-- |
+| hex fingerprint (12–64 hex chars) | `#Fingerprint` | **Local only.** Never fetched. A miss fails at apply (exit 4) exactly as today. |
+| bare alias (no `:`) | `#LocalAlias` | **Local only.** Never fetched. A miss fails at apply (exit 4) exactly as today. |
+| `remote:alias` (exactly one `:`) | `#RemoteAlias` | **Remote.** When the canonical local alias is not cached, lxm looks the image up on the named remote (a simplestreams server) and fetches it before create/recreate. |
+
+```yaml
+image: ubuntu:22.04        # remote:alias — fetched into the local store when uncached
+image: jammy                # bare local alias
+image: 8d3c…d7c             # fingerprint
+```
+
+The `remote:alias` form is resolved and fetched; the fetched image is tagged in the local LXD store
+with a deterministic, **type-qualified** local alias — `ubuntu/22.04` for containers,
+`ubuntu/22.04/vm` for virtual machines — which is what create/rebuild payloads use as
+`Source.Alias`. Bare aliases and fingerprints keep their literal identity.
+
+`image_remotes:` maps a remote **name** to a simplestreams **URL**. It is **fleet-scoped**: the
+effective registry is the union of every loaded manifest's declarations plus the locked built-ins
+(`ubuntu`, `ubuntu-daily`, `images`), with a same-named declaration overriding a built-in. Usually
+declared in a `_base.yaml` and inherited via `include`. Rich URL validation (scheme, host,
+loopback-http rule) and URL canonicalization run Go-side in `ValidatePostMerge`.
+
+```yaml
+schema: lxm/config/v2
+image_remotes:
+  ubuntu: https://cloud-images.ubuntu.com/releases   # overrides the built-in (e.g. to a mirror)
+  corp-images: https://images.corp.example.com       # custom remote
+```
+
+| Field (map key) | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `<remote>` | string | — | `=~"^[a-zA-Z0-9_.-]+$"` (same charset as the remote part of `#RemoteAlias`). Declared in `#LXM_AUTHORING`; enforced by `#LXM_RESOLVED` (paired `#ImageRemoteName` / `#ImageRemoteNameInvalid` patterns) and by Go (`validateImageRemoteNames`, run from `ValidatePostMerge` and `MigrateManifest`), which reports the offending key with a precise message on every load and compile path. |
+| `<url>` | string | — | `http://` or `https://` URL with a non-empty host. Scheme `https` required in production; `http` only for loopback hosts. Canonicalized (lowercase scheme+host, trailing `/` trimmed) before storage and comparison. Go-validated in `ValidatePostMerge`. |
+
+Merge semantics: within an include chain `image_remotes` merges **key-wise** (overlay wins per
+remote name); across sibling manifests identical `(name, url)` duplicates dedup silently and the
+same name with a different canonical URL fails with **exit code 3** citing both files. Referencing
+an undeclared remote in `image:` fails at plan time with **exit code 3**; disabling fetch
+(`LXM_IMAGE_FETCH=0`) turns an uncached remote reference into the same plan-time error.
+
 ---
 
 ## 4. Mount Authoring & Security Rules

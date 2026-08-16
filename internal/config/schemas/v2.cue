@@ -18,6 +18,20 @@ import (
 // POSIX Environment Variable identifier
 #EnvKey: =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
 
+// #EnvKeyInvalid rejects keys that do not fully match #EnvKey. It is needed
+// because a map carrying only a positive key-pattern constraint is NOT
+// enforced when the struct is wrapped in close() (a CUE quirk); pairing the
+// positive pattern with a [!~...]: _|_ rejection makes the charset rule
+// concrete, so a key like "bad key!" fails authoring validation.
+#EnvKeyInvalid: !~"^[a-zA-Z_][a-zA-Z0-9_]*$"
+
+// Simplestreams image remote name (the remote part of image: remote:alias)
+#ImageRemoteName: =~"^[a-zA-Z0-9_\\.\\-]+$"
+
+// #ImageRemoteNameInvalid rejects keys that do not fully match #ImageRemoteName
+// (see #EnvKeyInvalid for why the paired rejection is required under close()).
+#ImageRemoteNameInvalid: !~"^[a-zA-Z0-9_\\.\\-]+$"
+
 // Mount path restrictions: absolute, cleaned, non-root system path
 #CleanMountPath: string & {
 	strings.MinRunes(2)
@@ -180,7 +194,10 @@ import (
 	vm?:     #VMConfigAuthoring
 
 	// Local template variables for host path reuse (file-local scope)
-	vars?: {[#EnvKey]: string}
+	vars?: {
+		[#EnvKey]: string
+		[#EnvKeyInvalid]: _|_
+	}
 
 	// Mounts: accepts compact strings, closed map form, object form, or mixed list
 	mounts?: [...(#MountStr | #MountObjAuthoring)] | close({[#CleanMountPath]: (string | #MountMapObjAuthoring)})
@@ -203,6 +220,13 @@ import (
 		internal_cidrs?: [...string]
 		allow:           [...#PolicyRuleAuthoring]
 	})
+
+	// Fleet-scoped simplestreams image remotes (image: remote:alias). Rich
+	// URL validation (scheme, host, loopback-http rule) and the remote-name
+	// charset diagnostic run Go-side in ValidatePostMerge; the URL is a bare
+	// string here and the charset is declared (enforced as the resolved-form
+	// contract in #LXM_RESOLVED).
+	image_remotes?: {[#ImageRemoteName]: string}
 
 	// Wait policy: accepts scalar bool (shorthand) or struct
 	wait?: bool | #WaitConfig
@@ -297,6 +321,11 @@ import (
 			direction: "both" | "egress"
 		})]
 	})
+
+	image_remotes?: {
+		[#ImageRemoteName]: string
+		[#ImageRemoteNameInvalid]: _|_
+	}
 
 	wait: #WaitConfig
 
