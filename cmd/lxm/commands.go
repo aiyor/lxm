@@ -122,12 +122,17 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 
 			// Effective image-remotes registry (builtins ∪ declared union) and
 			// the live local-alias inventory drive the remote:alias fetch
-			// decision (§4.1/§4.3).
+			// decision (§4.1/§4.3). A failed inventory probe is fatal here:
+			// an empty inventory would plan redundant pulls for every cached
+			// remote image (M1).
 			imageRemotes, err := config.EffectiveImageRemotes(loaded)
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
-			imageAliases := fetchImageAliases(svc)
+			imageAliases, err := fetchImageAliases(svc)
+			if err != nil {
+				return &exitError{code: 4, err: fmt.Errorf("listing local image aliases: %w", err)}
+			}
 
 			reconciler := plan.NewReconciler()
 			hasRebuild := svc.HasExtension("instances_rebuild")
@@ -312,7 +317,10 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
-			imageAliases := fetchImageAliases(svc)
+			// Plan is a preview: a probe failure degrades to an empty
+			// inventory (every remote reference plans a fetch) rather than
+			// aborting the offline-capable plan command.
+			imageAliases, _ := fetchImageAliases(svc)
 
 			for _, conf := range selectedConfigs {
 				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, imageAliases, imageRemotes, hasRebuild)
@@ -418,7 +426,7 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
-			imageAliases := fetchImageAliases(svc)
+			imageAliases, _ := fetchImageAliases(svc)
 			p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, imageAliases, imageRemotes, hasRebuild)
 			if err != nil {
 				return planComputeError(err)
@@ -1761,24 +1769,25 @@ func fetchLiveSnapshots(svc lxd.InstanceService, configs []*config.Config) (map[
 
 // fetchImageAliases returns the live local-alias inventory — the set of alias
 // NAMES from the LXD image store (IMAGE-SPEC §8) — that keys the remote:alias
-// cache probe. The plan/diff commands may run without a service (degraded
-// offline mode), in which case the inventory is empty and every remote
-// reference plans a fetch. A listing failure is treated the same way: the
-// subsequent fetch is idempotent, so an empty probe is safe.
-func fetchImageAliases(svc lxd.InstanceService) map[string]bool {
+// cache probe, plus any listing error. The plan/diff commands may run without
+// a service (degraded offline mode) and tolerate the error (an empty
+// inventory simply plans a fetch); the apply command treats a probe failure as
+// fatal (exit 4, like fetchLiveSnapshots) so a broken probe cannot silently
+// turn every cached remote image into a redundant simplestreams pull.
+func fetchImageAliases(svc lxd.InstanceService) (map[string]bool, error) {
 	imgSvc, ok := svc.(lxd.ImageService)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	aliases, err := imgSvc.GetImageAliases()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := make(map[string]bool, len(aliases))
 	for _, a := range aliases {
 		out[a.Name] = true
 	}
-	return out
+	return out, nil
 }
 
 func computePlanSummary(steps []plan.Step) plan.PlanSummary {

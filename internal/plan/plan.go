@@ -574,6 +574,10 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.Ins
 		put.Config[k] = v
 	}
 	put.Config["user.lxm.managed"] = "true"
+	// The manifest reference is re-recorded on every update so the imageMatches
+	// fast path (§4.5) stays authoritative and legacy instances created before
+	// user.lxm.image existed are backfilled on their next update.
+	put.Config["user.lxm.image"] = manifest.Image
 
 	// 2. Recompute user, groups, cloud-init
 	if manifest.User != "" {

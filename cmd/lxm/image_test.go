@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/plan"
+	"github.com/canonical/lxd/shared/api"
 )
 
 func writeManifest(t *testing.T, content string) string {
@@ -139,6 +141,35 @@ func TestRun_PlanImageRemotesConflict_Exit3(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "conflicting URLs") {
 		t.Errorf("stderr missing conflict error: %q", stderr.String())
+	}
+}
+
+// TestRun_ApplyImageAliasProbeFailure_Exit4 covers M1: a failed local-alias
+// inventory probe at apply must be fatal (exit 4), so a broken probe cannot
+// silently plan redundant simplestreams pulls for every cached remote image.
+// plan/diff remain lenient (offline-capable).
+func TestRun_ApplyImageAliasProbeFailure_Exit4(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+	fake.GetImageAliasesFunc = func() ([]api.ImageAliasesEntry, error) {
+		return nil, errors.New("probe failed")
+	}
+	cfgFile := writeManifest(t, "name: dev-box\nimage: ubuntu:24.04\nstatus: present\n")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"apply", cfgFile}, &stdout, &stderr, fake)
+	if code != 4 {
+		t.Fatalf("apply with probe failure returned %d, want 4 (LXD_ERROR). Stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "listing local image aliases") {
+		t.Errorf("stderr missing probe error: %q", stderr.String())
+	}
+
+	// plan stays lenient: probe failure degrades to an empty inventory.
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"plan", cfgFile, "--format", "json"}, &stdout, &stderr, fake)
+	if code != 0 {
+		t.Errorf("plan with probe failure returned %d, want 0 (lenient). Stderr: %s", code, stderr.String())
 	}
 }
 

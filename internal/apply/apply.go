@@ -143,6 +143,13 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 			if err := e.executeImageOp(ctx, op); err != nil {
 				imageFailed = true
 				_, retryable := e.lxdSvc.ClassifyLXDError(err, "update")
+				// Spec §7.4: transient network errors are marked retryable.
+				// A fetch that times out (waitOpContext deadline) is transient
+				// but ClassifyLXDError only marks ETag/412 conflicts, so flag
+				// the deadline case explicitly.
+				if errors.Is(err, context.DeadlineExceeded) {
+					retryable = true
+				}
 				report.Errors = append(report.Errors, ErrorInfo{
 					Code:      "LXD_ERROR",
 					Message:   fmt.Sprintf("fetching image %q from remote %q: %v", op.Alias, op.RemoteURL, err),
@@ -328,6 +335,48 @@ func (e *defaultExecutor) executeImageOp(ctx context.Context, op plan.ImageOp) e
 		return nil
 	}
 	return err
+}
+
+// refreshImageRecord re-records user.lxm.image on the live instance after a
+// rebuild (the non-fallback recreate path). LXD's rebuild preserves user.*
+// config but resets image.* to the new image (verified in
+// lxd/instance/drivers/driver_common.go rebuildCommon), so without this the
+// recorded reference stays stale and re-plans a perpetual, destructive
+// recreate for every non-OS remote (images:…, ubuntu-daily:…, custom remotes),
+// and can even mask real drift (stale record equals a reverted manifest
+// reference). The PUT is a targeted refresh: it copies the live config
+// (preserving the image.* keys the rebuild just set — an instance PUT is a
+// full-replace, so a bare InstancesPost config would wipe them) and updates
+// only user.lxm.image. The desired reference is taken from the step's create
+// payload, which buildInstancesPost always sets.
+func (e *defaultExecutor) refreshImageRecord(ctx context.Context, step plan.Step) error {
+	if step.InstancesPost == nil {
+		return nil
+	}
+	image := step.InstancesPost.Config["user.lxm.image"]
+	if image == "" {
+		return nil
+	}
+	inst, etag, err := e.lxdSvc.GetInstance(step.Container)
+	if err != nil {
+		return err
+	}
+	devices := inst.Devices
+	if devices == nil {
+		devices = make(map[string]map[string]string)
+	}
+	put := api.InstancePut{
+		Architecture: inst.Architecture,
+		Config:       make(map[string]string, len(inst.Config)+1),
+		Devices:      devices,
+		Profiles:     inst.Profiles,
+		Ephemeral:    inst.Ephemeral,
+	}
+	for k, v := range inst.Config {
+		put.Config[k] = v
+	}
+	put.Config["user.lxm.image"] = image
+	return e.lxdSvc.UpdateInstanceContext(ctx, step.Container, put, etag)
 }
 
 // growIfNeeded grows the volume when the desired size exceeds the live size.
@@ -557,6 +606,14 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 				req = *step.RebuildPost
 			}
 			opErr = e.lxdSvc.RebuildInstanceContext(ctx, step.Container, req)
+			if opErr == nil {
+				// LXD's rebuild preserves user.* config but resets image.* to
+				// the new image, so the recorded user.lxm.image would otherwise
+				// stay stale and re-plan a perpetual recreate for non-OS
+				// remotes (images:…, ubuntu-daily:…, custom remotes) —
+				// IMAGE-SPEC §4.5.
+				opErr = e.refreshImageRecord(ctx, step)
+			}
 		}
 
 	case "delete":

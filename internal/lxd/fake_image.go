@@ -59,6 +59,9 @@ func (f *FakeInstanceServer) GetImages() ([]api.Image, error) {
 func (f *FakeInstanceServer) GetImageAliases() ([]api.ImageAliasesEntry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.GetImageAliasesFunc != nil {
+		return f.GetImageAliasesFunc()
+	}
 	var out []api.ImageAliasesEntry
 	if f.Images == nil {
 		return out, nil

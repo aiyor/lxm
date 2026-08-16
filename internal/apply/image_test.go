@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aiyor/lxm/internal/apply"
+	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/plan"
 	"github.com/canonical/lxd/shared/api"
@@ -173,5 +174,116 @@ func TestExecutor_PhaseMinusOne_DryRunSkipsFetch(t *testing.T) {
 	}
 	if len(fake.Images.Fetches) != 0 {
 		t.Errorf("dry-run must not fetch, got %d fetch(es)", len(fake.Images.Fetches))
+	}
+}
+
+// TestExecutor_Rebuild_RefreshesImageRecord is the H1 regression: LXD's
+// rebuild preserves user.* config but resets image.* to the new image, so the
+// recorded user.lxm.image would otherwise stay stale and re-plan a perpetual
+// recreate for non-OS remotes (images:…, custom remotes). After a rebuild the
+// executor must re-record the reference on the live instance so the next plan
+// is a no-op.
+func TestExecutor_Rebuild_RefreshesImageRecord(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+	_ = fake.CreateInstance(api.InstancesPost{Name: "box1", InstancePut: api.InstancePut{Config: map[string]string{
+		"user.lxm.managed": "true",
+		"user.lxm.user":    "ubuntu",
+		"user.lxm.image":   "images:debian/11",
+		"image.os":         "debian",
+		"image.release":    "bullseye",
+	}}})
+
+	exec := apply.NewExecutor(fake)
+
+	// Plan a recreate from images:debian/11 → images:debian/12 (non-fallback
+	// rebuild). The step carries both the rebuild source and the create payload
+	// whose config holds the fresh user.lxm.image.
+	conf := &config.Config{
+		Name:  "box1",
+		Image: "images:debian/12",
+		Type:  "container",
+		User:  "ubuntu",
+	}
+	rec := plan.NewReconciler()
+	p, err := rec.Compute(conf, map[string]*plan.InstanceSnapshot{
+		"box1": {
+			Name:   "box1",
+			Status: "Running",
+			Config: map[string]string{
+				"user.lxm.managed": "true",
+				"user.lxm.user":    "ubuntu",
+				"user.lxm.image":   "images:debian/11",
+				"image.os":         "debian",
+				"image.release":    "bullseye",
+			},
+		},
+	}, nil, nil, config.BuiltinImageRemotes(), true)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	step := p.Steps[0]
+	if step.Action != "recreate" || step.RebuildFallback {
+		t.Fatalf("expected non-fallback recreate, got action=%q fallback=%v", step.Action, step.RebuildFallback)
+	}
+	if step.RebuildPost == nil || step.RebuildPost.Source.Alias != "images/debian/12" {
+		t.Fatalf("expected rebuild source images/debian/12, got %+v", step.RebuildPost)
+	}
+
+	report, err := exec.Apply(context.Background(), p, apply.ApplyOpts{Jobs: 1})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if report.ExitCode != 0 {
+		t.Fatalf("expected exit 0, got %d: %+v", report.ExitCode, report.Errors)
+	}
+
+	// The live record must be refreshed to the new reference.
+	inst, _, err := fake.GetInstance("box1")
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if got := inst.Config["user.lxm.image"]; got != "images:debian/12" {
+		t.Fatalf("user.lxm.image not refreshed after rebuild, got %q", got)
+	}
+
+	// Re-plan against the refreshed live state: must be a no-op, not a recreate.
+	p2, err := rec.Compute(conf, map[string]*plan.InstanceSnapshot{
+		"box1": {
+			Name:   "box1",
+			Status: "Running",
+			Config: inst.Config,
+		},
+	}, nil, nil, config.BuiltinImageRemotes(), true)
+	if err != nil {
+		t.Fatalf("re-Compute: %v", err)
+	}
+	if p2.Steps[0].Action == "recreate" {
+		t.Errorf("expected no perpetual recreate after rebuild refresh, got %q (diff %+v)", p2.Steps[0].Action, p2.Steps[0].Diff)
+	}
+}
+
+// TestExecutor_PhaseMinusOne_DeadlineRetryable covers L1: a fetch that times
+// out (waitOpContext deadline) is a transient network error and must be marked
+// retryable per spec §7.4, even though ClassifyLXDError only marks ETag/412
+// conflicts.
+func TestExecutor_PhaseMinusOne_DeadlineRetryable(t *testing.T) {
+	fake := lxd.NewFakeInstanceServer()
+	fake.CopyRemoteImageFunc = func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error {
+		return context.DeadlineExceeded
+	}
+	exec := apply.NewExecutor(fake)
+
+	p := &plan.Plan{
+		Schema: "lxm/plan/v1",
+		Steps: []plan.Step{
+			{Container: "box1", Action: "create", Changed: true, ImageOps: []plan.ImageOp{fetchOp("ubuntu/24.04")}},
+		},
+	}
+	report, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{Jobs: 1})
+	if report.ExitCode != 4 {
+		t.Fatalf("expected exit 4, got %d", report.ExitCode)
+	}
+	if len(report.Errors) != 1 || !report.Errors[0].Retryable {
+		t.Errorf("expected retryable deadline-exceeded error, got %+v", report.Errors)
 	}
 }

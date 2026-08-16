@@ -19,16 +19,23 @@ var builtinImageRemotes = map[string]string{
 // SplitImageRef parses an image reference. It returns (remote, alias, true)
 // for the remote:alias form and ("", image, false) otherwise (a fingerprint
 // or a bare local alias). A reference with more than one ':' is never a valid
-// #RemoteAlias, so it is treated as local (the CUE schema rejects it).
+// #RemoteAlias, so it is treated as local (the CUE schema rejects it). An
+// empty alias ("ubuntu:") is likewise not a valid #RemoteAlias — CUE rejects
+// it for v2, and the guard treats it as local for no-schema (v1-compat)
+// manifests so it can never produce a degenerate remote fetch.
 func SplitImageRef(image string) (remote, alias string, isRemote bool) {
 	idx := strings.IndexByte(image, ':')
 	if idx < 0 {
 		return "", image, false
 	}
-	if strings.IndexByte(image[idx+1:], ':') >= 0 {
+	alias = image[idx+1:]
+	if alias == "" {
 		return "", image, false
 	}
-	return image[:idx], image[idx+1:], true
+	if strings.IndexByte(alias, ':') >= 0 {
+		return "", image, false
+	}
+	return image[:idx], alias, true
 }
 
 // ImageLocalRef returns the local LXD image identity that must exist in the

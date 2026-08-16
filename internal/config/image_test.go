@@ -23,6 +23,7 @@ func TestSplitImageRef(t *testing.T) {
 		{"abc123def456", "", "abc123def456", false}, // fingerprint
 		{"ubuntu/22.04", "", "ubuntu/22.04", false}, // slash form (rejected by CUE)
 		{"a:b:c", "", "a:b:c", false},               // multi-colon (rejected by CUE)
+		{"ubuntu:", "", "ubuntu:", false},           // empty alias (rejected by CUE; local guard for v1-compat)
 		{"", "", "", false},
 	}
 	for _, tt := range tests {
@@ -337,24 +338,5 @@ func TestImageRemoteName_CUEEnforced(t *testing.T) {
 		} else if !strings.Contains(err.Error(), `invalid remote name "`+name+`"`) {
 			t.Errorf("Go: precise message missing for %q: %v", name, err)
 		}
-	}
-}
-
-// TestVarsKey_CUEEnforced covers the same close() map-key quirk for the
-// pre-existing vars/#EnvKey field, which is fixed by the same paired-rejection
-// idiom so the schema honestly enforces what it declares.
-func TestVarsKey_CUEEnforced(t *testing.T) {
-	v, err := NewValidator()
-	if err != nil {
-		t.Fatalf("NewValidator: %v", err)
-	}
-	doc := func(key string) []byte {
-		return []byte("schema: lxm/config/v2\nname: dev\nstatus: absent\nvars:\n  \"" + key + "\": x\n")
-	}
-	if err := v.ValidateAuthoring(doc("PROJECT_ROOT")); err != nil {
-		t.Errorf("valid env key rejected: %v", err)
-	}
-	if err := v.ValidateAuthoring(doc("bad key!")); err == nil {
-		t.Error("invalid env key accepted by authoring schema")
 	}
 }

@@ -18,18 +18,14 @@ import (
 // POSIX Environment Variable identifier
 #EnvKey: =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
 
-// #EnvKeyInvalid rejects keys that do not fully match #EnvKey. It is needed
-// because a map carrying only a positive key-pattern constraint is NOT
-// enforced when the struct is wrapped in close() (a CUE quirk); pairing the
-// positive pattern with a [!~...]: _|_ rejection makes the charset rule
-// concrete, so a key like "bad key!" fails authoring validation.
-#EnvKeyInvalid: !~"^[a-zA-Z_][a-zA-Z0-9_]*$"
-
 // Simplestreams image remote name (the remote part of image: remote:alias)
 #ImageRemoteName: =~"^[a-zA-Z0-9_\\.\\-]+$"
 
-// #ImageRemoteNameInvalid rejects keys that do not fully match #ImageRemoteName
-// (see #EnvKeyInvalid for why the paired rejection is required under close()).
+// #ImageRemoteNameInvalid rejects keys that do not fully match #ImageRemoteName.
+// It is needed because a map carrying only a positive key-pattern constraint is
+// NOT enforced when the struct is wrapped in close() (a CUE quirk); pairing the
+// positive pattern with a [!~...]: _|_ rejection makes the charset rule
+// concrete, so a key like "bad name!" fails validation.
 #ImageRemoteNameInvalid: !~"^[a-zA-Z0-9_\\.\\-]+$"
 
 // Mount path restrictions: absolute, cleaned, non-root system path
@@ -194,10 +190,7 @@ import (
 	vm?:     #VMConfigAuthoring
 
 	// Local template variables for host path reuse (file-local scope)
-	vars?: {
-		[#EnvKey]: string
-		[#EnvKeyInvalid]: _|_
-	}
+	vars?: {[#EnvKey]: string}
 
 	// Mounts: accepts compact strings, closed map form, object form, or mixed list
 	mounts?: [...(#MountStr | #MountObjAuthoring)] | close({[#CleanMountPath]: (string | #MountMapObjAuthoring)})

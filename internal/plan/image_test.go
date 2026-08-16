@@ -426,3 +426,42 @@ func TestReconciler_ImageMatches_LegacyFallback(t *testing.T) {
 		t.Errorf("expected noop for legacy ubuntu:22.04 -> ubuntu:jammy, got %q", p.Steps[0].Action)
 	}
 }
+
+// TestReconciler_UpdateBackfillsImageRecord covers M3: an instance created
+// before user.lxm.image existed that is updated (not recreated) must get the
+// record backfilled on the update payload, so the imageMatches fast path
+// (§4.5) becomes authoritative rather than relying on the legacy heuristic
+// forever.
+func TestReconciler_UpdateBackfillsImageRecord(t *testing.T) {
+	rec := plan.NewReconciler()
+	conf := &config.Config{
+		Name:  "box1",
+		Image: "ubuntu:22.04",
+		Type:  "container",
+		User:  "ubuntu",
+	}
+	live := map[string]*plan.InstanceSnapshot{
+		"box1": {
+			Name:   "box1",
+			Status: "Running",
+			ETag:   "etag1",
+			Config: map[string]string{
+				"image.os":      "ubuntu",
+				"image.release": "jammy",
+				"image.version": "22.04",
+				"user.lxm.user": "alice", // drift → update step
+				// no user.lxm.image: pre-feature instance
+			},
+		},
+	}
+	p, err := rec.Compute(conf, live, nil, nil, testRemotes(), true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Steps[0].Action != "update" {
+		t.Fatalf("expected update step, got %q", p.Steps[0].Action)
+	}
+	if got := p.Steps[0].InstancePut.Config["user.lxm.image"]; got != "ubuntu:22.04" {
+		t.Errorf("expected user.lxm.image backfilled on update, got %q", got)
+	}
+}

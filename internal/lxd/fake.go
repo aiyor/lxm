@@ -40,6 +40,7 @@ type FakeInstanceServer struct {
 	GetNetworksFunc         func() ([]api.Network, error)
 	GetNetworkACLsFunc      func() ([]api.NetworkACL, error)
 	CopyRemoteImageFunc     func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error
+	GetImageAliasesFunc     func() ([]api.ImageAliasesEntry, error)
 }
 
 // NewFakeInstanceServer creates a new initialized FakeInstanceServer.

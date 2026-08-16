@@ -101,6 +101,14 @@ URLs are **canonicalized** before storage and comparison:
 so `https://cloud-images.ubuntu.com/releases` and `https://cloud-images.ubuntu.com/releases/` (and
 `HTTPS://CLOUD-IMAGES.UBUNTU.COM/releases`) compare equal.
 
+Locked deviations / edge notes (verified against the implementation):
+
+* **Query strings are preserved** in the canonical form (`path?query`), so two URLs differing only by
+  `?token=` never compare equal and hide a genuine conflict.
+* **The port is preserved verbatim**, so `https://h:443/x` and `https://h/x` compare **unequal**
+  (explicit default port vs omitted). This is intentional and conservative — a same-endpoint false
+  conflict is safer than a different-endpoint false equality.
+
 ---
 
 ## 3. Go Structs & Resolution Helpers (`internal/config`)
@@ -212,7 +220,20 @@ func imageMatches(desired, live string, liveConfig map[string]string) bool {
 ```
 
 The recorded value is not diffed (`computeDiffs` never diffs `user.lxm.*` keys), is preserved across
-`update` (`buildInstancePut` copies `live.Config`), and is rewritten on `recreate`.
+`update`, and is **kept authoritative on every path that changes the image identity**:
+
+* **Create** (`buildInstancesPost`) records `manifest.Image`.
+* **Recreate fallback** (delete+create) records it via the same create payload.
+* **Rebuild** (non-fallback) re-records it: LXD's rebuild preserves `user.*` config but resets
+  `image.*` to the new image (`lxd/instance/drivers/driver_common.go` `rebuildCommon`), and
+  `InstanceRebuildPost` carries only `Source`. Without a refresh the record would stay stale and
+  re-plan a perpetual, destructive recreate for non-OS remotes — and could even mask real drift (a
+  stale record equal to a reverted manifest reference). The executor therefore issues a targeted
+  config PUT after a successful rebuild (`refreshImageRecord`): it copies the live config
+  (preserving the fresh `image.*` keys — an instance PUT is a full-replace, so a bare create-payload
+  config would wipe them) and updates only `user.lxm.image`.
+* **Update** (`buildInstancePut`) re-records `manifest.Image`, which also backfills legacy instances
+  created before the key existed.
 
 ---
 
@@ -311,11 +332,11 @@ image_remotes?: {
 ```
 
 The positive key-pattern `{[#ImageRemoteName]: string}` alone is **not enforced** when the map is
-nested inside `close({...})` — a CUE quirk that also affects `vars`/`#EnvKey`. Pairing it with the
-`[#ImageRemoteNameInvalid]: _|_` rejection (any key that does not fully match the charset becomes
-`_|_`) makes the rule concrete in the resolved form. `#LXM_AUTHORING` keeps the positive pattern as
-a tooling declaration; the authoring path relies on Go for the diagnostic (below). `#LXM_AUTHORING`
-also fixes the same `close()` quirk for `vars`/`#EnvKey`.
+nested inside `close({...})` — a CUE quirk (the same one that affects `vars`/`#EnvKey`, which is left
+unchanged by this feature). Pairing it with the `[#ImageRemoteNameInvalid]: _|_` rejection (any key
+that does not fully match the charset becomes `_|_`) makes the rule concrete in the resolved form.
+`#LXM_AUTHORING` keeps the positive pattern as a tooling declaration; the authoring path relies on Go
+for the diagnostic (below).
 
 **Diagnostics (compensating control).** CUE's `_|_` error does not name the offending key (verified
 with `cue.All()`), so the actionable message comes from Go: `validateImageRemoteNames` checks every
@@ -354,7 +375,9 @@ declare it under image_remotes:` (§4.1).
 
 ### 7.4 Remote-resolution / fetch failure (apply time, exit 4)
 Any failure resolving the alias on the remote, pulling the image, or tagging the alias surfaces as
-`LXD_ERROR` (exit 4), retryable for transient network/connection errors.
+`LXD_ERROR` (exit 4), retryable for transient network/connection errors. In addition to the errors
+`ClassifyLXDError` marks retryable (ETag/412 conflicts), a fetch that times out
+(`waitOpContext` deadline) is explicitly flagged retryable.
 
 ### 7.5 Global opt-out (`LXM_IMAGE_FETCH`)
 The environment variable `LXM_IMAGE_FETCH` (default `"1"`) disables remote fetch when set to
@@ -421,7 +444,9 @@ executor tolerates (§7.7).
 
 The command layer type-asserts `svc` to `lxd.ImageService` to build the local-alias inventory
 (`fetchImageAliases`), exactly as it does `lxd.StorageService` today. `ImageService` is **also** a
-member of `apply.Services` (§9).
+member of `apply.Services` (§9). A failed inventory probe is **fatal at apply** (exit 4, like
+`fetchLiveSnapshots`) so it cannot silently turn every cached remote image into a redundant
+simplestreams pull; `plan`/`diff` stay lenient (offline-capable) and degrade to an empty inventory.
 
 ---
 
