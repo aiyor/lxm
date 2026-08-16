@@ -38,7 +38,12 @@ func CheckInstances(configs []*config.Config, f *Fleet, liveNetworks map[string]
 
 			vs, declared := f.ByName[parent]
 
-			if nic.IPv4 != "" && declared && vs != nil {
+			if declared && vs != nil && vs.Status == "absent" {
+				return nil, fmt.Errorf("instance %q: NIC %q parent vswitch %q is declared with status: absent; cannot delete a vswitch currently attached to active instances",
+					conf.Name, name, parent)
+			}
+
+			if nic.IPv4 != "" && declared && vs != nil && vs.Subnet != nil {
 				ip := net.ParseIP(nic.IPv4)
 				if ip == nil || !vs.Subnet.Contains(ip) {
 					return nil, fmt.Errorf("instance %q: NIC %q static IP %s is outside parent vswitch %q subnet %s",

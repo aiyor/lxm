@@ -2,6 +2,7 @@ package lxd
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/canonical/lxd/shared/api"
@@ -42,6 +43,28 @@ func (f *FakeInstanceServer) AddStorageLocked() {
 
 func storageKey(pool, name string) string {
 	return pool + "/" + name
+}
+
+func (f *FakeInstanceServer) GetStoragePoolNames() ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Vols == nil {
+		return []string{"default"}, nil
+	}
+	poolsMap := make(map[string]bool)
+	poolsMap["default"] = true
+	for key := range f.Vols.Volumes {
+		parts := strings.SplitN(key, "/", 2)
+		if len(parts) > 0 && parts[0] != "" {
+			poolsMap[parts[0]] = true
+		}
+	}
+	pools := make([]string, 0, len(poolsMap))
+	for p := range poolsMap {
+		pools = append(pools, p)
+	}
+	sort.Strings(pools)
+	return pools, nil
 }
 
 func (f *FakeInstanceServer) GetStoragePoolVolume(pool, volType, name string) (*api.StorageVolume, string, error) {
@@ -140,6 +163,9 @@ func (f *FakeInstanceServer) UpdateStoragePoolVolume(pool, volType, name string,
 func (f *FakeInstanceServer) DeleteStoragePoolVolume(pool, volType, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.DeleteStoragePoolVolumeFunc != nil {
+		return f.DeleteStoragePoolVolumeFunc(pool, volType, name)
+	}
 	if f.Vols == nil {
 		return fmt.Errorf("storage volume %q not found", name)
 	}
