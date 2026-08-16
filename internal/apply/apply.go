@@ -165,15 +165,21 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 		}
 	}
 
-	// Phase 0: storage volume ops (STORAGE-SPEC §10). VolumeOps must complete
-	// before any instance mutation (create/attach references the volumes) and
-	// before the network phase. A failure aborts the apply (phase-abort
-	// semantics, like the network phase) with exit 4. Dry-run never touches
-	// storage volumes (mirrors the executeStep/executeNetworkStep guards).
+	// Phase 0: storage volume ops (STORAGE-SPEC §10). VolumeOps (create/grow)
+	// must complete before any instance mutation and before the network phase.
+	// Volume deletions are deferred to Phase 3 (after instance devices are detached).
+	// A failure aborts the apply (phase-abort semantics) with exit 4. Dry-run never
+	// touches storage volumes.
 	if !opts.DryRun {
 		storageFailed := false
 		for _, step := range p.Steps {
+			if step.Action != "delete" {
+				e.backfillVolumeMarkers(ctx, step)
+			}
 			for _, op := range step.VolumeOps {
+				if op.Op == "delete" {
+					continue // Defer to Phase 3
+				}
 				if err := e.executeVolumeOp(ctx, op); err != nil {
 					storageFailed = true
 					report.Errors = append(report.Errors, ErrorInfo{
@@ -195,14 +201,11 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 		}
 	}
 
-	// Phase 1: network steps (ACLs, then vswitches — §7.4, driven by C8).
-	// A network-step LXD error aborts the apply before any instance step runs
-	// (they are prerequisites) — phase-abort semantics (§9). Remaining network
-	// steps are skipped on the first failure so a failed create_acl doesn't
-	// cascade into noisy "ACL not found" create_vswitch errors (C8).
-	networkSteps := sortNetworkSteps(p.NetworkSteps)
+	// Phase 1: pre-instance network steps (ACLs, then vswitches).
+	// A network-step LXD error aborts the apply before any instance step runs.
+	preNetSteps, postNetSteps := partitionNetworkSteps(p.NetworkSteps)
 	networkFailed := false
-	for _, nstep := range networkSteps {
+	for _, nstep := range preNetSteps {
 		startTs := time.Now()
 		nres, errInfo, warnMsg := e.executeNetworkStep(ctx, nstep, opts)
 		nres.DurationMS = time.Since(startTs).Milliseconds()
@@ -223,7 +226,7 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 		return report, nil
 	}
 
-	// Phase 2: instance steps.
+	// Phase 2: instance steps (creates, updates, rebuilds, device detachments).
 	for _, step := range p.Steps {
 		wg.Add(1)
 		go func(s plan.Step) {
@@ -251,8 +254,64 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 	}
 
 	wg.Wait()
+
+	// Phase 3: post-instance storage volume deletions (detached in Phase 2).
+	if !opts.DryRun {
+		seenVols := make(map[string]bool)
+		for _, step := range p.Steps {
+			for _, op := range step.VolumeOps {
+				if op.Op != "delete" {
+					continue
+				}
+				key := op.Pool + "/" + op.Name
+				if seenVols[key] {
+					continue
+				}
+				seenVols[key] = true
+				if err := e.executeVolumeOp(ctx, op); err != nil {
+					report.Errors = append(report.Errors, ErrorInfo{
+						Code:      "LXD_ERROR",
+						Container: step.Container,
+						Message:   fmt.Sprintf("deleting storage volume %q in pool %q: %v", op.Name, op.Pool, err),
+					})
+					worstExitCode = selectWorstExitCode(worstExitCode, 4)
+				}
+			}
+		}
+	}
+
+	// Phase 4: post-instance network bridge & ACL deletions.
+	for _, nstep := range postNetSteps {
+		startTs := time.Now()
+		nres, errInfo, warnMsg := e.executeNetworkStep(ctx, nstep, opts)
+		nres.DurationMS = time.Since(startTs).Milliseconds()
+
+		report.NetworkResults = append(report.NetworkResults, nres)
+		if warnMsg != "" {
+			report.Warnings = append(report.Warnings, warnMsg)
+		}
+		if errInfo != nil {
+			report.Errors = append(report.Errors, *errInfo)
+			worstExitCode = selectWorstExitCode(worstExitCode, errorCodeToExit(errInfo.Code))
+		}
+	}
+
 	report.ExitCode = worstExitCode
 	return report, nil
+}
+
+// partitionNetworkSteps splits network steps into pre-instance (create/update
+// ACLs and vswitches) and post-instance (delete_vswitch).
+func partitionNetworkSteps(steps []plan.NetworkStep) (pre, post []plan.NetworkStep) {
+	sorted := sortNetworkSteps(steps)
+	for _, s := range sorted {
+		if s.Kind == "delete_vswitch" {
+			post = append(post, s)
+		} else {
+			pre = append(pre, s)
+		}
+	}
+	return pre, post
 }
 
 // sortNetworkSteps orders network steps so ACL steps run before vswitch steps.
@@ -267,10 +326,7 @@ func sortNetworkSteps(steps []plan.NetworkStep) []plan.NetworkStep {
 	return out
 }
 
-// executeVolumeOp applies one idempotent storage-volume mutation (Phase 0,
-// STORAGE-SPEC §10). "create" ensures the volume exists with the right content
-// type and grows it when smaller; "grow" requires the volume to exist and grows
-// it when smaller. Shrink never happens here (rejected at plan time).
+// executeVolumeOp applies one idempotent storage-volume mutation (Phase 0/3).
 func (e *defaultExecutor) executeVolumeOp(ctx context.Context, op plan.VolumeOp) error {
 	switch op.Op {
 	case "create":
@@ -287,6 +343,8 @@ func (e *defaultExecutor) executeVolumeOp(ctx context.Context, op plan.VolumeOp)
 		return e.growIfNeeded(ctx, op)
 	case "grow":
 		return e.growIfNeeded(ctx, op)
+	case "delete":
+		return e.deleteVolume(ctx, op)
 	default:
 		return fmt.Errorf("unknown volume op %q", op.Op)
 	}
@@ -298,13 +356,50 @@ func (e *defaultExecutor) createVolume(ctx context.Context, op plan.VolumeOp) er
 		Type:        "custom",
 		ContentType: op.ContentType,
 		StorageVolumePut: api.StorageVolumePut{
-			Config: map[string]string{},
+			Config: map[string]string{
+				"user.lxm.managed": "true",
+			},
 		},
 	}
 	if op.Size != "" {
 		req.Config["size"] = op.Size
 	}
 	return e.storageSvc.CreateStoragePoolVolume(op.Pool, req)
+}
+
+func (e *defaultExecutor) deleteVolume(ctx context.Context, op plan.VolumeOp) error {
+	err := e.storageSvc.DeleteStoragePoolVolume(op.Pool, "custom", op.Name)
+	if err != nil {
+		if code, _ := e.lxdSvc.ClassifyLXDError(err, "lookup"); code == 5 {
+			return nil // idempotent success if already absent
+		}
+		return err
+	}
+	return nil
+}
+
+// backfillVolumeMarkers ensures managed custom volumes attached to active instances
+// carry user.lxm.managed: "true" and tracking metadata even in steady-state (no-diff).
+func (e *defaultExecutor) backfillVolumeMarkers(ctx context.Context, step plan.Step) {
+	for _, d := range step.ManagedDisks {
+		vol, etag, err := e.storageSvc.GetStoragePoolVolume(d.Pool, "custom", d.Source)
+		if err != nil || vol == nil {
+			continue
+		}
+		if vol.Config == nil || vol.Config["user.lxm.managed"] != "true" {
+			put := api.StorageVolumePut{
+				Config:      vol.Config,
+				Description: vol.Description,
+			}
+			if put.Config == nil {
+				put.Config = make(map[string]string)
+			}
+			put.Config["user.lxm.managed"] = "true"
+			put.Config["user.lxm.instance"] = step.Container
+			put.Config["user.lxm.disk"] = d.Name
+			_ = e.storageSvc.UpdateStoragePoolVolume(d.Pool, "custom", d.Source, put, etag)
+		}
+	}
 }
 
 // dedupImageOps collects the distinct fetch ops across all steps,

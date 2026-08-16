@@ -18,6 +18,10 @@ import (
 // POSIX Environment Variable identifier
 #EnvKey: =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
 
+// Sub-resource existence status (disks, vswitches)
+#DiskStatus:    "present" | "absent"
+#VSwitchStatus: "present" | "absent"
+
 // Simplestreams image remote name (the remote part of image: remote:alias)
 #ImageRemoteName: =~"^[a-zA-Z0-9_\\.\\-]+$"
 
@@ -84,6 +88,8 @@ import (
 // LoadConfig normalization (managed disks must declare a size).
 #DiskObjAuthoring: close({
 	name:      string & =~"^[a-z][a-z0-9-]{0,30}$" & != "root"
+	status?:   #DiskStatus | *"present"
+	attach?:   bool | *true
 	size?:     #ByteSize
 	pool?:     string | *"default"
 	P1="path"?:     #CleanMountPath
@@ -105,6 +111,8 @@ import (
 // Resolved disk object (defaults materialized by the Go normalizer).
 #DiskObjResolved: close({
 	name:      string & =~"^[a-z][a-z0-9-]{0,30}$" & != "root"
+	status:    #DiskStatus
+	attach?:   bool
 	size?:     #ByteSize
 	pool:      string
 	path?:     #CleanMountPath
@@ -156,9 +164,10 @@ import (
 // (first usable host, /8–/29 mask bounds) run in Go after merge.
 #VSwitchObjAuthoring: close({
 	name:      string & =~"^[a-z][a-z0-9-]{0,30}$"
+	status?:   #VSwitchStatus | *"present"
 	type?:     "bridge"                    // v1 lock; "ovn" added later (additive relaxation)
 	driver?:   "native" | "openvswitch" | *"native"
-	ipv4:      string & =~"^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3})/[0-9]{1,2}$"
+	ipv4?:     string & =~"^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3})/[0-9]{1,2}$"
 	ipv6?:     "none"                      // v1 lock; IPv6 policy compilation deferred
 	nat?:      bool | *true
 	group?:    string
@@ -297,9 +306,10 @@ import (
 
 	vswitches?: [...close({
 		name:     string
+		status:   #VSwitchStatus
 		type:     "bridge"
 		driver:   "native" | "openvswitch"
-		ipv4:     string
+		ipv4?:    string
 		ipv6:     "none"
 		nat:      bool
 		group?:   string

@@ -64,6 +64,23 @@ func (e *defaultExecutor) executeNetworkStep(ctx context.Context, step plan.Netw
 		} else {
 			opErr = err
 		}
+	case "delete_vswitch":
+		// Phase 4: delete bridge first, then associated ACL (order is mandatory)
+		netErr := e.netSvc.DeleteNetwork(step.Name)
+		if netErr != nil {
+			if code, _ := e.lxdSvc.ClassifyLXDError(netErr, "lookup"); code != 5 {
+				opErr = netErr
+			}
+		}
+		if opErr == nil {
+			aclName := "lxm-" + step.Name
+			aclErr := e.netSvc.DeleteNetworkACL(aclName)
+			if aclErr != nil {
+				if code, _ := e.lxdSvc.ClassifyLXDError(aclErr, "lookup"); code != 5 {
+					opErr = aclErr
+				}
+			}
+		}
 	}
 
 	if opErr != nil {

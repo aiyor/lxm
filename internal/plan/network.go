@@ -118,6 +118,26 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 	// 2. Vswitch reconciliation.
 	for _, vs := range f.VSwitches {
 		liveNet, ok := live.Networks[vs.Name]
+		aclName := network.ACLName(vs.Name)
+		_, aclExists := live.ACLs[aclName]
+
+		if vs.Status == "absent" {
+			if ok && len(liveNet.UsedBy) > 0 {
+				return nil, fmt.Errorf("vswitch %q cannot be deleted (status: absent); %d instance(s) still attached: %s", vs.Name, len(liveNet.UsedBy), strings.Join(liveNet.UsedBy, ", "))
+			}
+			if ok || aclExists {
+				np.Steps = append(np.Steps, NetworkStep{
+					Kind:    "delete_vswitch",
+					Name:    vs.Name,
+					Changed: true,
+					Diff: []FieldDiff{
+						{Field: "status", Old: "present", New: "absent"},
+					},
+				})
+			}
+			continue
+		}
+
 		if !ok {
 			// missing -> create
 			np.Steps = append(np.Steps, NetworkStep{

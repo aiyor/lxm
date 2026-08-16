@@ -15,6 +15,7 @@ The architecture is guided by nine foundational design principles:
 7. **Modular Domain Packages**: Domain logic resides within isolated, testable packages (`config`, `plan`, `apply`, `fleet`, `recipe`, `lxd`, `output`).
 8. **Selectable & Bounded Parallel Fleet Operations**: Targeting uses expressive selector algebra (union across groups, intersection with names). Fleet execution is bounded and attributable per-container.
 9. **Leverage Quality Open Source**: Built using canonical Go libraries (`cobra`, `yaml.v3`, LXD client SDK `github.com/canonical/lxd/client`, `cuelang.org/go`, `x/term`, `errgroup`).
+10. **Tagged & Enumerable Ownership**: Every object `lxm` creates — instances, networks, ACLs, devices, storage volumes, snapshots, images — is tagged with `user.lxm.managed: "true"` (plus provenance keys where useful), and every tagged object is discoverable through a single inventory surface. Ownership is marker-based, never name-based (see §4.5).
 
 ---
 
@@ -104,3 +105,34 @@ Concurrent fleet operations and parallel SSH connections manipulate `~/.config/l
 ### 4.4 Operation Cancellation & Interactive Carve-Out
 * **Cancellation**: Long-running LXD operations are bound to `signal.NotifyContext`. Upon receiving `SIGINT` (Ctrl+C) or `SIGTERM`, the executor invokes `op.Cancel()` on active LXD operations and logs interrupted containers.
 * **Interactive Carve-Out**: `lxm shell` and `lxm ssh` attach directly to raw TTY terminal streams. Passing `--format json` to these commands is explicitly rejected with exit code 2.
+
+### 4.5 Ownership Markers & Unified Inventory
+
+`lxm` distinguishes *its own* resources from foreign ones via a single ownership predicate — the
+`user.lxm.managed: "true"` config key — never via naming. Name conventions (`lxm-<vswitch>` for
+ACLs, `<instance>-<name>` for managed volumes, `user.lxm.snap.` for snapshots, canonical image
+aliases) are ergonomic labels only; the marker is the authority for adopt/ignore/GC decisions.
+
+Current tagging status across every resource class:
+
+| Resource | Marker today | Enumerated by |
+| :-- | :-- | :-- |
+| Instances (containers/VMs) | `user.lxm.managed=true` ✓ | `lxm list` (`internal/fleet/inventory.go`) |
+| Networks (vswitch bridges) | `user.lxm.managed=true` ✓ | plan reconcile only |
+| Network ACLs (`lxm-<name>`) | `user.lxm.managed=true` ✓ | plan reconcile only |
+| NIC devices | `user.lxm.managed=true` in the legacy path (`internal/lxm/devices.go`); **omitted in the plan path** (`internal/plan/plan.go`) | — |
+| Mount devices | **no marker** | — |
+| Storage volumes (disks) | **no marker** (`config: {size}` only) | — |
+| Snapshots | name-prefix only (`user.lxm.snap.<inst>-<ts>`) | `lxm snapshot gc --prefix` |
+| Images | canonical alias only (`ubuntu/22.04`, `ubuntu/22.04/vm`) | — |
+
+The principle decomposes into two requirements, both tracked as gaps until closed:
+
+1. **Uniform tagging.** Every class must carry `user.lxm.managed=true` at creation. Outstanding gaps:
+   storage volumes (closed by the deletion/lifecycle feature), mount devices, and the NIC-device
+   marker in the plan path. Snapshots and images currently rely on prefix/alias identity; a decision
+   on whether they need a config marker is deferred but recorded here.
+2. **Unified enumeration.** One surface must list every tagged object by marker. Today `lxm list`
+   covers instances only; networks, ACLs, volumes, snapshots, and images each require a distinct
+   probe. The inventory surface (`internal/fleet`) is the designated home for a
+   marker-keyed, cross-resource enumeration (e.g. `lxm list --all` or per-resource subcommands).

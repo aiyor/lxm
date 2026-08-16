@@ -326,20 +326,24 @@ type NetworkConfig struct {
 // vs external, by Source) — are documented in STORAGE-SPEC.md §3.
 type DiskConfig struct {
 	Name     string `yaml:"name"`
+	Status   string `yaml:"status,omitempty"` // "present" (default) | "absent"
+	Attach   *bool  `yaml:"attach,omitempty"` // true (default) | false (disks only)
 	Size     string `yaml:"size,omitempty"`
 	Pool     string `yaml:"pool,omitempty"`
 	Path     string `yaml:"path,omitempty"`
 	Source   string `yaml:"source,omitempty"`
 	Readonly bool   `yaml:"readonly,omitempty"`
 	Bus      string `yaml:"bus,omitempty"`
+	Managed  bool   `yaml:"-" json:"-"`
 }
 
 // VSwitchConfig models a managed LXD virtual switch (fleet-scoped).
 type VSwitchConfig struct {
 	Name     string `yaml:"name"`
+	Status   string `yaml:"status,omitempty"` // "present" (default) | "absent"
 	Type     string `yaml:"type,omitempty"`   // "" = "bridge" (v1: only "bridge")
 	Driver   string `yaml:"driver,omitempty"` // "" = "native" (bridge.driver)
-	IPv4     string `yaml:"ipv4"`
+	IPv4     string `yaml:"ipv4,omitempty"`
 	IPv6     string `yaml:"ipv6,omitempty"` // "" = "none"
 	NAT      *bool  `yaml:"nat,omitempty"`  // nil = true
 	Group    string `yaml:"group,omitempty"`
@@ -578,7 +582,7 @@ func ValidatePostMerge(conf *Config) error {
 		seenPaths[cleanP] = "mounts"
 	}
 	for _, d := range conf.Disks {
-		if d.Path == "" {
+		if d.Path == "" || d.Status == "absent" {
 			continue
 		}
 		cleanP := filepath.Clean(d.Path)
@@ -1103,7 +1107,7 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 	if overlay.Replace != nil && len(overlay.Replace.Disks) > 0 {
 		res.Disks = overlay.Replace.Disks
 	} else {
-		res.Disks = append(append([]DiskConfig(nil), base.Disks...), overlay.Disks...)
+		res.Disks = mergeDisksByName(base.Disks, overlay.Disks)
 	}
 
 	if overlay.Replace != nil && len(overlay.Replace.Recipes) > 0 {
@@ -1246,6 +1250,32 @@ func copyNetworkPolicy(p *NetworkPolicy) *NetworkPolicy {
 	return cp
 }
 
+// mergeDisksByName merges base and overlay disks using name-identity: an overlay
+// disk whose Name matches a base entry replaces it in place, while new overlay
+// disks are appended (STORAGE-SPEC §3.8 / feat_removal §1.6).
+func mergeDisksByName(base, overlay []DiskConfig) []DiskConfig {
+	if len(base) == 0 {
+		return append([]DiskConfig(nil), overlay...)
+	}
+	if len(overlay) == 0 {
+		return append([]DiskConfig(nil), base...)
+	}
+	res := append([]DiskConfig(nil), base...)
+	indexByName := make(map[string]int, len(res))
+	for i, d := range res {
+		indexByName[d.Name] = i
+	}
+	for _, od := range overlay {
+		if idx, ok := indexByName[od.Name]; ok {
+			res[idx] = od
+		} else {
+			indexByName[od.Name] = len(res)
+			res = append(res, od)
+		}
+	}
+	return res
+}
+
 // LoadConfig reads a YAML config file and resolves includes/templates.
 func LoadConfig(configFile string) (*Config, error) {
 	conf, err := loadConfigRecursive(configFile, nil)
@@ -1310,12 +1340,37 @@ func LoadConfig(configFile string) (*Config, error) {
 	// strict resolved schema round-trips deterministically, STORAGE-SPEC §4).
 	for i := range conf.Disks {
 		d := &conf.Disks[i]
+		if d.Status == "" {
+			d.Status = "present"
+		}
+		if d.Status != "present" && d.Status != "absent" {
+			return nil, fmt.Errorf("disk %q of instance %q: invalid status %q (must be 'present' or 'absent')", d.Name, conf.Name, d.Status)
+		}
 		if d.Pool == "" {
 			d.Pool = "default"
+		}
+		if d.Status == "absent" {
+			if d.Attach != nil {
+				return nil, fmt.Errorf("disk %q of instance %q: attach is not allowed when status is absent", d.Name, conf.Name)
+			}
+			d.Managed = (d.Source == "")
+			d.Size = ""
+			d.Path = ""
+			d.Bus = ""
+			if d.Source == "" && conf.Name != "" && d.Name != "" {
+				d.Source = conf.Name + "-" + d.Name
+			}
+			continue
+		}
+
+		if d.Attach == nil {
+			t := true
+			d.Attach = &t
 		}
 		if d.Source == "" {
 			// Managed disk: derive the volume name from the instance and
 			// materialize the size it provisions.
+			d.Managed = true
 			if conf.Name != "" && d.Name != "" {
 				d.Source = conf.Name + "-" + d.Name
 			}
@@ -1324,6 +1379,7 @@ func LoadConfig(configFile string) (*Config, error) {
 			}
 		} else {
 			// External disk: the volume size is managed outside lxm.
+			d.Managed = false
 			d.Size = ""
 		}
 		if d.Path == "" {
@@ -1341,6 +1397,15 @@ func LoadConfig(configFile string) (*Config, error) {
 	// strict resolved schema round-trips deterministically).
 	for i := range conf.VSwitches {
 		vs := &conf.VSwitches[i]
+		if vs.Status == "" {
+			vs.Status = "present"
+		}
+		if vs.Status != "present" && vs.Status != "absent" {
+			return nil, fmt.Errorf("vswitch %q: invalid status %q (must be 'present' or 'absent')", vs.Name, vs.Status)
+		}
+		if vs.Status == "present" && vs.IPv4 == "" {
+			return nil, fmt.Errorf("vswitch %q: ipv4 is required when status is present", vs.Name)
+		}
 		if vs.Type == "" {
 			vs.Type = "bridge"
 		}

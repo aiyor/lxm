@@ -110,6 +110,23 @@ func (f *FakeInstanceServer) UpdateNetwork(name string, put api.NetworkPut, etag
 	return nil
 }
 
+func (f *FakeInstanceServer) DeleteNetwork(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.DeleteNetworkFunc != nil {
+		return f.DeleteNetworkFunc(name)
+	}
+	if f.Nets == nil {
+		return fmt.Errorf("network %q not found", name)
+	}
+	if _, ok := f.Nets.Networks[name]; !ok {
+		return fmt.Errorf("network %q not found", name)
+	}
+	delete(f.Nets.Networks, name)
+	delete(f.Nets.NetworkETags, name)
+	return nil
+}
+
 func (f *FakeInstanceServer) GetNetworkACLs() ([]api.NetworkACL, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -190,6 +207,9 @@ func (f *FakeInstanceServer) UpdateNetworkACL(name string, put api.NetworkACLPut
 func (f *FakeInstanceServer) DeleteNetworkACL(name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.DeleteNetworkACLFunc != nil {
+		return f.DeleteNetworkACLFunc(name)
+	}
 	if f.Nets == nil {
 		return fmt.Errorf("network ACL %q not found", name)
 	}

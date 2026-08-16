@@ -98,6 +98,7 @@ type NetworkService interface {
 	GetNetwork(name string) (*api.Network, string, error)
 	CreateNetwork(network api.NetworksPost) error
 	UpdateNetwork(name string, network api.NetworkPut, etag string) error
+	DeleteNetwork(name string) error
 	GetNetworkACLs() ([]api.NetworkACL, error)
 	GetNetworkACL(name string) (*api.NetworkACL, string, error)
 	CreateNetworkACL(acl api.NetworkACLsPost) error
@@ -109,6 +110,7 @@ type NetworkService interface {
 // and custom volumes (the disks: feature surface, STORAGE-SPEC §9). Volume
 // mutations return asynchronous LXD Operations that must be awaited.
 type StorageService interface {
+	GetStoragePoolNames() ([]string, error)
 	GetStoragePoolVolume(pool, volType, name string) (*api.StorageVolume, string, error)
 	GetStoragePoolVolumes(pool string) ([]api.StorageVolume, error)
 	CreateStoragePoolVolume(pool string, vol api.StorageVolumesPost) error
@@ -299,6 +301,10 @@ func (s *lxdService) UpdateNetwork(name string, network api.NetworkPut, etag str
 	return s.client.UpdateNetwork(name, network, etag)
 }
 
+func (s *lxdService) DeleteNetwork(name string) error {
+	return s.client.DeleteNetwork(name)
+}
+
 func (s *lxdService) GetNetworkACLs() ([]api.NetworkACL, error) {
 	return s.client.GetNetworkACLs()
 }
@@ -317,6 +323,10 @@ func (s *lxdService) UpdateNetworkACL(name string, acl api.NetworkACLPut, etag s
 
 func (s *lxdService) DeleteNetworkACL(name string) error {
 	return s.client.DeleteNetworkACL(name)
+}
+
+func (s *lxdService) GetStoragePoolNames() ([]string, error) {
+	return s.client.GetStoragePoolNames()
 }
 
 func (s *lxdService) GetStoragePoolVolume(pool, volType, name string) (*api.StorageVolume, string, error) {

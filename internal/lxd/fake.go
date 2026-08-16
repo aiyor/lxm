@@ -28,19 +28,22 @@ type FakeInstanceServer struct {
 	Images      *ImageStore                                 // image + alias backing state
 
 	// Optional custom hook functions
-	GetInstanceFunc         func(name string) (*api.Instance, string, error)
-	CreateInstanceFunc      func(req api.InstancesPost) error
-	UpdateInstanceFunc      func(name string, put api.InstancePut, etag string) error
-	DeleteInstanceFunc      func(name string) error
-	UpdateInstanceStateFunc func(name string, action string, force bool) error
-	RebuildInstanceFunc     func(name string, req api.InstanceRebuildPost) error
-	ExecInstanceFunc        func(name string, cmd []string, uid uint32, env map[string]string) (ExecResult, error)
-	CreateNetworkFunc       func(req api.NetworksPost) error
-	CreateNetworkACLFunc    func(acl api.NetworkACLsPost) error
-	GetNetworksFunc         func() ([]api.Network, error)
-	GetNetworkACLsFunc      func() ([]api.NetworkACL, error)
-	CopyRemoteImageFunc     func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error
-	GetImageAliasesFunc     func() ([]api.ImageAliasesEntry, error)
+	GetInstanceFunc             func(name string) (*api.Instance, string, error)
+	CreateInstanceFunc          func(req api.InstancesPost) error
+	UpdateInstanceFunc          func(name string, put api.InstancePut, etag string) error
+	DeleteInstanceFunc          func(name string) error
+	UpdateInstanceStateFunc     func(name string, action string, force bool) error
+	RebuildInstanceFunc         func(name string, req api.InstanceRebuildPost) error
+	ExecInstanceFunc            func(name string, cmd []string, uid uint32, env map[string]string) (ExecResult, error)
+	CreateNetworkFunc           func(req api.NetworksPost) error
+	DeleteNetworkFunc           func(name string) error
+	CreateNetworkACLFunc        func(acl api.NetworkACLsPost) error
+	DeleteNetworkACLFunc        func(name string) error
+	DeleteStoragePoolVolumeFunc func(pool, volType, name string) error
+	GetNetworksFunc             func() ([]api.Network, error)
+	GetNetworkACLsFunc          func() ([]api.NetworkACL, error)
+	CopyRemoteImageFunc         func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error
+	GetImageAliasesFunc         func() ([]api.ImageAliasesEntry, error)
 }
 
 // NewFakeInstanceServer creates a new initialized FakeInstanceServer.

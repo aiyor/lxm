@@ -68,6 +68,12 @@ var defaultInternalCIDRs = []string{
 }
 
 func vswitchEqual(a, b config.VSwitchConfig) bool {
+	if a.Status != b.Status {
+		return false
+	}
+	if a.Status == "absent" {
+		return a.Name == b.Name
+	}
 	return a.Name == b.Name &&
 		a.Type == b.Type &&
 		a.Driver == b.Driver &&
@@ -100,9 +106,13 @@ func Union(configs []*config.Config) (*Fleet, error) {
 			file = conf.ConfigBaseDir
 		}
 		for _, raw := range conf.VSwitches {
-			_, ipnet, err := ParseSubnet(raw.IPv4)
-			if err != nil {
-				return nil, fmt.Errorf("vswitch %q: invalid ipv4 %q: %w", raw.Name, raw.IPv4, err)
+			var ipnet *net.IPNet
+			if raw.Status != "absent" {
+				var err error
+				_, ipnet, err = ParseSubnet(raw.IPv4)
+				if err != nil {
+					return nil, fmt.Errorf("vswitch %q: invalid ipv4 %q: %w", raw.Name, raw.IPv4, err)
+				}
 			}
 			vs := &VSwitch{
 				VSwitchConfig: raw,
@@ -116,15 +126,17 @@ func Union(configs []*config.Config) (*Fleet, error) {
 				}
 				continue
 			}
-			// Cross-vswitch subnet overlap check (fleet level).
-			for _, other := range f.VSwitches {
-				if overlaps(other.Subnet, ipnet) {
-					return nil, fmt.Errorf("vswitch %q: subnet %s overlaps vswitch %q subnet %s", raw.Name, ipnet.String(), other.Name, other.Subnet.String())
+			// Cross-vswitch subnet overlap check (fleet level, present vswitches only).
+			if raw.Status != "absent" && ipnet != nil {
+				for _, other := range f.VSwitches {
+					if other.Status != "absent" && other.Subnet != nil && overlaps(other.Subnet, ipnet) {
+						return nil, fmt.Errorf("vswitch %q: subnet %s overlaps vswitch %q subnet %s", raw.Name, ipnet.String(), other.Name, other.Subnet.String())
+					}
 				}
 			}
 			f.ByName[raw.Name] = vs
 			f.VSwitches = append(f.VSwitches, vs)
-			if raw.Group != "" {
+			if raw.Status != "absent" && raw.Group != "" {
 				f.ByGroup[raw.Group] = append(f.ByGroup[raw.Group], vs)
 			}
 		}

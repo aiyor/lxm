@@ -42,6 +42,8 @@ func registerCommands(rootCmd *cobra.Command, opts *cmdOptions, ctx context.Cont
 	rootCmd.AddCommand(newIncludeCmd(opts, ctx, stdout, stderr, logger))
 	rootCmd.AddCommand(newCompileCmd(opts, ctx, stdout, stderr, logger))
 	rootCmd.AddCommand(newDoctorCmd(opts, ctx, stdout, stderr, getSvc, logger))
+	rootCmd.AddCommand(newDiskCmd(opts, ctx, stdout, stderr, getSvc, logger))
+	rootCmd.AddCommand(newVSwitchCmd(opts, ctx, stdout, stderr, getSvc, logger))
 }
 
 func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, getSvc serviceGetter, logger *slog.Logger) *cobra.Command {

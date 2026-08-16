@@ -81,6 +81,7 @@ type Step struct {
 	PowerTransition string                   `json:"power_transition,omitempty"` // "start" | "stop" | "restart"
 	VolumeOps       []VolumeOp               `json:"volume_ops,omitempty"`
 	ImageOps        []ImageOp                `json:"image_ops,omitempty"`
+	ManagedDisks    []config.DiskConfig      `json:"managed_disks,omitempty"`
 	InstancesPost   *api.InstancesPost       `json:"instances_post,omitempty"`
 	InstancePut     *api.InstancePut         `json:"instance_put,omitempty"`
 	RebuildPost     *api.InstanceRebuildPost `json:"rebuild_post,omitempty"`
@@ -161,6 +162,13 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		Container:     targetName,
 		WaitPolicy:    &manifest.WaitPolicy,
 		ConfigBaseDir: manifest.ConfigBaseDir,
+	}
+	if manifest.Status != "absent" {
+		for _, d := range manifest.Disks {
+			if d.Status != "absent" && isManagedDisk(d) {
+				step.ManagedDisks = append(step.ManagedDisks, d)
+			}
+		}
 	}
 
 	// 1. Reconcile absent status
@@ -369,6 +377,16 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		plan.Warnings = append(plan.Warnings, fmt.Sprintf("instance %q specifies raw.qemu hypervisor arguments: %q", manifest.Name, manifest.VM.RawQEMU))
 	}
 
+	// Warn if a managed disk marked status: absent references a live volume that lacks the managed marker
+	for _, d := range manifest.Disks {
+		if d.Status == "absent" && isManagedDisk(d) {
+			vol := lookupVolume(volumes, d.Pool, d.Source)
+			if vol != nil && (vol.Config == nil || vol.Config["user.lxm.managed"] != "true") {
+				plan.Warnings = append(plan.Warnings, fmt.Sprintf("disk %q of instance %q: storage volume %s/%s lacks user.lxm.managed marker; detaching from instance without deleting storage volume", d.Name, manifest.Name, d.Pool, d.Source))
+			}
+		}
+	}
+
 	plan.Steps = append(plan.Steps, step)
 	plan.Summary = computeSummary(plan.Steps)
 	return plan, nil
@@ -491,6 +509,12 @@ func buildInstancesPost(manifest *config.Config) (*api.InstancesPost, error) {
 
 	// 6. Disks (data disks carry source, never size — STORAGE-SPEC §3)
 	for _, d := range manifest.Disks {
+		if d.Status == "absent" {
+			continue
+		}
+		if d.Attach != nil && !*d.Attach {
+			continue
+		}
 		post.Devices["disk-"+d.Name] = buildDiskDevice(d)
 	}
 
@@ -728,6 +752,12 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.Ins
 
 	// 8. Rebuild Disks (data disks carry source, never size)
 	for _, d := range manifest.Disks {
+		if d.Status == "absent" {
+			continue
+		}
+		if d.Attach != nil && !*d.Attach {
+			continue
+		}
 		put.Devices["disk-"+d.Name] = buildDiskDevice(d)
 	}
 
@@ -996,6 +1026,37 @@ func diffDisks(manifest *config.Config, live *InstanceSnapshot, volumes map[stri
 
 	for _, md := range manifest.Disks {
 		ld, exists := liveByName[md.Name]
+
+		if md.Status == "absent" {
+			if exists {
+				diffs = append(diffs, FieldDiff{Field: "disks[" + md.Name + "]", Old: ld, New: nil})
+			}
+			vol := lookupVolume(volumes, md.Pool, md.Source)
+			// Ownership invariant (ARCHITECTURE §4.5): only delete volumes carrying
+			// user.lxm.managed: "true". External volumes (even if matching <instance>-<disk>)
+			// lack the marker and must NEVER be deleted.
+			if vol != nil && vol.Config != nil && vol.Config["user.lxm.managed"] == "true" {
+				ops = append(ops, VolumeOp{
+					Op:          "delete",
+					Pool:        md.Pool,
+					Name:        md.Source,
+					ContentType: diskContentType(md),
+				})
+			}
+			continue
+		}
+
+		if md.Attach != nil && !*md.Attach {
+			if exists {
+				diffs = append(diffs, FieldDiff{Field: fmt.Sprintf("disks[%s].attach", md.Name), Old: true, New: false})
+			} else if isManagedDisk(md) {
+				if vol := lookupVolume(volumes, md.Pool, md.Source); vol == nil {
+					ops = append(ops, managedDiskCreateOps(manifest, md)...)
+				}
+			}
+			continue
+		}
+
 		if !exists {
 			// Disk added: hotplug (update) or part of create. Managed disks
 			// need their volume provisioned first (Phase 0).
@@ -1036,7 +1097,7 @@ func diffDisks(manifest *config.Config, live *InstanceSnapshot, volumes map[stri
 		// Compare parsed bytes so a reworded-but-equal size (10GiB vs
 		// 10737418240) does not produce a perpetual diff (LXD preserves the
 		// size string verbatim).
-		if md.Size != "" && diskSizeDiffers(ld.Size, md.Size) {
+		if isManagedDisk(md) && diskSizeDiffers(ld.Size, md.Size) {
 			if isDiskShrink(ld.Size, md.Size) {
 				return nil, nil, fmt.Errorf(`disk %q of instance %q cannot be shrunk (%s → %s); storage volumes cannot be shrunk in place — delete and recreate the volume to provision a smaller disk`, md.Name, manifest.Name, ld.Size, md.Size)
 			}
@@ -1059,11 +1120,21 @@ func diffDisks(manifest *config.Config, live *InstanceSnapshot, volumes map[stri
 	return diffs, ops, nil
 }
 
+// isManagedDisk reports whether a disk is managed by lxm (provisions its own
+// volume) rather than being an external reference. Managed disks have an
+// explicit size specification or the managed flag set during normalization.
+func isManagedDisk(d config.DiskConfig) bool {
+	return d.Size != "" || d.Managed
+}
+
 // buildCreateVolumeOps returns the idempotent create ops for all managed disks
 // in a create/recreate plan (external disks need no provisioning).
 func buildCreateVolumeOps(manifest *config.Config) []VolumeOp {
 	var ops []VolumeOp
 	for _, d := range manifest.Disks {
+		if d.Status == "absent" {
+			continue
+		}
 		ops = append(ops, managedDiskCreateOps(manifest, d)...)
 	}
 	return ops
@@ -1073,7 +1144,7 @@ func buildCreateVolumeOps(manifest *config.Config) []VolumeOp {
 // none for an external disk. A create op is idempotent: create if absent, grow
 // if smaller.
 func managedDiskCreateOps(manifest *config.Config, d config.DiskConfig) []VolumeOp {
-	if d.Size == "" {
+	if !isManagedDisk(d) {
 		return nil // external: volume is not provisioned by lxm
 	}
 	return []VolumeOp{{
@@ -1101,7 +1172,10 @@ func checkExternalVolumes(manifest *config.Config, volumes map[string]map[string
 		return nil
 	}
 	for _, d := range manifest.Disks {
-		if d.Size != "" {
+		if d.Status == "absent" {
+			continue
+		}
+		if isManagedDisk(d) {
 			continue // managed: volume is provisioned by lxm
 		}
 		var found bool
@@ -1120,10 +1194,9 @@ func checkExternalVolumes(manifest *config.Config, volumes map[string]map[string
 }
 
 // hasDiskRestartDiff reports whether a disk field change requires a running VM
-// restart (QEMU device re-plug or agent remount on boot): path (filesystem
-// remount), source (external volume re-point), bus (block re-plug), or pool
-// (device re-point to a volume in another pool — the old device is detached and
-// a fresh one attached, which invalidates the guest mount/device).
+// restart: path (filesystem remount), source (external volume re-point), bus
+// (block re-plug), or pool (device re-point to a volume in another pool).
+// Adding or re-attaching a disk is hotplugged live without restart.
 func hasDiskRestartDiff(diffs []FieldDiff) bool {
 	for _, d := range diffs {
 		if !strings.HasPrefix(d.Field, "disks[") {

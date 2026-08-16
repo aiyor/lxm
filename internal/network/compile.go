@@ -44,7 +44,7 @@ func ACLName(vswitchName string) string {
 func Compile(f *Fleet) []*CompiledACL {
 	aclIndex := make(map[string]*CompiledACL)
 	for _, vs := range f.VSwitches {
-		if vs.Group == "" {
+		if vs.Status == "absent" || vs.Group == "" {
 			continue
 		}
 		aclIndex[vs.Name] = &CompiledACL{
@@ -55,7 +55,7 @@ func Compile(f *Fleet) []*CompiledACL {
 	}
 
 	for _, vs := range f.VSwitches {
-		if vs.Group == "" {
+		if vs.Status == "absent" || vs.Group == "" {
 			continue
 		}
 		acl := aclIndex[vs.Name]
