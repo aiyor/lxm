@@ -3,6 +3,7 @@ package plan
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -41,6 +42,18 @@ type VolumeOp struct {
 	Size        string `json:"size,omitempty"`
 }
 
+// ImageOp is a remote-image mutation that must complete before the owning
+// instance step runs (Phase -1, IMAGE-SPEC §5.4). Ops are idempotent: a fetch
+// either lands the canonical local alias or is a no-op when it already exists.
+type ImageOp struct {
+	Op         string `json:"op"`          // "fetch"
+	Remote     string `json:"remote"`      // remote name (diagnostics)
+	RemoteURL  string `json:"remote_url"`  // resolved simplestreams URL
+	Alias      string `json:"alias"`       // alias on the remote
+	LocalAlias string `json:"local_alias"` // canonical TYPE-QUALIFIED local alias (§4.2)
+	Type       string `json:"type"`        // "container" | "virtual-machine"
+}
+
 // Plan represents a complete, serializable reconciliation plan.
 type Plan struct {
 	Schema       string        `json:"schema"` // "lxm/plan/v1"
@@ -67,6 +80,7 @@ type Step struct {
 	PurgeSnapshots  bool                     `json:"purge_snapshots,omitempty"`
 	PowerTransition string                   `json:"power_transition,omitempty"` // "start" | "stop" | "restart"
 	VolumeOps       []VolumeOp               `json:"volume_ops,omitempty"`
+	ImageOps        []ImageOp                `json:"image_ops,omitempty"`
 	InstancesPost   *api.InstancesPost       `json:"instances_post,omitempty"`
 	InstancePut     *api.InstancePut         `json:"instance_put,omitempty"`
 	RebuildPost     *api.InstanceRebuildPost `json:"rebuild_post,omitempty"`
@@ -114,7 +128,13 @@ type RecipeStep struct {
 
 // Reconciler computes an immutable reconciliation Plan from desired manifest and live state.
 type Reconciler interface {
-	Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*api.StorageVolume, hasRebuildExt bool) (*Plan, error)
+	// Compute reconciles one manifest. imageAliases is the live local-alias
+	// inventory (a set of alias NAMES from ImageService.GetImageAliases) and
+	// imageRemotes the effective remote registry (builtins ∪ declared union,
+	// config.EffectiveImageRemotes); both are passed in so Compute stays a
+	// pure, offline function. Either may be nil/empty for tests and for
+	// non-image flows.
+	Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*api.StorageVolume, imageAliases map[string]bool, imageRemotes map[string]string, hasRebuildExt bool) (*Plan, error)
 }
 
 type defaultReconciler struct{}
@@ -124,7 +144,7 @@ func NewReconciler() Reconciler {
 	return &defaultReconciler{}
 }
 
-func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*api.StorageVolume, hasRebuildExt bool) (*Plan, error) {
+func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*api.StorageVolume, imageAliases map[string]bool, imageRemotes map[string]string, hasRebuildExt bool) (*Plan, error) {
 	if manifest == nil {
 		return nil, fmt.Errorf("manifest cannot be nil")
 	}
@@ -189,6 +209,15 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		}
 		step.InstancesPost = postPayload
 
+		// Remote-image fetch decision (§5.3): an uncached remote:alias
+		// reference plans a Phase -1 fetch before this create runs. Unknown
+		// remotes and fetch-disabled misses are plan-time config errors.
+		imageOps, err := r.buildImageOps(manifest, imageAliases, imageRemotes)
+		if err != nil {
+			return nil, err
+		}
+		step.ImageOps = imageOps
+
 		// Storage volume pre-provisioning (managed disks) and external-volume
 		// existence probe (STORAGE-SPEC §5.3/§7.6). Volumes arrive as a
 		// dedicated parameter so the probe works even when no live instances
@@ -241,16 +270,22 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		}
 
 		step.RebuildPost = &api.InstanceRebuildPost{
-			Source: api.InstanceSource{
-				Type:  "image",
-				Alias: manifest.Image,
-			},
+			Source: resolvedInstanceSource(manifest.Image, manifest.Type),
 		}
 		postPayload, err := buildInstancesPost(manifest)
 		if err != nil {
 			return nil, fmt.Errorf("building recreate payload: %w", err)
 		}
 		step.InstancesPost = postPayload
+
+		// Remote-image fetch decision (§5.3): a recreate rebuilds from the
+		// canonical local alias, so an uncached remote:alias reference for
+		// THIS instance type plans a Phase -1 fetch first.
+		imageOps, err := r.buildImageOps(manifest, imageAliases, imageRemotes)
+		if err != nil {
+			return nil, err
+		}
+		step.ImageOps = imageOps
 
 		// Managed volumes persist across an instance recreate (never deleted);
 		// idempotent create keeps them provisioned. External volumes are probed
@@ -346,12 +381,9 @@ func buildInstancesPost(manifest *config.Config) (*api.InstancesPost, error) {
 	}
 
 	post := &api.InstancesPost{
-		Name: manifest.Name,
-		Type: instType,
-		Source: api.InstanceSource{
-			Type:  "image",
-			Alias: manifest.Image,
-		},
+		Name:   manifest.Name,
+		Type:   instType,
+		Source: resolvedInstanceSource(manifest.Image, manifest.Type),
 		InstancePut: api.InstancePut{
 			Config:  make(map[string]string),
 			Devices: make(map[string]map[string]string),
@@ -392,6 +424,10 @@ func buildInstancesPost(manifest *config.Config) (*api.InstancesPost, error) {
 	// 3. User, Groups & Cloud-Init
 	post.Config["user.lxm.user"] = manifest.User
 	post.Config["user.lxm.managed"] = "true"
+	// The exact manifest reference is recorded so live-instance image matching
+	// works for every remote (custom remotes included) without deriving the OS
+	// from the reference string (§4.5).
+	post.Config["user.lxm.image"] = manifest.Image
 	if len(manifest.Groups) > 0 {
 		grps := make([]string, len(manifest.Groups))
 		copy(grps, manifest.Groups)
@@ -461,6 +497,69 @@ func buildInstancesPost(manifest *config.Config) (*api.InstancesPost, error) {
 	return post, nil
 }
 
+// resolvedInstanceSource maps a manifest image reference to the local LXD
+// image identity used in create/rebuild payloads (IMAGE-SPEC §5.1). A hex
+// fingerprint goes to Source.Fingerprint (LXD resolves it verbatim); a bare
+// alias and a remote:alias go to Source.Alias, the latter as the canonical
+// TYPE-QUALIFIED local alias (config.ImageLocalRef). LXD's ResolveImage uses
+// Source.Fingerprint verbatim but resolves Source.Alias through the alias
+// table, so the two forms must never be conflated.
+func resolvedInstanceSource(image, instanceType string) api.InstanceSource {
+	src := api.InstanceSource{Type: "image"}
+	if isHexFingerprint(image) {
+		src.Fingerprint = image
+	} else {
+		src.Alias = config.ImageLocalRef(image, instanceType)
+	}
+	return src
+}
+
+// buildImageOps returns the remote-image fetch ops required before an instance
+// step runs (create/recreate only). Local references never fetch; a cached
+// canonical local alias never fetches; an uncached remote:alias plans one
+// Phase -1 fetch carrying the already-resolved URL (§5.3). Unknown remotes and
+// fetch-disabled misses are config errors (exit 3).
+func (r *defaultReconciler) buildImageOps(manifest *config.Config, imageAliases map[string]bool, imageRemotes map[string]string) ([]ImageOp, error) {
+	if manifest == nil || manifest.Status == "absent" {
+		return nil, nil
+	}
+	remote, alias, isRemote := config.SplitImageRef(manifest.Image)
+	if !isRemote {
+		return nil, nil // fingerprint / bare alias: local only, never fetched
+	}
+	url, ok := imageRemotes[remote]
+	if !ok {
+		//nolint:staticcheck // ST1005: the trailing colon is part of the locked spec message (§4.1).
+		return nil, fmt.Errorf(`unknown image remote %q (referenced by image %q of instance %q); declare it under image_remotes:`, remote, manifest.Image, manifest.Name)
+	}
+	localAlias := config.ImageLocalRef(manifest.Image, manifest.Type)
+	if imageAliases[localAlias] {
+		return nil, nil // cached: no fetch
+	}
+	if !imageFetchEnabled() {
+		return nil, fmt.Errorf(`image fetch is disabled (LXM_IMAGE_FETCH=0) but image %q of instance %q is not cached locally`, manifest.Image, manifest.Name)
+	}
+	return []ImageOp{{
+		Op:         "fetch",
+		Remote:     remote,
+		RemoteURL:  url,
+		Alias:      alias,
+		LocalAlias: localAlias,
+		Type:       manifest.Type,
+	}}, nil
+}
+
+// imageFetchEnabled reports whether remote image fetch is enabled. The
+// LXM_IMAGE_FETCH environment variable (default "1") disables it when set to
+// "0" or "false" (§7.5).
+func imageFetchEnabled() bool {
+	v := os.Getenv("LXM_IMAGE_FETCH")
+	if v == "" {
+		return true
+	}
+	return v != "0" && !strings.EqualFold(v, "false")
+}
+
 func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.InstancePut, error) {
 	put := &api.InstancePut{
 		Architecture: live.Architecture,
@@ -475,6 +574,10 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.Ins
 		put.Config[k] = v
 	}
 	put.Config["user.lxm.managed"] = "true"
+	// The manifest reference is re-recorded on every update so the imageMatches
+	// fast path (§4.5) stays authoritative and legacy instances created before
+	// user.lxm.image existed are backfilled on their next update.
+	put.Config["user.lxm.image"] = manifest.Image
 
 	// 2. Recompute user, groups, cloud-init
 	if manifest.User != "" {
@@ -1063,16 +1166,18 @@ func getLiveImage(live *InstanceSnapshot) string {
 }
 
 // imageMatches reports whether the desired manifest image reference matches the
-// image identity of a live instance. LXD reports the live identity as os:release
-// (e.g. ubuntu:jammy) or a description, while manifests may reference an alias
-// (ubuntu:22.04), a fingerprint, or a fingerprint prefix. The live instance
-// config carries the image properties LXD recorded at creation
-// (image.os/image.version/image.release/image.description) and the resolved
-// fingerprint (volatile.base_image), which imageMatches consults so an alias
-// and its resolved image compare equal — otherwise re-planning any
-// alias-created container would demand a recreate (B4).
+// image identity of a live instance. It first consults the exact manifest
+// reference lxm recorded on the instance at create/recreate (user.lxm.image,
+// §4.5): that fast path is authoritative and works for every remote — custom
+// remotes included, where the OS cannot be derived from the reference string.
+// The fingerprint + os:release heuristics remain as a fallback for legacy
+// instances created before user.lxm.image existed.
 func imageMatches(desired, live string, liveConfig map[string]string) bool {
 	if desired == live {
+		return true
+	}
+	if recorded := strings.ToLower(strings.TrimSpace(liveConfig["user.lxm.image"])); recorded != "" &&
+		recorded == strings.ToLower(strings.TrimSpace(desired)) {
 		return true
 	}
 	if live == "" {

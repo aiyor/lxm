@@ -24,8 +24,9 @@
 
 * **[NETWORK-SPEC.md](NETWORK-SPEC.md)** — the authoritative spec for the `vswitches:` / `network_policy:` **feature**: group-based traffic policy compiled into LXD network ACLs, the generator matrix, CIDR decomposition, reconciliation/execution model, and verified integration results.
 * **[STORAGE-SPEC.md](STORAGE-SPEC.md)** — the authoritative spec for the `disks:` **feature**: additional VM data disks in filesystem or block mode, the mode × ownership matrix, verified LXD constraints, and the reconciliation/execution model.
+* **[IMAGE-SPEC.md](IMAGE-SPEC.md)** — the authoritative spec for the `image:` `remote:alias` **feature**: cloud image lookup & fetch, the canonical type-qualified local alias, the cache probe, and the Phase −1 execution model.
 * **[VM-SPEC.md](VM-SPEC.md)** — the authoritative spec for virtual-machine fleet management: VM manifest fields, hardware limits, hypervisor settings, and the VM apply/verify lifecycle.
-* **[SPEC_MANIFEST.md](SPEC_MANIFEST.md)** — the canonical **manifest schema** contract (all fields, CUE validation, inheritance) — including the authoritative `vswitches:`/`network_policy:` (§3.6/§3.7) and `disks:` (§3.9) field tables that the feature specs reference.
+* **[SPEC_MANIFEST.md](SPEC_MANIFEST.md)** — the canonical **manifest schema** contract (all fields, CUE validation, inheritance) — including the authoritative `vswitches:`/`network_policy:` (§3.6/§3.7), `disks:` (§3.9), and `image:`/`image_remotes:` (§3.10) field tables that the feature specs reference.
 
 ---
 

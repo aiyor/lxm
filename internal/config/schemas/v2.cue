@@ -18,6 +18,16 @@ import (
 // POSIX Environment Variable identifier
 #EnvKey: =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
 
+// Simplestreams image remote name (the remote part of image: remote:alias)
+#ImageRemoteName: =~"^[a-zA-Z0-9_\\.\\-]+$"
+
+// #ImageRemoteNameInvalid rejects keys that do not fully match #ImageRemoteName.
+// It is needed because a map carrying only a positive key-pattern constraint is
+// NOT enforced when the struct is wrapped in close() (a CUE quirk); pairing the
+// positive pattern with a [!~...]: _|_ rejection makes the charset rule
+// concrete, so a key like "bad name!" fails validation.
+#ImageRemoteNameInvalid: !~"^[a-zA-Z0-9_\\.\\-]+$"
+
 // Mount path restrictions: absolute, cleaned, non-root system path
 #CleanMountPath: string & {
 	strings.MinRunes(2)
@@ -204,6 +214,13 @@ import (
 		allow:           [...#PolicyRuleAuthoring]
 	})
 
+	// Fleet-scoped simplestreams image remotes (image: remote:alias). Rich
+	// URL validation (scheme, host, loopback-http rule) and the remote-name
+	// charset diagnostic run Go-side in ValidatePostMerge; the URL is a bare
+	// string here and the charset is declared (enforced as the resolved-form
+	// contract in #LXM_RESOLVED).
+	image_remotes?: {[#ImageRemoteName]: string}
+
 	// Wait policy: accepts scalar bool (shorthand) or struct
 	wait?: bool | #WaitConfig
 
@@ -297,6 +314,11 @@ import (
 			direction: "both" | "egress"
 		})]
 	})
+
+	image_remotes?: {
+		[#ImageRemoteName]: string
+		[#ImageRemoteNameInvalid]: _|_
+	}
 
 	wait: #WaitConfig
 

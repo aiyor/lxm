@@ -511,6 +511,18 @@ func MigrateManifest(rawYAML []byte) ([]byte, []string, error) {
 
 	migratedBytes := buf.Bytes()
 
+	// Precise remote-name diagnostic on the compile path: the resolved-schema
+	// _|_ rejection does not name the offending key, and the authoring fallback
+	// below would otherwise accept it (the authoring schema declares the
+	// charset but does not enforce map keys under close()). Check the emitted
+	// manifest directly so lxm compile fails with an actionable message.
+	var migratedCfg Config
+	if yaml.Unmarshal(migratedBytes, &migratedCfg) == nil {
+		if err := validateImageRemoteNames(migratedCfg.ImageRemotes); err != nil {
+			return nil, warnings, err
+		}
+	}
+
 	// Validate migrated output against resolved schema to ensure CUE compliance
 	validator, err := NewValidator()
 	if err == nil {

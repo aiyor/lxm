@@ -120,6 +120,20 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				return &exitError{code: 4, err: fmt.Errorf("fetching live instance state: %w", err)}
 			}
 
+			// Effective image-remotes registry (builtins ∪ declared union) and
+			// the live local-alias inventory drive the remote:alias fetch
+			// decision (§4.1/§4.3). A failed inventory probe is fatal here:
+			// an empty inventory would plan redundant pulls for every cached
+			// remote image (M1).
+			imageRemotes, err := config.EffectiveImageRemotes(loaded)
+			if err != nil {
+				return &exitError{code: 3, err: err}
+			}
+			imageAliases, err := fetchImageAliases(svc)
+			if err != nil {
+				return &exitError{code: 4, err: fmt.Errorf("listing local image aliases: %w", err)}
+			}
+
 			reconciler := plan.NewReconciler()
 			hasRebuild := svc.HasExtension("instances_rebuild")
 
@@ -129,7 +143,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			}
 
 			for _, conf := range selectedConfigs {
-				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, hasRebuild)
+				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, imageAliases, imageRemotes, hasRebuild)
 				if err != nil {
 					return planComputeError(err)
 				}
@@ -299,8 +313,17 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				Steps:  []plan.Step{},
 			}
 
+			imageRemotes, err := config.EffectiveImageRemotes(loaded)
+			if err != nil {
+				return &exitError{code: 3, err: err}
+			}
+			// Plan is a preview: a probe failure degrades to an empty
+			// inventory (every remote reference plans a fetch) rather than
+			// aborting the offline-capable plan command.
+			imageAliases, _ := fetchImageAliases(svc)
+
 			for _, conf := range selectedConfigs {
-				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, hasRebuild)
+				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, imageAliases, imageRemotes, hasRebuild)
 				if err != nil {
 					return planComputeError(err)
 				}
@@ -399,7 +422,12 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			}
 
 			reconciler := plan.NewReconciler()
-			p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, hasRebuild)
+			imageRemotes, err := config.EffectiveImageRemotes([]*config.Config{conf})
+			if err != nil {
+				return &exitError{code: 3, err: err}
+			}
+			imageAliases, _ := fetchImageAliases(svc)
+			p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, imageAliases, imageRemotes, hasRebuild)
 			if err != nil {
 				return planComputeError(err)
 			}
@@ -1737,6 +1765,29 @@ func fetchLiveSnapshots(svc lxd.InstanceService, configs []*config.Config) (map[
 		}
 	}
 	return result, volumes, nil
+}
+
+// fetchImageAliases returns the live local-alias inventory — the set of alias
+// NAMES from the LXD image store (IMAGE-SPEC §8) — that keys the remote:alias
+// cache probe, plus any listing error. The plan/diff commands may run without
+// a service (degraded offline mode) and tolerate the error (an empty
+// inventory simply plans a fetch); the apply command treats a probe failure as
+// fatal (exit 4, like fetchLiveSnapshots) so a broken probe cannot silently
+// turn every cached remote image into a redundant simplestreams pull.
+func fetchImageAliases(svc lxd.InstanceService) (map[string]bool, error) {
+	imgSvc, ok := svc.(lxd.ImageService)
+	if !ok {
+		return nil, nil
+	}
+	aliases, err := imgSvc.GetImageAliases()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(aliases))
+	for _, a := range aliases {
+		out[a.Name] = true
+	}
+	return out, nil
 }
 
 func computePlanSummary(steps []plan.Step) plan.PlanSummary {
