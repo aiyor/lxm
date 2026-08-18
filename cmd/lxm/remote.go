@@ -131,11 +131,11 @@ func newRemoteAddCmd(opts *cmdOptions, stdout, stderr io.Writer, logger *slog.Lo
 				if addFlags.token != "" {
 					logger.Info("Enrolling client certificate with trust token...")
 					if provType == provider.ProviderTypeLXD {
-						if err := remote.EnrollTrustTokenLXD(addr, addFlags.token, certPath, keyPath, serverCert); err != nil {
+						if err := remote.EnrollTrustTokenLXD(addr, addFlags.token, certPath, keyPath, serverCert, addFlags.insecure); err != nil {
 							return &exitError{code: 4, err: fmt.Errorf("trust enrollment failed with LXD: %w", err)}
 						}
 					} else {
-						if err := remote.EnrollTrustTokenIncus(addr, addFlags.token, certPath, keyPath, serverCert); err != nil {
+						if err := remote.EnrollTrustTokenIncus(addr, addFlags.token, certPath, keyPath, serverCert, addFlags.insecure); err != nil {
 							return &exitError{code: 4, err: fmt.Errorf("trust enrollment failed with Incus: %w", err)}
 						}
 					}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/lxd"
 )
 
@@ -86,5 +87,25 @@ func TestRemoteCLI_Lifecycle(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Remote \"lab-socket\" removed") {
 		t.Errorf("expected removal message, got: %s", stdout.String())
+	}
+}
+
+func TestResolveSvcForConfig(t *testing.T) {
+	baseSvc := lxd.NewFakeInstanceServer()
+
+	// 1. Conf without provider/remote/target/project returns baseSvc
+	conf := &config.Config{Name: "web"}
+	opts := &cmdOptions{}
+	svc, err := resolveSvcForConfig(baseSvc, conf, opts)
+	if err != nil || svc != baseSvc {
+		t.Fatalf("expected baseSvc, got err: %v", err)
+	}
+
+	// 2. Conf with CLI override returns baseSvc
+	optsCLI := &cmdOptions{provider: "lxd"}
+	confWithProv := &config.Config{Name: "web", Provider: "incus"}
+	svc, err = resolveSvcForConfig(baseSvc, confWithProv, optsCLI)
+	if err != nil || svc != baseSvc {
+		t.Fatalf("expected baseSvc under CLI override, got err: %v", err)
 	}
 }

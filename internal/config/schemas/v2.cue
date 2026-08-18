@@ -30,11 +30,16 @@ import (
 
 // Remote name charset
 #RemoteName: =~"^[a-zA-Z0-9_\\.\\-]+$"
+#RemoteNameInvalid: !~"^[a-zA-Z0-9_\\.\\-]+$"
+
+// Project and Target charsets
+#ProjectName: =~"^[a-zA-Z0-9_\\.\\-]+$"
+#ClusterTarget: =~"^[a-zA-Z0-9_\\.\\-]+$"
 
 #RemoteObjAuthoring: close({
 	address:   string
 	provider?: #ProviderType
-	project?:  string
+	project?:  #ProjectName
 	insecure?: bool
 	protocol?: "https" | "unix"
 })
@@ -211,9 +216,12 @@ import (
 
 	provider?: #ProviderType
 	remote?:   #RemoteName
-	target?:   string
-	project?:  string
-	remotes?:  {[#RemoteName]: #RemoteObjAuthoring}
+	target?:   #ClusterTarget
+	project?:  #ProjectName
+	remotes?: {
+		[#RemoteName]: #RemoteObjAuthoring
+		[#RemoteNameInvalid]: _|_
+	}
 
 	limits?: #LimitsAuthoring
 	vm?:     #VMConfigAuthoring
@@ -311,9 +319,12 @@ import (
 
 	provider?: #ProviderType
 	remote?:   #RemoteName
-	target?:   string
-	project?:  string
-	remotes?:  {[#RemoteName]: #RemoteObjAuthoring}
+	target?:   #ClusterTarget
+	project?:  #ProjectName
+	remotes?: {
+		[#RemoteName]: #RemoteObjAuthoring
+		[#RemoteNameInvalid]: _|_
+	}
 
 	limits?: #LimitsResolved
 	vm?:     #VMConfigResolved

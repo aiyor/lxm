@@ -16,6 +16,8 @@ import (
 	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/output"
 	"github.com/aiyor/lxm/internal/plan"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/remote"
 )
 
 var (
@@ -66,16 +68,29 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 	var once sync.Once
 	var cachedSvc lxd.InstanceService
 	var svcErr error
+	var opts *cmdOptions
 
 	getSvc := func() (lxd.InstanceService, error) {
 		if svc != nil {
 			return svc, nil
 		}
 		once.Do(func() {
-			cachedSvc, svcErr = lxd.NewService()
+			resOpts := remote.ResolveOptions{}
+			if opts != nil {
+				resOpts.Provider = provider.ProviderType(opts.provider)
+				resOpts.RemoteName = opts.remote
+				resOpts.TargetNode = opts.target
+				resOpts.Project = opts.project
+			}
+			d, err := remote.ResolveDriver(resOpts)
+			if err != nil {
+				svcErr = &exitError{code: 4, err: fmt.Errorf("failed to connect to provider: %w", err)}
+				return
+			}
+			cachedSvc = lxd.NewServiceFromDriver(d)
 		})
 		if svcErr != nil {
-			return nil, &exitError{code: 4, err: fmt.Errorf("failed to connect to LXD: %w", svcErr)}
+			return nil, svcErr
 		}
 		return cachedSvc, nil
 	}

@@ -140,7 +140,7 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 				TLSClientCert:      string(clientCertPEM),
 				TLSClientKey:       string(clientKeyPEM),
 				TLSServerCert:      entry.ServerCertificate,
-				InsecureSkipVerify: entry.Insecure || entry.ServerCertificate == "",
+				InsecureSkipVerify: entry.Insecure,
 			}
 			d, err = incus.NewRemoteDriver(entry.Address, args)
 			if err != nil {
@@ -151,7 +151,7 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 				TLSClientCert:      string(clientCertPEM),
 				TLSClientKey:       string(clientKeyPEM),
 				TLSServerCert:      entry.ServerCertificate,
-				InsecureSkipVerify: entry.Insecure || entry.ServerCertificate == "",
+				InsecureSkipVerify: entry.Insecure,
 			}
 			d, err = lxd.NewRemoteDriver(entry.Address, args)
 			if err != nil {

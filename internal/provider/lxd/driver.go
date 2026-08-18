@@ -759,60 +759,95 @@ func (d *Driver) InteractiveExecInstance(name string, cmd []string, uid uint32, 
 		Environment: env,
 	}
 
-	controlChan := make(chan *websocket.Conn, 1)
+	controlChan := make(chan api.InstanceExecControl, 10)
+	done := make(chan struct{})
+	defer func() {
+		close(done)
+		close(controlChan)
+	}()
 
 	execArgs := &lxd_client.InstanceExecArgs{
-		Stdin:    os.Stdin,
-		Stdout:   os.Stdout,
-		Stderr:   os.Stderr,
-		Control:  func(conn *websocket.Conn) { controlChan <- conn },
-		DataDone: make(chan bool),
+		Stdin:  os.Stdin,
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+		Control: func(conn *websocket.Conn) {
+			for control := range controlChan {
+				_ = conn.WriteJSON(control)
+			}
+		},
 	}
 
-	op, err := d.client.ExecInstance(name, execReq, execArgs)
-	if err != nil {
-		return fmt.Errorf("starting interactive exec: %w", err)
-	}
+	defer func() {
+		if r := recover(); r != nil {
+			if isTerminal {
+				_ = term.Restore(stdinFd, oldState)
+			}
+			panic(r)
+		}
+	}()
 
 	if isTerminal {
 		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGWINCH)
+		signal.Notify(sigChan, syscall.SIGWINCH, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+		defer signal.Stop(sigChan)
+
 		var wg sync.WaitGroup
 		wg.Add(1)
-
 		go func() {
 			defer wg.Done()
-			var controlConn *websocket.Conn
-			select {
-			case controlConn = <-controlChan:
-			case <-execArgs.DataDone:
-				return
-			}
-
 			for {
 				select {
-				case <-sigChan:
-					w, h, err := term.GetSize(stdinFd)
-					if err == nil && controlConn != nil {
-						msg := api.InstanceExecControl{
-							Command: "window-resize",
-							Args: map[string]string{
-								"width":  strconv.Itoa(w),
-								"height": strconv.Itoa(h),
-							},
+				case sig := <-sigChan:
+					switch sig {
+					case syscall.SIGWINCH:
+						w, h, err := term.GetSize(stdinFd)
+						if err == nil {
+							select {
+							case controlChan <- api.InstanceExecControl{
+								Command: "window-resize",
+								Args: map[string]string{
+									"width":  strconv.Itoa(w),
+									"height": strconv.Itoa(h),
+								},
+							}:
+							case <-done:
+								return
+							}
 						}
-						_ = controlConn.WriteJSON(msg)
+					case syscall.SIGINT:
+						select {
+						case controlChan <- api.InstanceExecControl{
+							Command: "signal",
+							Args: map[string]string{
+								"signum": strconv.Itoa(int(syscall.SIGINT)),
+							},
+						}:
+						case <-done:
+							return
+						}
+					default:
+						if oldState != nil {
+							_ = term.Restore(stdinFd, oldState)
+						}
+						signal.Stop(sigChan)
+						if p, err := os.FindProcess(os.Getpid()); err == nil {
+							_ = p.Signal(sig)
+						}
+						return
 					}
-				case <-execArgs.DataDone:
+				case <-done:
 					return
 				}
 			}
 		}()
 		defer func() {
-			signal.Stop(sigChan)
-			close(sigChan)
 			wg.Wait()
 		}()
+	}
+
+	op, err := d.client.ExecInstance(name, execReq, execArgs)
+	if err != nil {
+		return fmt.Errorf("starting interactive exec: %w", err)
 	}
 
 	return op.Wait()
@@ -851,6 +886,7 @@ func (d *Driver) GetIP(name string) (string, error) {
 		return "", err
 	}
 
+	// Try to find the first global IPv4 address
 	for _, network := range state.Network {
 		for _, addr := range network.Addresses {
 			if addr.Family == "inet" && addr.Scope == "global" {
@@ -859,7 +895,16 @@ func (d *Driver) GetIP(name string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no global IPv4 address found for instance %q", name)
+	// Fallback to any IPv4 if global not found (e.g. some bridge setups)
+	for _, network := range state.Network {
+		for _, addr := range network.Addresses {
+			if addr.Family == "inet" {
+				return addr.Address, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no IPv4 address found for %q", name)
 }
 
 // ============================================================================

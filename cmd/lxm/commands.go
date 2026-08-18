@@ -21,6 +21,8 @@ import (
 	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/output"
 	"github.com/aiyor/lxm/internal/plan"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/remote"
 	"github.com/aiyor/lxm/internal/recipe"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/spf13/cobra"
@@ -112,6 +114,13 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			svc, err := getSvc()
 			if err != nil {
 				return err
+			}
+			if len(selectedConfigs) == 1 {
+				if scopedSvc, err := resolveSvcForConfig(svc, selectedConfigs[0], opts); err == nil && scopedSvc != nil {
+					svc = scopedSvc
+				} else if err != nil {
+					return &exitError{code: 4, err: err}
+				}
 			}
 
 			if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
@@ -303,6 +312,11 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 
 			svc, err := getSvc()
 			if err == nil && svc != nil {
+				if len(selectedConfigs) == 1 {
+					if scopedSvc, err := resolveSvcForConfig(svc, selectedConfigs[0], opts); err == nil && scopedSvc != nil {
+						svc = scopedSvc
+					}
+				}
 				if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
 					return err
 				}
@@ -417,6 +431,9 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 
 			svc, err := getSvc()
 			if err == nil && svc != nil {
+				if scopedSvc, err := resolveSvcForConfig(svc, conf, opts); err == nil && scopedSvc != nil {
+					svc = scopedSvc
+				}
 				if err := checkDiskExtensions(svc, []*config.Config{conf}); err != nil {
 					return err
 				}
@@ -1814,4 +1831,30 @@ func computePlanSummary(steps []plan.Step) plan.PlanSummary {
 		}
 	}
 	return s
+}
+
+func resolveSvcForConfig(baseSvc lxd.InstanceService, conf *config.Config, opts *cmdOptions) (lxd.InstanceService, error) {
+	if conf == nil {
+		return baseSvc, nil
+	}
+	// If CLI flags explicitly provided provider/remote/target/project, CLI override takes precedence
+	hasCLIOverride := opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != "")
+	if hasCLIOverride {
+		return baseSvc, nil
+	}
+	// If manifest specifies any of provider, remote, target, project:
+	if conf.Provider != "" || conf.Remote != "" || conf.Target != "" || conf.Project != "" {
+		resOpts := remote.ResolveOptions{
+			Provider:   provider.ProviderType(conf.Provider),
+			RemoteName: conf.Remote,
+			TargetNode: conf.Target,
+			Project:    conf.Project,
+		}
+		d, err := remote.ResolveDriver(resOpts)
+		if err != nil {
+			return nil, fmt.Errorf("resolving provider for manifest %q: %w", conf.Name, err)
+		}
+		return lxd.NewServiceFromDriver(d), nil
+	}
+	return baseSvc, nil
 }

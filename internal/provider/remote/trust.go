@@ -28,6 +28,7 @@ type ServerInfo struct {
 }
 
 // FetchServerCertificate connects to the remote HTTPS endpoint and retrieves its TLS server certificate.
+// It explicitly disables session caching and uses VerifyConnection to guarantee peer cert extraction without bypass.
 func FetchServerCertificate(serverURL string) (*ServerInfo, error) {
 	u, err := url.Parse(serverURL)
 	if err != nil {
@@ -42,12 +43,10 @@ func FetchServerCertificate(serverURL string) (*ServerInfo, error) {
 	var peerCert *x509.Certificate
 	conf := &tls.Config{
 		InsecureSkipVerify: true,
-		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-			if len(rawCerts) > 0 {
-				cert, err := x509.ParseCertificate(rawCerts[0])
-				if err == nil {
-					peerCert = cert
-				}
+		ClientSessionCache: nil,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) > 0 {
+				peerCert = cs.PeerCertificates[0]
 			}
 			return nil
 		},
@@ -86,7 +85,7 @@ func FetchServerCertificate(serverURL string) (*ServerInfo, error) {
 }
 
 // EnrollTrustTokenIncus uses a trust token to add the client mTLS certificate to an Incus server.
-func EnrollTrustTokenIncus(serverURL, token, certPath, keyPath, serverCert string) error {
+func EnrollTrustTokenIncus(serverURL, token, certPath, keyPath, serverCert string, insecure bool) error {
 	clientCertPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return fmt.Errorf("reading client certificate %q: %w", certPath, err)
@@ -100,7 +99,7 @@ func EnrollTrustTokenIncus(serverURL, token, certPath, keyPath, serverCert strin
 		TLSClientCert:      string(clientCertPEM),
 		TLSClientKey:       string(clientKeyPEM),
 		TLSServerCert:      serverCert,
-		InsecureSkipVerify: serverCert == "",
+		InsecureSkipVerify: insecure,
 	}
 
 	c, err := incus_client.ConnectIncus(serverURL, args)
@@ -120,7 +119,7 @@ func EnrollTrustTokenIncus(serverURL, token, certPath, keyPath, serverCert strin
 }
 
 // EnrollTrustTokenLXD uses a trust token to add the client mTLS certificate to an LXD server.
-func EnrollTrustTokenLXD(serverURL, token, certPath, keyPath, serverCert string) error {
+func EnrollTrustTokenLXD(serverURL, token, certPath, keyPath, serverCert string, insecure bool) error {
 	clientCertPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return fmt.Errorf("reading client certificate %q: %w", certPath, err)
@@ -134,7 +133,7 @@ func EnrollTrustTokenLXD(serverURL, token, certPath, keyPath, serverCert string)
 		TLSClientCert:      string(clientCertPEM),
 		TLSClientKey:       string(clientKeyPEM),
 		TLSServerCert:      serverCert,
-		InsecureSkipVerify: serverCert == "",
+		InsecureSkipVerify: insecure,
 	}
 
 	c, err := lxd_client.ConnectLXD(serverURL, args)

@@ -15,7 +15,7 @@ import (
 
 // FakeDriver is an in-memory implementation of provider.Driver for unit and integration testing.
 type FakeDriver struct {
-	mu sync.Mutex
+	mu *sync.Mutex
 
 	ProviderTypeVal provider.ProviderType
 	Project         string
@@ -62,6 +62,7 @@ var _ provider.Driver = (*FakeDriver)(nil)
 // New creates a new initialized FakeDriver.
 func New() *FakeDriver {
 	f := &FakeDriver{
+		mu:              &sync.Mutex{},
 		ProviderTypeVal: provider.ProviderTypeLXD,
 		Project:         "default",
 		Instances:       make(map[string]*provider.Instance),
