@@ -168,39 +168,53 @@ type ReplaceDirective struct {
 	Disks    []DiskConfig    `yaml:"disks,omitempty"`
 }
 
+// RemoteConfig models remote daemon connection metadata declared in a manifest.
+type RemoteConfig struct {
+	Address  string `yaml:"address"`
+	Provider string `yaml:"provider,omitempty"`
+	Project  string `yaml:"project,omitempty"`
+	Insecure bool   `yaml:"insecure,omitempty"`
+	Protocol string `yaml:"protocol,omitempty"`
+}
+
 // Config defines the desired state for an instance.
 type Config struct {
-	Schema           string            `yaml:"schema,omitempty"`
-	Name             string            `yaml:"name,omitempty"`
-	Type             string            `yaml:"type,omitempty"` // container | virtual-machine
-	Status           string            `yaml:"status,omitempty"`
-	State            string            `yaml:"state,omitempty"` // running | stopped (F2)
-	Limits           *LimitsConfig     `yaml:"limits,omitempty"`
-	VM               *VMConfig         `yaml:"vm,omitempty"`
-	WaitPolicy       WaitConfig        `yaml:"wait"`
-	LegacyWaitPolicy *WaitConfig       `yaml:"wait_config,omitempty"` // v1-compat legacy tag
-	Image            string            `yaml:"image,omitempty"`
-	User             string            `yaml:"user,omitempty"`
-	Mounts           Mounts            `yaml:"mounts,omitempty"`
-	Networks         []NetworkConfig   `yaml:"networks,omitempty"`
-	Disks            []DiskConfig      `yaml:"disks,omitempty"`
-	VSwitches        []VSwitchConfig   `yaml:"vswitches,omitempty"`
-	NetworkPolicy    *NetworkPolicy    `yaml:"network_policy,omitempty"`
-	ImageRemotes     map[string]string `yaml:"image_remotes,omitempty"`
-	CloudInitInclude []string          `yaml:"cloud-init-include,omitempty"`
-	CloudInit        string            `yaml:"cloud-init,omitempty"`
-	CloudInitFile    string            `yaml:"cloud-init-file,omitempty"`
-	NetworkConfig    string            `yaml:"network-config,omitempty"`
-	Recipes          Recipes           `yaml:"recipes,omitempty"`
-	Include          []string          `yaml:"include,omitempty"` // consumed during resolution
-	Base             bool              `yaml:"base,omitempty"`    // file-level metadata
-	Groups           []string          `yaml:"groups,omitempty"`
-	Sudo             bool              `yaml:"sudo,omitempty"`            // opt-in passwordless sudo (D9)
-	InjectSSHKeys    bool              `yaml:"inject_ssh_keys,omitempty"` // opt-in auto host-key injection (D9)
-	SSHKeys          []string          `yaml:"ssh_keys,omitempty"`        // explicit identity public keys (D9)
-	Vars             map[string]string `yaml:"vars,omitempty"`
-	Remove           *RemoveDirective  `yaml:"remove,omitempty"`
-	Replace          *ReplaceDirective `yaml:"replace,omitempty"`
+	Schema           string                  `yaml:"schema,omitempty"`
+	Name             string                  `yaml:"name,omitempty"`
+	Type             string                  `yaml:"type,omitempty"` // container | virtual-machine
+	Status           string                  `yaml:"status,omitempty"`
+	State            string                  `yaml:"state,omitempty"` // running | stopped (F2)
+	Provider         string                  `yaml:"provider,omitempty"`
+	Remote           string                  `yaml:"remote,omitempty"`
+	Target           string                  `yaml:"target,omitempty"`
+	Project          string                  `yaml:"project,omitempty"`
+	Remotes          map[string]RemoteConfig `yaml:"remotes,omitempty"`
+	Limits           *LimitsConfig           `yaml:"limits,omitempty"`
+	VM               *VMConfig               `yaml:"vm,omitempty"`
+	WaitPolicy       WaitConfig              `yaml:"wait"`
+	LegacyWaitPolicy *WaitConfig             `yaml:"wait_config,omitempty"` // v1-compat legacy tag
+	Image            string                  `yaml:"image,omitempty"`
+	User             string                  `yaml:"user,omitempty"`
+	Mounts           Mounts                  `yaml:"mounts,omitempty"`
+	Networks         []NetworkConfig         `yaml:"networks,omitempty"`
+	Disks            []DiskConfig            `yaml:"disks,omitempty"`
+	VSwitches        []VSwitchConfig         `yaml:"vswitches,omitempty"`
+	NetworkPolicy    *NetworkPolicy          `yaml:"network_policy,omitempty"`
+	ImageRemotes     map[string]string       `yaml:"image_remotes,omitempty"`
+	CloudInitInclude []string                `yaml:"cloud-init-include,omitempty"`
+	CloudInit        string                  `yaml:"cloud-init,omitempty"`
+	CloudInitFile    string                  `yaml:"cloud-init-file,omitempty"`
+	NetworkConfig    string                  `yaml:"network-config,omitempty"`
+	Recipes          Recipes                 `yaml:"recipes,omitempty"`
+	Include          []string                `yaml:"include,omitempty"` // consumed during resolution
+	Base             bool                    `yaml:"base,omitempty"`    // file-level metadata
+	Groups           []string                `yaml:"groups,omitempty"`
+	Sudo             bool                    `yaml:"sudo,omitempty"`            // opt-in passwordless sudo (D9)
+	InjectSSHKeys    bool                    `yaml:"inject_ssh_keys,omitempty"` // opt-in auto host-key injection (D9)
+	SSHKeys          []string                `yaml:"ssh_keys,omitempty"`        // explicit identity public keys (D9)
+	Vars             map[string]string       `yaml:"vars,omitempty"`
+	Remove           *RemoveDirective        `yaml:"remove,omitempty"`
+	Replace          *ReplaceDirective       `yaml:"replace,omitempty"`
 
 	ConfigBaseDir string          `yaml:"-"` // directory of root manifest for relative file resolution
 	ConfigFile    string          `yaml:"-"` // root manifest file path (fleet-union conflict attribution)
@@ -636,6 +650,19 @@ func ValidatePostMerge(conf *Config) error {
 		conf.ImageRemotes[name] = canon
 	}
 
+	if conf.Provider != "" && conf.Provider != "incus" && conf.Provider != "lxd" && conf.Provider != "auto" {
+		return fmt.Errorf("invalid provider %q: must be 'incus', 'lxd', or 'auto'", conf.Provider)
+	}
+
+	for name, rem := range conf.Remotes {
+		if rem.Address == "" {
+			return fmt.Errorf("remote %q: address is required", name)
+		}
+		if rem.Provider != "" && rem.Provider != "incus" && rem.Provider != "lxd" && rem.Provider != "auto" {
+			return fmt.Errorf("remote %q: invalid provider %q (must be 'incus', 'lxd', or 'auto')", name, rem.Provider)
+		}
+	}
+
 	return nil
 }
 
@@ -1028,6 +1055,40 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 		res.State = overlay.State
 	} else {
 		res.State = base.State
+	}
+
+	if isPresent(overlay, "provider", overlay.Provider) {
+		res.Provider = overlay.Provider
+	} else {
+		res.Provider = base.Provider
+	}
+
+	if isPresent(overlay, "remote", overlay.Remote) {
+		res.Remote = overlay.Remote
+	} else {
+		res.Remote = base.Remote
+	}
+
+	if isPresent(overlay, "target", overlay.Target) {
+		res.Target = overlay.Target
+	} else {
+		res.Target = base.Target
+	}
+
+	if isPresent(overlay, "project", overlay.Project) {
+		res.Project = overlay.Project
+	} else {
+		res.Project = base.Project
+	}
+
+	if len(base.Remotes) > 0 || len(overlay.Remotes) > 0 {
+		res.Remotes = make(map[string]RemoteConfig, len(base.Remotes)+len(overlay.Remotes))
+		for k, v := range base.Remotes {
+			res.Remotes[k] = v
+		}
+		for k, v := range overlay.Remotes {
+			res.Remotes[k] = v
+		}
 	}
 
 	if isPresent(overlay, "image", overlay.Image) {

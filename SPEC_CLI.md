@@ -42,6 +42,10 @@ The following persistent flags are defined on the `lxm` root command:
 | `--format` | | `string` | Output format: `text` (default) or `json` (`lxm/result/v1` envelope). |
 | `--group` | `-g` | `stringSlice` | Filter containers matching ANY specified group tag (OR union). |
 | `--exclude-group` | | `stringSlice` | Exclude containers matching ANY specified group tag. |
+| `--provider` | | `string` | Target provider type (`incus`, `lxd`, or `auto`). |
+| `--remote` | | `string` | Target remote name from `~/.config/lxm/remotes.yaml`. |
+| `--target` | | `string` | Target cluster member node name for instance placement. |
+| `--project` | | `string` | Target project namespace boundary. |
 | `--version` | | `bool` | Display version information and exit. |
 
 ---
@@ -199,6 +203,26 @@ Adds an include directive to all configs in a target directory (registered stub 
 
 ```bash
 lxm include <config_dir> <include_file>
+```
+
+### 4.16 `lxm remote`
+Manages remote Incus and LXD daemon endpoints, trust token enrollment, and client mTLS credentials:
+
+```bash
+# List configured remotes
+lxm remote list [--format json|text]
+
+# Add a remote endpoint and enroll client mTLS certificate via trust token
+lxm remote add <name> <address> [--token <token>] [--provider incus|lxd] [--project <project>] [--insecure]
+
+# Remove a remote configuration
+lxm remote remove <name>
+
+# Switch default remote
+lxm remote set-default <name>
+
+# Set default project for remote
+lxm remote set-project <name> <project>
 ```
 
 ---

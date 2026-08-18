@@ -20,6 +20,12 @@ type cmdOptions struct {
 	groupFilters   []string
 	excludeFilters []string
 
+	// Provider & Remote Targeting flags
+	provider string
+	remote   string
+	target   string
+	project  string
+
 	// Subcommand flags
 	nameFilter string
 	renameTo   string
@@ -40,8 +46,8 @@ func newRootCmd(ctx context.Context, stdout, stderr io.Writer, getSvc serviceGet
 
 	rootCmd := &cobra.Command{
 		Use:           "lxm",
-		Short:         "Declarative LXD dev fleet manager",
-		Long:          "lxm is a tool for declarative reconciliation and management of LXD development container fleets.",
+		Short:         "Declarative Incus/LXD dev fleet manager",
+		Long:          "lxm is a tool for declarative reconciliation and management of Incus and LXD development container and VM fleets.",
 		Version:       fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -74,6 +80,18 @@ func newRootCmd(ctx context.Context, stdout, stderr io.Writer, getSvc serviceGet
 			if len(opts.excludeFilters) > 0 {
 				logger.Info("Exclude group filter enabled", "exclude", opts.excludeFilters)
 			}
+			if opts.provider != "" {
+				logger.Debug("Provider target specified", "provider", opts.provider)
+			}
+			if opts.remote != "" {
+				logger.Debug("Remote target specified", "remote", opts.remote)
+			}
+			if opts.target != "" {
+				logger.Debug("Cluster member target specified", "target", opts.target)
+			}
+			if opts.project != "" {
+				logger.Debug("Project target specified", "project", opts.project)
+			}
 			return nil
 		},
 	}
@@ -87,6 +105,11 @@ func newRootCmd(ctx context.Context, stdout, stderr io.Writer, getSvc serviceGet
 	pf.StringVar(&opts.format, "format", "text", "Output format (text, json)")
 	pf.StringSliceVarP(&opts.groupFilters, "group", "g", nil, "Filter to containers matching ANY tag (OR)")
 	pf.StringSliceVar(&opts.excludeFilters, "exclude-group", nil, "Exclude containers matching ANY tag (OR)")
+
+	pf.StringVar(&opts.provider, "provider", "", "Target provider type (incus, lxd, auto)")
+	pf.StringVar(&opts.remote, "remote", "", "Target remote name from remotes.yaml")
+	pf.StringVar(&opts.target, "target", "", "Cluster member target node")
+	pf.StringVar(&opts.project, "project", "", "Target project name")
 
 	registerCommands(rootCmd, opts, ctx, stdout, stderr, getSvc, logger)
 

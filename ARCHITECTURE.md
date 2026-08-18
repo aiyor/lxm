@@ -28,24 +28,31 @@ graph TD
     CLI --> Fleet["internal/fleet (Inventory, Selectors & Host Keys)"]
     CLI --> Plan["internal/plan (Reconciler & Diff Engine)"]
     CLI --> Apply["internal/apply (Plan Executor & ETag Control)"]
+    CLI --> Remote["internal/provider/remote (mTLS, Trust & Remotes Config)"]
 
     Config --> Recipe["internal/recipe (Recipe Metadata & Script Validation)"]
-    Plan --> LXD["internal/lxd (LXD Client Abstraction & Error Classification)"]
-    Apply --> LXD
+    Plan --> Provider["internal/provider (Driver Interface & Models)"]
+    Apply --> Provider
     Apply --> Recipe
     Apply --> Fleet
-    Fleet --> LXD
+    Fleet --> Provider
+    Remote --> Provider
+    Provider --> Incus["internal/provider/incus (Incus 7.x Client Driver)"]
+    Provider --> LXD["internal/provider/lxd (LXD Client Driver)"]
 ```
 
 ### Package Responsibilities
 
-* **`cmd/lxm`**: Serves as the CLI entry point and wiring layer. Parses cobra flags, wires signal contexts (`signal.NotifyContext`), handles version stamping (`version`, `commit`, `date`), routes commands, and emits structured results to `internal/output`.
-* **`internal/config`**: Owns manifest loading, presence-wins scalar merging, recursive struct merging, list inheritance directives (`remove`, `replace`), template parameter expansion (`{{ .Env.* }}`, `{{ .Vars.* }}`), and CUE schema validation against `#LXM_AUTHORING` and `#LXM_RESOLVED`.
-* **`internal/plan`**: Implements the reconciliation diff engine. Compares compiled `Manifest` objects against LXD container states (`api.InstanceFull`) to generate deterministic `Plan` objects comprising actionable `Step` items (`create`, `update`, `recreate`, `delete`, `start`, `stop`).
-* **`internal/apply`**: Executes computed `Plan` steps against the LXD daemon. Enforces Optimistic Concurrency Control (OCC) via single-step ETag discipline, manages automatic snapshots, executes recipes, handles operation cancellation (`op.Cancel()`), and purges host keys on container deletion/recreate.
-* **`internal/fleet`**: Provides fleet inventory retrieval via `GetInstancesFull` (single round-trip), selector evaluation (OR across repeated `-g`/`--group` flags, AND with `--name`), `KnownHostsManager` with advisory file locking (`syscall.Flock`), and `--prune` orphan garbage collection.
+* **`cmd/lxm`**: Serves as the CLI entry point and wiring layer. Parses cobra flags, wires signal contexts (`signal.NotifyContext`), handles version stamping (`version`, `commit`, `date`), routes commands (including `lxm remote`), and emits structured results to `internal/output`.
+* **`internal/config`**: Owns manifest loading, presence-wins scalar merging, recursive struct merging, list inheritance directives (`remove`, `replace`), template parameter expansion (`{{ .Env.* }}`, `{{ .Vars.* }}`), remote routing (`provider`, `remote`, `target`, `project`, `remotes`), and CUE schema validation against `#LXM_AUTHORING` and `#LXM_RESOLVED`.
+* **`internal/provider`**: Declares the unified `Driver` interface combining instance, network, storage, image, cluster, and project services with method scoping (`UseProject`, `UseTarget`).
+* **`internal/provider/incus`**: Implements `provider.Driver` wrapping the canonical Incus 7.x SDK (`github.com/lxc/incus/v7/client`).
+* **`internal/provider/lxd`**: Implements `provider.Driver` wrapping the canonical LXD client SDK (`github.com/canonical/lxd/client`).
+* **`internal/provider/remote`**: Manages remote endpoints in `~/.config/lxm/remotes.yaml` with file locking (`remotes.lock`), generates client mTLS certificate pairs (`client.crt`/`client.key`), provides trust-token enrollment, and resolves target drivers dynamically.
+* **`internal/plan`**: Implements the reconciliation diff engine. Compares compiled `Manifest` objects against provider instance states to generate deterministic `Plan` objects comprising actionable `Step` items (`create`, `update`, `recreate`, `delete`, `start`, `stop`).
+* **`internal/apply`**: Executes computed `Plan` steps against the provider driver. Enforces Optimistic Concurrency Control (OCC) via single-step ETag discipline, manages automatic snapshots, executes recipes, handles operation cancellation (`op.Cancel()`), and purges host keys on container deletion/recreate.
+* **`internal/fleet`**: Provides fleet inventory retrieval, selector evaluation (OR across repeated `-g`/`--group` flags, AND with `--name`), `KnownHostsManager` with advisory file locking (`syscall.Flock`), and `--prune` orphan garbage collection.
 * **`internal/recipe`**: Loads script bodies and metadata files (`lxm/recipe/v1`), validates POSIX environment variable names, executes script logic inside containers, and manages path-qualified recipe hash metadata (`user.lxm.recipe.<cleaned-relative-path>.hash`).
-* **`internal/lxd`**: Wraps the canonical LXD client SDK (`lxd.InstanceService`), exposes operation handles, provides `FakeInstanceServer` for isolated unit/integration testing, and classifies LXD HTTP/socket errors into exit codes (`ClassifyLXDError`).
 * **`internal/output`**: Standardizes stdout/stderr emission using the `lxm/result/v1` JSON envelope format (`schema`, `command`, `ok`, `target`, `plan`, `results`, `warnings`, `errors`, `exit_code`) and enforces the 1-to-1 exit code to error code mapping catalog (`ExitCodeToErrorCode`).
 
 ---

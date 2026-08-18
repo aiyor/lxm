@@ -1,0 +1,14 @@
+schema: lxm/config/v2
+name: incus-test-db-node2
+type: virtual-machine
+status: present
+target: incus-node2
+vm:
+  boot_mode: uefi-nosecureboot
+limits:
+  cpu: 2
+  memory: 2GiB
+  disk: 10GiB
+networks:
+  - name: eth0
+    parent: incusbr0

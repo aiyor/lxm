@@ -1,0 +1,8 @@
+schema: lxm/config/v2
+name: incus-test-web
+type: container
+status: present
+target: incus-node1
+networks:
+  - name: eth0
+    parent: incusbr0

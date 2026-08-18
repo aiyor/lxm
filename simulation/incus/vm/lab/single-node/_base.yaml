@@ -1,0 +1,7 @@
+schema: lxm/config/v2
+base: true
+provider: incus
+image: ubuntu:24.04
+user: ubuntu
+wait:
+  agent: 1m
