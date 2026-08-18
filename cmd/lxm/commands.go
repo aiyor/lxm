@@ -111,16 +111,9 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				}
 			}
 
-			svc, err := getSvc()
+			svc, err := resolveFleetService(getSvc, selectedConfigs, opts)
 			if err != nil {
-				return err
-			}
-			if len(selectedConfigs) == 1 {
-				if scopedSvc, err := resolveSvcForConfig(svc, selectedConfigs[0], opts); err == nil && scopedSvc != nil {
-					svc = scopedSvc
-				} else if err != nil {
-					return &exitError{code: 4, err: err}
-				}
+				return &exitError{code: 4, err: err}
 			}
 
 			if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
@@ -310,13 +303,8 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			liveVolumes := make(map[string]map[string]*api.StorageVolume)
 			hasRebuild := false
 
-			svc, err := getSvc()
+			svc, err := resolveFleetService(getSvc, selectedConfigs, opts)
 			if err == nil && svc != nil {
-				if len(selectedConfigs) == 1 {
-					if scopedSvc, err := resolveSvcForConfig(svc, selectedConfigs[0], opts); err == nil && scopedSvc != nil {
-						svc = scopedSvc
-					}
-				}
 				if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
 					return err
 				}
@@ -429,11 +417,8 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			liveVolumes := make(map[string]map[string]*api.StorageVolume)
 			hasRebuild := false
 
-			svc, err := getSvc()
+			svc, err := resolveFleetService(getSvc, []*config.Config{conf}, opts)
 			if err == nil && svc != nil {
-				if scopedSvc, err := resolveSvcForConfig(svc, conf, opts); err == nil && scopedSvc != nil {
-					svc = scopedSvc
-				}
 				if err := checkDiskExtensions(svc, []*config.Config{conf}); err != nil {
 					return err
 				}
@@ -1833,28 +1818,63 @@ func computePlanSummary(steps []plan.Step) plan.PlanSummary {
 	return s
 }
 
-func resolveSvcForConfig(baseSvc lxd.InstanceService, conf *config.Config, opts *cmdOptions) (lxd.InstanceService, error) {
-	if conf == nil {
-		return baseSvc, nil
-	}
-	// If CLI flags explicitly provided provider/remote/target/project, CLI override takes precedence
-	hasCLIOverride := opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != "")
-	if hasCLIOverride {
-		return baseSvc, nil
-	}
-	// If manifest specifies any of provider, remote, target, project:
-	if conf.Provider != "" || conf.Remote != "" || conf.Target != "" || conf.Project != "" {
+func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opts *cmdOptions) (lxd.InstanceService, error) {
+	// 1. CLI flags take highest precedence
+	if opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != "") {
 		resOpts := remote.ResolveOptions{
-			Provider:   provider.ProviderType(conf.Provider),
-			RemoteName: conf.Remote,
-			TargetNode: conf.Target,
-			Project:    conf.Project,
+			Provider:   provider.ProviderType(opts.provider),
+			RemoteName: opts.remote,
+			TargetNode: opts.target,
+			Project:    opts.project,
 		}
 		d, err := remote.ResolveDriver(resOpts)
 		if err != nil {
-			return nil, fmt.Errorf("resolving provider for manifest %q: %w", conf.Name, err)
+			return nil, fmt.Errorf("resolving provider from CLI flags: %w", err)
 		}
 		return lxd.NewServiceFromDriver(d), nil
 	}
-	return baseSvc, nil
+
+	// 2. Check if manifests declare targeting parameters
+	var manifestRemote, manifestProvider, manifestProject, manifestTarget string
+	for _, c := range configs {
+		if c.Remote != "" {
+			if manifestRemote != "" && manifestRemote != c.Remote {
+				return nil, fmt.Errorf("fleet contains conflicting remote targets (%q, %q); specify --remote or target individually", manifestRemote, c.Remote)
+			}
+			manifestRemote = c.Remote
+		}
+		if c.Provider != "" {
+			if manifestProvider != "" && manifestProvider != c.Provider {
+				return nil, fmt.Errorf("fleet contains conflicting provider targets (%q, %q); specify --provider or target individually", manifestProvider, c.Provider)
+			}
+			manifestProvider = c.Provider
+		}
+		if c.Project != "" {
+			if manifestProject != "" && manifestProject != c.Project {
+				return nil, fmt.Errorf("fleet contains conflicting project targets (%q, %q); specify --project or target individually", manifestProject, c.Project)
+			}
+			manifestProject = c.Project
+		}
+		if c.Target != "" && len(configs) == 1 {
+			manifestTarget = c.Target
+		}
+	}
+
+	// If any manifest targeting parameter was found across the fleet
+	if manifestRemote != "" || manifestProvider != "" || manifestProject != "" || manifestTarget != "" {
+		resOpts := remote.ResolveOptions{
+			Provider:   provider.ProviderType(manifestProvider),
+			RemoteName: manifestRemote,
+			TargetNode: manifestTarget,
+			Project:    manifestProject,
+		}
+		d, err := remote.ResolveDriver(resOpts)
+		if err != nil {
+			return nil, fmt.Errorf("resolving provider for fleet targets: %w", err)
+		}
+		return lxd.NewServiceFromDriver(d), nil
+	}
+
+	// 3. Fallback to base getter (default local provider)
+	return baseGetter()
 }

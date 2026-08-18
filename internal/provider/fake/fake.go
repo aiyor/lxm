@@ -228,7 +228,9 @@ func (f *FakeDriver) GetInstance(name string) (*provider.Instance, string, error
 	if etag == "" {
 		etag = "fake-etag-1"
 	}
-	return inst, etag, nil
+	copyInst := *inst
+	f.enrichInstanceLocked(&copyInst)
+	return &copyInst, etag, nil
 }
 
 func (f *FakeDriver) ListInstances() ([]provider.Instance, error) {
@@ -237,9 +239,41 @@ func (f *FakeDriver) ListInstances() ([]provider.Instance, error) {
 
 	result := make([]provider.Instance, 0, len(f.Instances))
 	for _, inst := range f.Instances {
-		result = append(result, *inst)
+		copyInst := *inst
+		f.enrichInstanceLocked(&copyInst)
+		result = append(result, copyInst)
 	}
 	return result, nil
+}
+
+func (f *FakeDriver) enrichInstanceLocked(inst *provider.Instance) {
+	if inst.State == nil {
+		netMap := make(map[string]provider.InstanceStateNetwork)
+		ip := f.IPs[inst.Name]
+		if ip == "" {
+			ip = "10.10.10.100"
+		}
+		netMap["eth0"] = provider.InstanceStateNetwork{
+			Addresses: []provider.InstanceStateNetworkAddress{
+				{Family: "inet", Address: ip, Scope: "global"},
+			},
+			State: "up",
+			Type:  "broadcast",
+		}
+		inst.State = &provider.InstanceState{
+			Status:     inst.Status,
+			StatusCode: inst.StatusCode,
+			Network:    netMap,
+		}
+	}
+	if snaps, ok := f.Snapshots[inst.Name]; ok && len(snaps) > 0 {
+		inst.HasSnapshots = true
+		snapList := make([]provider.Snapshot, 0, len(snaps))
+		for _, s := range snaps {
+			snapList = append(snapList, *s)
+		}
+		inst.Snapshots = snapList
+	}
 }
 
 func (f *FakeDriver) CreateInstance(req provider.InstanceCreateRequest) error {

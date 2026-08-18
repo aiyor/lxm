@@ -15,9 +15,9 @@ tasks:
       - go build -v -o ./bin/lxm ./cmd/lxm
 
   test:
-    desc: Run all project tests
+    desc: Run all project tests with race detector
     cmds:
-      - go test -v ./...
+      - go test -v -race ./...
 
   lint:
     desc: Run golangci-lint

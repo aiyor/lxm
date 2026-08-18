@@ -42,13 +42,7 @@ func (a *driverAdapter) ListInstances() ([]api.InstanceFull, error) {
 	}
 	res := make([]api.InstanceFull, len(instances))
 	for i, inst := range instances {
-		res[i] = api.InstanceFull{
-			Instance: *toAPIInstance(&inst),
-			State: &api.InstanceState{
-				Status:     inst.Status,
-				StatusCode: api.StatusCode(inst.StatusCode),
-			},
-		}
+		res[i] = toAPIInstanceFull(&inst)
 	}
 	return res, nil
 }
@@ -475,6 +469,63 @@ func toAPIInstance(inst *provider.Instance) *api.Instance {
 		CreatedAt:       inst.CreatedAt,
 		LastUsedAt:      inst.LastUsedAt,
 	}
+}
+
+func toAPIInstanceFull(inst *provider.Instance) api.InstanceFull {
+	if inst == nil {
+		return api.InstanceFull{}
+	}
+	apiInst := *toAPIInstance(inst)
+	full := api.InstanceFull{
+		Instance: apiInst,
+	}
+	if inst.State != nil {
+		netMap := make(map[string]api.InstanceStateNetwork, len(inst.State.Network))
+		for name, net := range inst.State.Network {
+			addrs := make([]api.InstanceStateNetworkAddress, len(net.Addresses))
+			for j, addr := range net.Addresses {
+				addrs[j] = api.InstanceStateNetworkAddress{
+					Family:  addr.Family,
+					Address: addr.Address,
+					Netmask: addr.Netmask,
+					Scope:   addr.Scope,
+				}
+			}
+			netMap[name] = api.InstanceStateNetwork{
+				Addresses: addrs,
+				Counters: api.InstanceStateNetworkCounters{
+					BytesReceived:   uint64(net.Counters.BytesReceived),
+					BytesSent:       uint64(net.Counters.BytesSent),
+					PacketsReceived: uint64(net.Counters.PacketsReceived),
+					PacketsSent:     uint64(net.Counters.PacketsSent),
+				},
+				Hwaddr:   net.Hwaddr,
+				Mtu:      net.Mtu,
+				State:    net.State,
+				Type:     net.Type,
+				HostName: net.HostName,
+			}
+		}
+		full.State = &api.InstanceState{
+			Status:     inst.State.Status,
+			StatusCode: api.StatusCode(inst.State.StatusCode),
+			Network:    netMap,
+			Pid:        inst.State.Pid,
+			Processes:  inst.State.Processes,
+		}
+	}
+	if len(inst.Snapshots) > 0 {
+		snaps := make([]api.InstanceSnapshot, len(inst.Snapshots))
+		for j, s := range inst.Snapshots {
+			snaps[j] = api.InstanceSnapshot{
+				Name:      s.Name,
+				CreatedAt: s.CreatedAt,
+				Stateful:  s.Stateful,
+			}
+		}
+		full.Snapshots = snaps
+	}
+	return full
 }
 
 func toAPINetworkACL(acl *provider.NetworkACL) *api.NetworkACL {

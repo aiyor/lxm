@@ -1,25 +1,30 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/aiyor/lxm/internal/provider"
 	"github.com/aiyor/lxm/internal/provider/remote"
 )
 
 type remoteAddFlags struct {
-	token    string
-	provider string
-	project  string
-	insecure bool
+	token      string
+	provider   string
+	project    string
+	insecure   bool
+	acceptCert bool
 }
 
 func newRemoteCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, logger *slog.Logger) *cobra.Command {
@@ -123,6 +128,18 @@ func newRemoteAddCmd(opts *cmdOptions, stdout, stderr io.Writer, logger *slog.Lo
 				serverFp = info.Fingerprint
 				logger.Info("Discovered server certificate", "fingerprint", serverFp)
 
+				// TOFU: prompt user for fingerprint verification if interactive and not pre-accepted
+				if !addFlags.acceptCert && !addFlags.insecure && term.IsTerminal(int(os.Stdin.Fd())) {
+					fmt.Fprintf(stdout, "Server certificate SHA-256 fingerprint: %s\n", serverFp)
+					fmt.Fprintf(stdout, "Trust server certificate? (yes/no): ")
+					reader := bufio.NewReader(os.Stdin)
+					input, _ := reader.ReadString('\n')
+					input = strings.ToLower(strings.TrimSpace(input))
+					if input != "y" && input != "yes" {
+						return &exitError{code: 2, err: errors.New("certificate verification rejected by user")}
+					}
+				}
+
 				certPath, keyPath, err := remote.EnsureClientCertificate()
 				if err != nil {
 					return &exitError{code: 1, err: fmt.Errorf("ensuring client mTLS keypair: %w", err)}
@@ -170,6 +187,7 @@ func newRemoteAddCmd(opts *cmdOptions, stdout, stderr io.Writer, logger *slog.Lo
 	cmd.Flags().StringVar(&addFlags.provider, "provider", "incus", "Server provider type (incus, lxd)")
 	cmd.Flags().StringVar(&addFlags.project, "project", "default", "Default project for this remote")
 	cmd.Flags().BoolVar(&addFlags.insecure, "insecure", false, "Disable TLS certificate verification")
+	cmd.Flags().BoolVarP(&addFlags.acceptCert, "accept-certificate", "y", false, "Automatically accept server certificate fingerprint without prompting")
 
 	return cmd
 }

@@ -41,6 +41,62 @@ type Instance struct {
 	HasSnapshots    bool                         `json:"has_snapshots"`
 	CreatedAt       time.Time                    `json:"created_at"`
 	LastUsedAt      time.Time                    `json:"last_used_at"`
+
+	State     *InstanceState `json:"state,omitempty"`
+	Snapshots []Snapshot     `json:"snapshots,omitempty"`
+}
+
+// InstanceState represents the live runtime state of an instance.
+type InstanceState struct {
+	Status     string                          `json:"status"`
+	StatusCode int                             `json:"status_code"`
+	Disk       map[string]InstanceStateDisk    `json:"disk,omitempty"`
+	Memory     InstanceStateMemory             `json:"memory,omitempty"`
+	Network    map[string]InstanceStateNetwork `json:"network,omitempty"`
+	Pid        int64                           `json:"pid,omitempty"`
+	Processes  int64                           `json:"processes,omitempty"`
+	CPU        InstanceStateCPU                `json:"cpu,omitempty"`
+}
+
+type InstanceStateDisk struct {
+	Usage int64 `json:"usage"`
+	Total int64 `json:"total"`
+}
+
+type InstanceStateMemory struct {
+	Usage         int64 `json:"usage"`
+	UsagePeak     int64 `json:"usage_peak"`
+	Total         int64 `json:"total"`
+	SwapUsage     int64 `json:"swap_usage"`
+	SwapUsagePeak int64 `json:"swap_usage_peak"`
+}
+
+type InstanceStateCPU struct {
+	Usage int64 `json:"usage"`
+}
+
+type InstanceStateNetwork struct {
+	Addresses []InstanceStateNetworkAddress `json:"addresses"`
+	Counters  InstanceStateNetworkCounters  `json:"counters"`
+	Hwaddr    string                        `json:"hwaddr"`
+	Mtu       int                           `json:"mtu"`
+	State     string                        `json:"state"`
+	Type      string                        `json:"type"`
+	HostName  string                        `json:"host_name"`
+}
+
+type InstanceStateNetworkAddress struct {
+	Family  string `json:"family"`
+	Address string `json:"address"`
+	Netmask string `json:"netmask"`
+	Scope   string `json:"scope"`
+}
+
+type InstanceStateNetworkCounters struct {
+	BytesReceived   int64 `json:"bytes_received"`
+	BytesSent       int64 `json:"bytes_sent"`
+	PacketsReceived int64 `json:"packets_received"`
+	PacketsSent     int64 `json:"packets_sent"`
 }
 
 // ClusterMemberStatus represents node states in an Incus/LXD cluster.

@@ -141,7 +141,7 @@ func (d *Driver) ListInstances() ([]provider.Instance, error) {
 	}
 	result := make([]provider.Instance, len(fullInstances))
 	for i, inst := range fullInstances {
-		result[i] = *toProviderInstance(&inst.Instance, "")
+		result[i] = *toProviderInstanceFull(&inst)
 	}
 	return result, nil
 }
@@ -931,6 +931,69 @@ func toProviderInstance(inst *api.Instance, etag string) *provider.Instance {
 		ETag:            etag,
 		CreatedAt:       inst.CreatedAt,
 		LastUsedAt:      inst.LastUsedAt,
+	}
+}
+
+func toProviderInstanceFull(inst *api.InstanceFull) *provider.Instance {
+	if inst == nil {
+		return nil
+	}
+	pInst := toProviderInstance(&inst.Instance, "")
+	if inst.State != nil {
+		pInst.State = toProviderInstanceState(inst.State)
+	}
+	if len(inst.Snapshots) > 0 {
+		pInst.HasSnapshots = true
+		snaps := make([]provider.Snapshot, len(inst.Snapshots))
+		for i, s := range inst.Snapshots {
+			snaps[i] = provider.Snapshot{
+				Name:      s.Name,
+				CreatedAt: s.CreatedAt,
+				Stateful:  s.Stateful,
+			}
+		}
+		pInst.Snapshots = snaps
+	}
+	return pInst
+}
+
+func toProviderInstanceState(state *api.InstanceState) *provider.InstanceState {
+	if state == nil {
+		return nil
+	}
+	netMap := make(map[string]provider.InstanceStateNetwork, len(state.Network))
+	for name, net := range state.Network {
+		addrs := make([]provider.InstanceStateNetworkAddress, len(net.Addresses))
+		for j, addr := range net.Addresses {
+			addrs[j] = provider.InstanceStateNetworkAddress{
+				Family:  addr.Family,
+				Address: addr.Address,
+				Netmask: addr.Netmask,
+				Scope:   addr.Scope,
+			}
+		}
+		netMap[name] = provider.InstanceStateNetwork{
+			Addresses: addrs,
+			Counters: provider.InstanceStateNetworkCounters{
+				BytesReceived:   net.Counters.BytesReceived,
+				BytesSent:       net.Counters.BytesSent,
+				PacketsReceived: net.Counters.PacketsReceived,
+				PacketsSent:     net.Counters.PacketsSent,
+			},
+			Hwaddr:   net.Hwaddr,
+			Mtu:      net.Mtu,
+			State:    net.State,
+			Type:     net.Type,
+			HostName: net.HostName,
+		}
+	}
+
+	return &provider.InstanceState{
+		Status:     state.Status,
+		StatusCode: int(state.StatusCode),
+		Pid:        state.Pid,
+		Processes:  state.Processes,
+		Network:    netMap,
 	}
 }
 

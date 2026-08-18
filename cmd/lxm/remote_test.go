@@ -90,22 +90,33 @@ func TestRemoteCLI_Lifecycle(t *testing.T) {
 	}
 }
 
-func TestResolveSvcForConfig(t *testing.T) {
+func TestResolveFleetService(t *testing.T) {
 	baseSvc := lxd.NewFakeInstanceServer()
+	baseGetter := func() (lxd.InstanceService, error) {
+		return baseSvc, nil
+	}
 
 	// 1. Conf without provider/remote/target/project returns baseSvc
 	conf := &config.Config{Name: "web"}
 	opts := &cmdOptions{}
-	svc, err := resolveSvcForConfig(baseSvc, conf, opts)
+	svc, err := resolveFleetService(baseGetter, []*config.Config{conf}, opts)
 	if err != nil || svc != baseSvc {
 		t.Fatalf("expected baseSvc, got err: %v", err)
 	}
 
-	// 2. Conf with CLI override returns baseSvc
+	// 2. Conf with CLI override returns resolved driver
 	optsCLI := &cmdOptions{provider: "lxd"}
 	confWithProv := &config.Config{Name: "web", Provider: "incus"}
-	svc, err = resolveSvcForConfig(baseSvc, confWithProv, optsCLI)
-	if err != nil || svc != baseSvc {
-		t.Fatalf("expected baseSvc under CLI override, got err: %v", err)
+	svc, err = resolveFleetService(baseGetter, []*config.Config{confWithProv}, optsCLI)
+	if err != nil || svc == nil {
+		t.Fatalf("expected resolved svc under CLI override, got err: %v", err)
+	}
+
+	// 3. Conflicting fleet targets returns error
+	confA := &config.Config{Name: "web", Remote: "remote-a"}
+	confB := &config.Config{Name: "db", Remote: "remote-b"}
+	_, err = resolveFleetService(baseGetter, []*config.Config{confA, confB}, opts)
+	if err == nil || !strings.Contains(err.Error(), "conflicting remote targets") {
+		t.Fatalf("expected conflicting remote targets error, got: %v", err)
 	}
 }

@@ -62,6 +62,12 @@ func TestDriverAdapter_FullLifecycle(t *testing.T) {
 	if len(list) != 1 || list[0].Name != "test-box" {
 		t.Fatalf("unexpected list output: %+v", list)
 	}
+	if list[0].State == nil || len(list[0].State.Network) == 0 {
+		t.Fatalf("expected non-empty State.Network in ListInstances, got: %+v", list[0].State)
+	}
+	if eth0, ok := list[0].State.Network["eth0"]; !ok || len(eth0.Addresses) == 0 || eth0.Addresses[0].Address == "" {
+		t.Fatalf("expected eth0 address in State.Network, got: %+v", list[0].State.Network)
+	}
 
 	// Snapshot Operations
 	snapReq := api.InstanceSnapshotsPost{Name: "snap0"}
@@ -71,6 +77,12 @@ func TestDriverAdapter_FullLifecycle(t *testing.T) {
 	snaps, err := svc.GetInstanceSnapshots("test-box")
 	if err != nil || len(snaps) != 1 || snaps[0].Name != "snap0" {
 		t.Fatalf("unexpected snapshots: %+v (err=%v)", snaps, err)
+	}
+
+	// Verify ListInstances also reflects snapshots
+	listWithSnaps, err := svc.ListInstances()
+	if err != nil || len(listWithSnaps) != 1 || len(listWithSnaps[0].Snapshots) != 1 {
+		t.Fatalf("expected 1 snapshot in ListInstances, got: %+v (err=%v)", listWithSnaps, err)
 	}
 	if err := svc.RestoreInstanceSnapshot("test-box", "snap0"); err != nil {
 		t.Fatalf("RestoreInstanceSnapshot failed: %v", err)
