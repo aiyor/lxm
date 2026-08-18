@@ -494,10 +494,10 @@ func toAPIInstanceFull(inst *provider.Instance) api.InstanceFull {
 			netMap[name] = api.InstanceStateNetwork{
 				Addresses: addrs,
 				Counters: api.InstanceStateNetworkCounters{
-					BytesReceived:   uint64(net.Counters.BytesReceived),
-					BytesSent:       uint64(net.Counters.BytesSent),
-					PacketsReceived: uint64(net.Counters.PacketsReceived),
-					PacketsSent:     uint64(net.Counters.PacketsSent),
+					BytesReceived:   net.Counters.BytesReceived,
+					BytesSent:       net.Counters.BytesSent,
+					PacketsReceived: net.Counters.PacketsReceived,
+					PacketsSent:     net.Counters.PacketsSent,
 				},
 				Hwaddr:   net.Hwaddr,
 				Mtu:      net.Mtu,

@@ -706,7 +706,7 @@ func (d *Driver) ExecInstanceContext(ctx context.Context, name string, cmd []str
 	waitErr := waitOpContext(ctx, op)
 
 	meta := op.Get()
-	var exitCode int = -1
+	exitCode := -1
 	if returnVal, ok := meta.Metadata["return"]; ok {
 		if codeFloat, ok := returnVal.(float64); ok {
 			exitCode = int(codeFloat)
@@ -975,10 +975,10 @@ func toProviderInstanceState(state *api.InstanceState) *provider.InstanceState {
 		netMap[name] = provider.InstanceStateNetwork{
 			Addresses: addrs,
 			Counters: provider.InstanceStateNetworkCounters{
-				BytesReceived:   int64(net.Counters.BytesReceived),
-				BytesSent:       int64(net.Counters.BytesSent),
-				PacketsReceived: int64(net.Counters.PacketsReceived),
-				PacketsSent:     int64(net.Counters.PacketsSent),
+				BytesReceived:   net.Counters.BytesReceived,
+				BytesSent:       net.Counters.BytesSent,
+				PacketsReceived: net.Counters.PacketsReceived,
+				PacketsSent:     net.Counters.PacketsSent,
 			},
 			Hwaddr:   net.Hwaddr,
 			Mtu:      net.Mtu,

@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -37,12 +38,12 @@ func FetchServerCertificate(serverURL string) (*ServerInfo, error) {
 
 	host := u.Host
 	if !strings.Contains(host, ":") {
-		host = host + ":8443"
+		host += ":8443"
 	}
 
 	var peerCert *x509.Certificate
 	conf := &tls.Config{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, //nolint:gosec // G402: intentional raw certificate discovery for TOFU pinning
 		ClientSessionCache: nil,
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) > 0 {
@@ -59,7 +60,11 @@ func FetchServerCertificate(serverURL string) (*ServerInfo, error) {
 	client := &http.Client{Transport: tr, Timeout: 10 * time.Second}
 
 	targetURL := fmt.Sprintf("https://%s/1.0", host)
-	resp, err := client.Get(targetURL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, targetURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request for %s: %w", targetURL, err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to %s: %w", targetURL, err)
 	}

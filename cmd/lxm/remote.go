@@ -129,14 +129,18 @@ func newRemoteAddCmd(opts *cmdOptions, stdout, stderr io.Writer, logger *slog.Lo
 				logger.Info("Discovered server certificate", "fingerprint", serverFp)
 
 				// TOFU: prompt user for fingerprint verification if interactive and not pre-accepted
-				if !addFlags.acceptCert && !addFlags.insecure && term.IsTerminal(int(os.Stdin.Fd())) {
-					fmt.Fprintf(stdout, "Server certificate SHA-256 fingerprint: %s\n", serverFp)
-					fmt.Fprintf(stdout, "Trust server certificate? (yes/no): ")
-					reader := bufio.NewReader(os.Stdin)
-					input, _ := reader.ReadString('\n')
-					input = strings.ToLower(strings.TrimSpace(input))
-					if input != "y" && input != "yes" {
-						return &exitError{code: 2, err: errors.New("certificate verification rejected by user")}
+				if !addFlags.acceptCert && !addFlags.insecure {
+					if term.IsTerminal(int(os.Stdin.Fd())) {
+						fmt.Fprintf(stdout, "Server certificate SHA-256 fingerprint: %s\n", serverFp)
+						fmt.Fprintf(stdout, "Trust server certificate? (yes/no): ")
+						reader := bufio.NewReader(os.Stdin)
+						input, _ := reader.ReadString('\n')
+						input = strings.ToLower(strings.TrimSpace(input))
+						if input != "y" && input != "yes" {
+							return &exitError{code: 2, err: errors.New("certificate verification rejected by user")}
+						}
+					} else {
+						logger.Info("Non-interactive mode: automatically trusting discovered server certificate fingerprint (TOFU)", "fingerprint", serverFp)
 					}
 				}
 

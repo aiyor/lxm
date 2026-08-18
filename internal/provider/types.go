@@ -93,10 +93,10 @@ type InstanceStateNetworkAddress struct {
 }
 
 type InstanceStateNetworkCounters struct {
-	BytesReceived   int64 `json:"bytes_received"`
-	BytesSent       int64 `json:"bytes_sent"`
-	PacketsReceived int64 `json:"packets_received"`
-	PacketsSent     int64 `json:"packets_sent"`
+	BytesReceived   uint64 `json:"bytes_received"`
+	BytesSent       uint64 `json:"bytes_sent"`
+	PacketsReceived uint64 `json:"packets_received"`
+	PacketsSent     uint64 `json:"packets_sent"`
 }
 
 // ClusterMemberStatus represents node states in an Incus/LXD cluster.

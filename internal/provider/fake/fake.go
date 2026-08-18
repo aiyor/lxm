@@ -340,7 +340,7 @@ func (f *FakeDriver) UpdateInstanceContext(ctx context.Context, name string, req
 
 	currentETag := f.ETags[name]
 	if etag != "" && currentETag != "" && etag != currentETag {
-		return fmt.Errorf("ETag does not match: %s vs %s. The configuration has been modified since this change began.", etag, currentETag)
+		return fmt.Errorf("ETag does not match: %s vs %s. The configuration has been modified since this change began", etag, currentETag)
 	}
 
 	if req.Config != nil {

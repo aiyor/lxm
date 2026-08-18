@@ -304,7 +304,20 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			hasRebuild := false
 
 			svc, err := resolveFleetService(getSvc, selectedConfigs, opts)
-			if err == nil && svc != nil {
+			if err != nil {
+				hasTargeting := (opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != ""))
+				if !hasTargeting {
+					for _, c := range selectedConfigs {
+						if c.Remote != "" || c.Provider != "" || c.Target != "" || c.Project != "" {
+							hasTargeting = true
+							break
+						}
+					}
+				}
+				if hasTargeting || strings.Contains(err.Error(), "fleet contains conflicting") {
+					return &exitError{code: 4, err: err}
+				}
+			} else if svc != nil {
 				if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
 					return err
 				}
@@ -418,7 +431,12 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			hasRebuild := false
 
 			svc, err := resolveFleetService(getSvc, []*config.Config{conf}, opts)
-			if err == nil && svc != nil {
+			if err != nil {
+				hasTargeting := conf.Remote != "" || conf.Provider != "" || conf.Target != "" || conf.Project != "" || (opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != ""))
+				if hasTargeting {
+					return &exitError{code: 4, err: err}
+				}
+			} else if svc != nil {
 				if err := checkDiskExtensions(svc, []*config.Config{conf}); err != nil {
 					return err
 				}
@@ -1855,7 +1873,10 @@ func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opt
 			}
 			manifestProject = c.Project
 		}
-		if c.Target != "" && len(configs) == 1 {
+		if c.Target != "" {
+			if manifestTarget != "" && manifestTarget != c.Target {
+				return nil, fmt.Errorf("fleet contains conflicting cluster target nodes (%q, %q); specify --target or target individually", manifestTarget, c.Target)
+			}
 			manifestTarget = c.Target
 		}
 	}

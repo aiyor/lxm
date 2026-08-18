@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,7 +49,7 @@ func NewUnixDriver(socket string) (*Driver, error) {
 	}
 	if socket == "" {
 		if incusDir := os.Getenv("INCUS_DIR"); incusDir != "" {
-			cand := incusDir + "/unix.socket"
+			cand := filepath.Clean(filepath.Join(incusDir, "unix.socket"))
 			if _, err := os.Stat(cand); err == nil {
 				socket = cand
 			}
@@ -706,7 +707,7 @@ func (d *Driver) ExecInstanceContext(ctx context.Context, name string, cmd []str
 	waitErr := waitOpContext(ctx, op)
 
 	meta := op.Get()
-	var exitCode int = -1
+	exitCode := -1
 	if returnVal, ok := meta.Metadata["return"]; ok {
 		if codeFloat, ok := returnVal.(float64); ok {
 			exitCode = int(codeFloat)
@@ -975,10 +976,10 @@ func toProviderInstanceState(state *api.InstanceState) *provider.InstanceState {
 		netMap[name] = provider.InstanceStateNetwork{
 			Addresses: addrs,
 			Counters: provider.InstanceStateNetworkCounters{
-				BytesReceived:   net.Counters.BytesReceived,
-				BytesSent:       net.Counters.BytesSent,
-				PacketsReceived: net.Counters.PacketsReceived,
-				PacketsSent:     net.Counters.PacketsSent,
+				BytesReceived:   uint64(max(0, net.Counters.BytesReceived)),
+				BytesSent:       uint64(max(0, net.Counters.BytesSent)),
+				PacketsReceived: uint64(max(0, net.Counters.PacketsReceived)),
+				PacketsSent:     uint64(max(0, net.Counters.PacketsSent)),
 			},
 			Hwaddr:   net.Hwaddr,
 			Mtu:      net.Mtu,

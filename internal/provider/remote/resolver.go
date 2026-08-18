@@ -3,6 +3,7 @@ package remote
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	lxd_client "github.com/canonical/lxd/client"
 	incus_client "github.com/lxc/incus/v7/client"
@@ -28,12 +29,14 @@ func DetectLocalProvider() provider.ProviderType {
 	}
 
 	if socket := os.Getenv("INCUS_SOCKET"); socket != "" {
-		if _, err := os.Stat(socket); err == nil {
+		cleaned := filepath.Clean(socket)
+		if _, err := os.Stat(cleaned); err == nil {
 			return provider.ProviderTypeIncus
 		}
 	}
 	if dir := os.Getenv("INCUS_DIR"); dir != "" {
-		if _, err := os.Stat(dir + "/unix.socket"); err == nil {
+		cleaned := filepath.Clean(filepath.Join(dir, "unix.socket"))
+		if _, err := os.Stat(cleaned); err == nil {
 			return provider.ProviderTypeIncus
 		}
 	}
@@ -48,7 +51,8 @@ func DetectLocalProvider() provider.ProviderType {
 	}
 
 	if socket := os.Getenv("LXD_SOCKET"); socket != "" {
-		if _, err := os.Stat(socket); err == nil {
+		cleaned := filepath.Clean(socket)
+		if _, err := os.Stat(cleaned); err == nil {
 			return provider.ProviderTypeLXD
 		}
 	}

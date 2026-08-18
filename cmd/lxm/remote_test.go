@@ -119,4 +119,12 @@ func TestResolveFleetService(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "conflicting remote targets") {
 		t.Fatalf("expected conflicting remote targets error, got: %v", err)
 	}
+
+	// 4. Conflicting cluster target nodes returns error
+	confNode1 := &config.Config{Name: "web", Target: "node1"}
+	confNode2 := &config.Config{Name: "db", Target: "node2"}
+	_, err = resolveFleetService(baseGetter, []*config.Config{confNode1, confNode2}, opts)
+	if err == nil || !strings.Contains(err.Error(), "conflicting cluster target nodes") {
+		t.Fatalf("expected conflicting cluster target nodes error, got: %v", err)
+	}
 }
