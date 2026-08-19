@@ -496,8 +496,7 @@ func buildInstancesPost(manifest *config.Config) (*provider.InstanceCreateReques
 		props := map[string]string{
 			"type":    "nic",
 			"name":    devName,
-			"parent":  parent,
-			"nictype": "bridged",
+			"network": parent,
 		}
 		if n.IPv4 != "" {
 			props["ipv4.address"] = n.IPv4
@@ -740,8 +739,7 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*provide
 		props := map[string]string{
 			"type":    "nic",
 			"name":    devName,
-			"parent":  parent,
-			"nictype": "bridged",
+			"network": parent,
 		}
 		if n.IPv4 != "" {
 			props["ipv4.address"] = n.IPv4
@@ -1373,7 +1371,10 @@ func getLiveNetworks(live *InstanceSnapshot) []config.NetworkConfig {
 	for devName, devProps := range live.Devices {
 		if devProps["type"] == "nic" {
 			ip := devProps["ipv4.address"]
-			parent := devProps["parent"]
+			parent := devProps["network"]
+			if parent == "" {
+				parent = devProps["parent"]
+			}
 			nets = append(nets, config.NetworkConfig{
 				Name:   devName,
 				IPv4:   ip,

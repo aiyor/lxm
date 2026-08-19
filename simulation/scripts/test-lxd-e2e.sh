@@ -44,6 +44,7 @@ cleanup() {
     rm -rf "${TEST_DIR}" /tmp/e2e-test-script.sh 2>/dev/null || true
 }
 trap cleanup EXIT
+cleanup
 
 info "Building latest lxm binary..."
 (cd "${REPO_ROOT}" && go build -o "${LXM_BIN}" ./cmd/lxm)

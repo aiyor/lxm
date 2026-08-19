@@ -171,8 +171,8 @@ func TestReconciler_Compute_MountAndNicDeviceProps(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected eth0 device in create payload, got %v", post.Devices)
 	}
-	if nicDev["nictype"] != "bridged" {
-		t.Errorf("expected nictype=bridged on eth0, got %q", nicDev["nictype"])
+	if nicDev["network"] != "lxdbr0" {
+		t.Errorf("expected network=lxdbr0 on eth0, got %q", nicDev["network"])
 	}
 
 	// Update path (live image matches manifest, but user differs -> update)
@@ -188,7 +188,7 @@ func TestReconciler_Compute_MountAndNicDeviceProps(t *testing.T) {
 			Devices: map[string]map[string]string{
 				"root":   {"type": "disk", "path": "/", "pool": "default"},
 				"mount0": {"type": "disk", "source": "/tmp/data", "path": "/mnt/data", "shift": "true"},
-				"eth0":   {"type": "nic", "name": "eth0", "nictype": "bridged", "parent": "lxdbr0"},
+				"eth0":   {"type": "nic", "name": "eth0", "network": "lxdbr0"},
 			},
 		},
 	}
@@ -205,8 +205,8 @@ func TestReconciler_Compute_MountAndNicDeviceProps(t *testing.T) {
 		t.Errorf("expected shift=true on mount0 in update payload, got %q", putMount["shift"])
 	}
 	putNic := put.Devices["eth0"]
-	if putNic["nictype"] != "bridged" {
-		t.Errorf("expected nictype=bridged on eth0 in update payload, got %q", putNic["nictype"])
+	if putNic["network"] != "lxdbr0" {
+		t.Errorf("expected network=lxdbr0 on eth0 in update payload, got %q", putNic["network"])
 	}
 }
 
@@ -1024,7 +1024,7 @@ func TestReconciler_NilManifestAndRebuildExtension(t *testing.T) {
 	if devs["mount0"]["recursive"] != "true" || devs["mount0"]["readonly"] != "true" {
 		t.Errorf("expected recursive and readonly mount options in InstancesPost, got %v", devs["mount0"])
 	}
-	if devs["eth0"]["ipv4.address"] != "10.0.0.50" || devs["eth0"]["parent"] != "custombr0" {
+	if devs["eth0"]["ipv4.address"] != "10.0.0.50" || devs["eth0"]["network"] != "custombr0" {
 		t.Errorf("expected network properties in InstancesPost, got %v", devs["eth0"])
 	}
 }

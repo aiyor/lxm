@@ -583,7 +583,17 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 		if step.InstancesPost != nil {
 			req = *step.InstancesPost
 		}
-		opErr = e.driver.CreateInstance(ctx, req)
+		for attempt := 0; attempt < 10; attempt++ {
+			opErr = e.driver.CreateInstance(ctx, req)
+			if opErr == nil {
+				break
+			}
+			if strings.Contains(opErr.Error(), "does not exist") || strings.Contains(opErr.Error(), "no such file or directory") {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			break
+		}
 		if opErr == nil && !opts.NoStart && (step.PowerTransition == "start" || step.PowerTransition == "") {
 			for attempt := 0; attempt < 10; attempt++ {
 				opErr = e.driver.UpdateInstanceState(ctx, step.Container, "start", false)
@@ -591,7 +601,7 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 					break
 				}
 				if strings.Contains(opErr.Error(), "does not exist") || strings.Contains(opErr.Error(), "no such file or directory") {
-					time.Sleep(300 * time.Millisecond)
+					time.Sleep(500 * time.Millisecond)
 					continue
 				}
 				break

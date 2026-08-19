@@ -61,14 +61,8 @@ func (e *defaultExecutor) executeNetworkStep(ctx context.Context, step plan.Netw
 		}
 		opErr = e.driver.CreateNetwork(ctx, *step.NetPost)
 		if opErr == nil {
-			// Ensure daemon and kernel network device registration is complete
-			for i := 0; i < 20; i++ {
-				if net, _, err := e.driver.GetNetwork(ctx, step.Name); err == nil && net != nil && net.Status != "" {
-					break
-				}
-				time.Sleep(50 * time.Millisecond)
-			}
-			time.Sleep(500 * time.Millisecond)
+			// Allow kernel bridge interface, udev, and daemon dnsmasq to fully initialize
+			time.Sleep(1 * time.Second)
 		}
 	case "update_vswitch":
 		if net, etag, err := e.driver.GetNetwork(ctx, step.Name); err == nil && net != nil {

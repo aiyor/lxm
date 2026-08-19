@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/gorilla/websocket"
 	incus_client "github.com/lxc/incus/v7/client"
@@ -26,6 +27,9 @@ var _ provider.Driver = (*Driver)(nil)
 
 // NewDriver wraps an existing Incus InstanceServer as a provider.Driver.
 func NewDriver(client incus_client.InstanceServer) *Driver {
+	if client != nil {
+		client = client.UseProject("default")
+	}
 	return &Driver{
 		client:  client,
 		project: "default",
@@ -280,7 +284,7 @@ func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRe
 			}
 		}
 	}
-	return d.clusterClient().CreateNetwork(api.NetworksPost{
+	err := d.clusterClient().CreateNetwork(api.NetworksPost{
 		NetworkPut: api.NetworkPut{
 			Description: net.Description,
 			Config:      net.Config,
@@ -288,6 +292,25 @@ func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRe
 		Name: net.Name,
 		Type: net.Type,
 	})
+	if err != nil {
+		return err
+	}
+
+	// Poll until network transitions from Pending to Created/active state
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		n, _, getErr := d.clusterClient().GetNetwork(net.Name)
+		if getErr == nil && n != nil && n.Status != "Pending" && n.Status != "" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
 }
 
 func (d *Driver) UpdateNetwork(ctx context.Context, name string, net provider.NetworkUpdateRequest, etag string) error {
