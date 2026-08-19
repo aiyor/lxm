@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/aiyor/lxm/internal/lxd"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/fake"
 )
 
 func TestValidateEnvKeys(t *testing.T) {
@@ -115,20 +115,20 @@ func TestExecuteRecipeScript_RetryAndEnv(t *testing.T) {
 		t.Fatalf("writing test.sh: %v", err)
 	}
 
-	fakeSvc := lxd.NewFakeInstanceServer()
-	fakeSvc.Instances["c1"] = &api.Instance{Name: "c1", Status: "Running", StatusCode: api.Running}
+	fakeDriver := fake.New()
+	fakeDriver.Instances["c1"] = &provider.Instance{Name: "c1", Status: "Running", StatusCode: 103}
 
 	attempts := 0
-	fakeSvc.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
+	fakeDriver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
 		attempts++
 		if attempts == 1 {
-			return lxd.ExecResult{ExitCode: 1, Stdout: "", Stderr: "transient error"}, nil
+			return provider.ExecResult{ExitCode: 1, Stdout: "", Stderr: "transient error"}, nil
 		}
-		return lxd.ExecResult{ExitCode: 0, Stdout: "success", Stderr: ""}, nil
+		return provider.ExecResult{ExitCode: 0, Stdout: "success", Stderr: ""}, nil
 	}
 
 	env := map[string]string{"FOO": "BAR"}
-	res, hash, err := ExecuteRecipeScript(fakeSvc, "c1", "test.sh", tmpDir, "root", env, 2)
+	res, hash, err := ExecuteRecipeScript(fakeDriver, "c1", "test.sh", tmpDir, "root", env, 2)
 	if err != nil {
 		t.Fatalf("expected successful execution after retry, got: %v", err)
 	}

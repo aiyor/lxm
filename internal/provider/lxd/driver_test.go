@@ -1,6 +1,7 @@
 package lxd_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -85,6 +86,7 @@ func TestClassifyLXDError(t *testing.T) {
 }
 
 func TestLXDDriverMockServer(t *testing.T) {
+	ctx := context.Background()
 	mux := http.NewServeMux()
 
 	// Server info /1.0
@@ -100,39 +102,22 @@ func TestLXDDriverMockServer(t *testing.T) {
 	// Instances
 	mux.HandleFunc("/1.0/instances", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodGet {
-			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":[{"name":"c1","status":"Running","status_code":103,"type":"container","config":{"image.os":"ubuntu"},"state":{"status":"Running","status_code":103,"network":{"eth0":{"addresses":[{"family":"inet","address":"10.0.0.5","scope":"global"}]}}}}]}`)
+		if r.URL.Query().Get("recursion") == "2" {
+			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":[{"name":"c1","type":"container","status":"Running","status_code":103,"state":{"status":"Running","status_code":103,"network":{"eth0":{"addresses":[{"family":"inet","address":"10.0.0.5","scope":"global"}]}}}}]}`)
 		} else {
-			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200}`)
+			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":["/1.0/instances/c1"]}`)
 		}
 	})
 
 	mux.HandleFunc("/1.0/instances/c1", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("ETag", "etag-c1")
-		if r.Method == http.MethodGet {
-			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":{"name":"c1","status":"Running","status_code":103,"type":"container","config":{"image.os":"ubuntu"}}}`)
-		} else {
-			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200}`)
-		}
+		w.Header().Set("ETag", "etag-c1-1")
+		fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":{"name":"c1","type":"container","status":"Running","status_code":103}}`)
 	})
 
 	mux.HandleFunc("/1.0/instances/c1/state", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodGet {
-			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":{"status":"Running","status_code":103,"network":{"eth0":{"addresses":[{"family":"inet","address":"10.0.0.5","scope":"global"}]}}}}`)
-		} else {
-			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200}`)
-		}
-	})
-
-	mux.HandleFunc("/1.0/instances/c1/snapshots", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodGet {
-			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":[{"name":"c1/snap0","stateful":false}]}`)
-		} else {
-			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200}`)
-		}
+		fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":{"status":"Running","status_code":103,"network":{"eth0":{"addresses":[{"family":"inet","address":"10.0.0.5","scope":"global"}]}}}}`)
 	})
 
 	mux.HandleFunc("/1.0/networks", func(w http.ResponseWriter, r *http.Request) {
@@ -197,16 +182,17 @@ func TestLXDDriverMockServer(t *testing.T) {
 	if !d.HasExtension("instances_rebuild") {
 		t.Errorf("expected instances_rebuild extension")
 	}
-	if !d.IsClustered() {
-		t.Errorf("expected clustered")
+	clustered, err := d.IsClustered(ctx)
+	if err != nil || !clustered {
+		t.Errorf("expected clustered, got %v, err=%v", clustered, err)
 	}
 
-	members, err := d.GetClusterMembers()
+	members, err := d.GetClusterMembers(ctx)
 	if err != nil || len(members) != 1 || members[0].ServerName != "node1" {
 		t.Errorf("unexpected cluster members: %+v (err=%v)", members, err)
 	}
 
-	instances, err := d.ListInstances()
+	instances, err := d.ListInstances(ctx)
 	if err != nil || len(instances) != 1 || instances[0].Name != "c1" {
 		t.Fatalf("unexpected instances: %+v (err=%v)", instances, err)
 	}
@@ -214,22 +200,22 @@ func TestLXDDriverMockServer(t *testing.T) {
 		t.Errorf("expected state and network on instance: %+v", instances[0])
 	}
 
-	ip, err := d.GetIP("c1")
+	ip, err := d.GetIP(ctx, "c1")
 	if err != nil || ip != "10.0.0.5" {
 		t.Errorf("unexpected IP for c1: %s (err=%v)", ip, err)
 	}
 
-	networks, err := d.GetNetworks()
+	networks, err := d.GetNetworks(ctx)
 	if err != nil || len(networks) != 1 {
 		t.Errorf("unexpected networks: %+v (err=%v)", networks, err)
 	}
 
-	acls, err := d.GetNetworkACLs()
+	acls, err := d.GetNetworkACLs(ctx)
 	if err != nil || len(acls) != 1 {
 		t.Errorf("unexpected network acls: %+v (err=%v)", acls, err)
 	}
 
-	projects, err := d.GetProjects()
+	projects, err := d.GetProjects(ctx)
 	if err != nil || len(projects) != 1 {
 		t.Errorf("unexpected projects: %+v (err=%v)", projects, err)
 	}

@@ -1,11 +1,12 @@
 package fleet
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
+	"github.com/aiyor/lxm/internal/provider"
 )
 
 // InstanceStatus contains high-level information about a container or virtual-machine instance.
@@ -29,9 +30,9 @@ type FleetInventory struct {
 	Instances []InstanceStatus `json:"instances"`
 }
 
-// GetInventory gathers full inventory from the LXD instance service in a single round-trip.
-func GetInventory(svc lxd.InstanceService) (*FleetInventory, error) {
-	instances, err := svc.ListInstances()
+// GetInventory gathers full inventory from the instance service in a single round-trip.
+func GetInventory(ctx context.Context, svc provider.Driver) (*FleetInventory, error) {
+	instances, err := svc.ListInstances(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing instances: %w", err)
 	}
@@ -41,7 +42,7 @@ func GetInventory(svc lxd.InstanceService) (*FleetInventory, error) {
 	}
 
 	for _, full := range instances {
-		instType := full.Type
+		instType := string(full.Type)
 		if instType == "" {
 			instType = "container"
 		}
@@ -49,7 +50,7 @@ func GetInventory(svc lxd.InstanceService) (*FleetInventory, error) {
 			Name:         full.Name,
 			Type:         instType,
 			Status:       full.Status,
-			StatusCode:   int(full.StatusCode),
+			StatusCode:   full.StatusCode,
 			Architecture: full.Architecture,
 			Config:       full.Config,
 			RecipeHashes: make(map[string]string),
@@ -111,7 +112,7 @@ func GetInventory(svc lxd.InstanceService) (*FleetInventory, error) {
 	return inv, nil
 }
 
-// FindOrphans finds managed instances in LXD that match the active selector
+// FindOrphans finds managed instances that match the active selector
 // but have no matching manifest in the targeted directory.
 func FindOrphans(instances []InstanceStatus, targetConfigs []*config.Config, sel *Selector) []InstanceStatus {
 	manifestNames := make(map[string]bool)

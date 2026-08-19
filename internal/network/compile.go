@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
 )
 
 // Rule is a single compiled ACL rule (CIDR subjects only — C2/C6).
@@ -24,8 +24,8 @@ type CompiledACL struct {
 	Rules       []Rule
 }
 
-// APIRule is the LXD network-ACL rule payload shape the reconciler submits.
-type APIRule = api.NetworkACLRule
+// APIRule is the network-ACL rule payload shape the reconciler submits.
+type APIRule = provider.NetworkACLRule
 
 // aclName returns the lxm-owned ACL name for a vswitch.
 func aclName(vswitchName string) string {
@@ -263,11 +263,11 @@ func ruleLess(a, b Rule) bool {
 	return a.Destination < b.Destination
 }
 
-// ACLToAPIRules converts compiled rules into LXD API rule payloads,
+// ACLToAPIRules converts compiled rules into network ACL rule payloads,
 // partitioned into ingress and egress lists.
-func ACLToAPIRules(acl *CompiledACL) (ingress, egress []api.NetworkACLRule) {
+func ACLToAPIRules(acl *CompiledACL) (ingress, egress []provider.NetworkACLRule) {
 	for _, r := range acl.Rules {
-		rule := api.NetworkACLRule{
+		rule := provider.NetworkACLRule{
 			Action:      r.Action,
 			Source:      r.Source,
 			Destination: r.Destination,
@@ -284,11 +284,11 @@ func ACLToAPIRules(acl *CompiledACL) (ingress, egress []api.NetworkACLRule) {
 
 // RulesEqual reports whether two ACL rule lists are semantically identical
 // (order-independent).
-func RulesEqual(a, b []api.NetworkACLRule) bool {
+func RulesEqual(a, b []provider.NetworkACLRule) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	key := func(r api.NetworkACLRule) string {
+	key := func(r provider.NetworkACLRule) string {
 		return r.Action + "\x00" + r.Source + "\x00" + r.Destination + "\x00" + r.State
 	}
 	sa := make([]string, len(a))

@@ -2,19 +2,19 @@
 
 ## 1. Overview & Design Principles
 
-`lxm` is a declarative, infrastructure-as-code fleet management tool for LXD containers. It allows operators to define desired fleet states in structured YAML manifests, compile them into deterministic reconciliation plans, and execute mutations safely and idempotently.
+`lxm` is a declarative, infrastructure-as-code fleet management tool for Incus and LXD container and virtual machine fleets. It allows operators to define desired fleet states in structured YAML manifests, compile them into deterministic reconciliation plans, and execute mutations safely and idempotently across Incus and LXD daemons.
 
 The architecture is guided by nine foundational design principles:
 
-1. **Reconciliation as a Control Loop**: `lxm` computes pure, deterministic diffs (**Plans**) comparing desired state (manifests) against live infrastructure (LXD daemon). Mutation occurs solely through a thin, isolated executor.
+1. **Reconciliation as a Control Loop**: `lxm` computes pure, deterministic diffs (**Plans**) comparing desired state (manifests) against live infrastructure (Incus / LXD daemon). Mutation occurs solely through a thin, isolated executor.
 2. **The Plan as a First-Class Artifact**: Diffs are materialized, serializable (`--format json`), and machine-readable. Previews (`lxm plan`) and execution (`lxm apply`) consume identical plan objects.
 3. **Machine Interface First**: Every CLI command (excluding interactive TTY sessions) outputs structured `lxm/result/v1` JSON envelopes on `--format json`. Exit codes are strictly categorized (0–7).
 4. **Compiled Manifests**: Source YAML manifests undergo a deterministic 6-step compilation pipeline. All inheritance, directives (`remove`, `replace`), variables (`vars:`), and template parameters (`{{ .Env.* }}`) are fully resolved before plan computation.
 5. **Safety by Default**: Dry-run previewing is comprehensive. Destructive steps (e.g. `recreate` fallbacks, snapshot purges) require explicit `--force` flags. Automatic snapshots precede recipe execution.
 6. **Security by Default**: SSH host key verification is enforced via a tool-managed `known_hosts` file with advisory file locking (`syscall.Flock`). Sudo passwordless access and SSH key injection are strictly opt-in.
-7. **Modular Domain Packages**: Domain logic resides within isolated, testable packages (`config`, `plan`, `apply`, `fleet`, `recipe`, `lxd`, `output`).
+7. **Modular Domain Packages**: Domain logic resides within isolated, testable packages (`config`, `plan`, `apply`, `fleet`, `recipe`, `provider`, `output`).
 8. **Selectable & Bounded Parallel Fleet Operations**: Targeting uses expressive selector algebra (union across groups, intersection with names). Fleet execution is bounded and attributable per-container.
-9. **Leverage Quality Open Source**: Built using canonical Go libraries (`cobra`, `yaml.v3`, LXD client SDK `github.com/canonical/lxd/client`, `cuelang.org/go`, `x/term`, `errgroup`).
+9. **Leverage Quality Open Source**: Built using canonical Go libraries (`cobra`, `yaml.v3`, Incus Go SDK `github.com/lxc/incus/v7/client`, LXD client SDK `github.com/canonical/lxd/client`, `cuelang.org/go`, `x/term`, `errgroup`).
 10. **Tagged & Enumerable Ownership**: Every object `lxm` creates — instances, networks, ACLs, devices, storage volumes, snapshots, images — is tagged with `user.lxm.managed: "true"` (plus provenance keys where useful), and every tagged object is discoverable through a single inventory surface. Ownership is marker-based, never name-based (see §4.5).
 
 ---
@@ -68,14 +68,14 @@ sequenceDiagram
     participant Fleet as internal/fleet
     participant Plan as internal/plan
     participant Apply as internal/apply
-    participant LXD as LXD Daemon
+    participant Driver as Provider Driver (Incus/LXD)
 
     User->>CLI: lxm apply config/dev.yaml -g dev
     CLI->>Config: LoadConfig("config/dev.yaml")
     Config-->>CLI: *config.Config
-    CLI->>Fleet: GetInventory(svc)
-    Fleet->>LXD: GetInstancesFull()
-    LXD-->>Fleet: []api.InstanceFull
+    CLI->>Fleet: GetInventory(ctx, svc)
+    Fleet->>Driver: ListInstances(ctx)
+    Driver-->>Fleet: []provider.Instance
     Fleet-->>CLI: Live Fleet Inventory
     CLI->>Fleet: NewSelector(Opts) & FilterConfigs()
     Fleet-->>CLI: Selected Target Configs
@@ -83,8 +83,8 @@ sequenceDiagram
     Plan-->>CLI: Deterministic Plan
     CLI->>Apply: Executor.Apply(ctx, Plan, Opts)
     loop Per Container Step
-        Apply->>LXD: GetInstance(name) (Fetch Fresh ETag)
-        Apply->>LXD: PutInstance / Rebuild / Exec
+        Apply->>Driver: GetInstance(ctx, name) (Fetch Fresh ETag)
+        Apply->>Driver: UpdateInstance / RebuildInstance / ExecInstance
         Apply->>Fleet: Purge/Register KnownHosts (Flock Protected)
     end
     Apply-->>CLI: ApplyReport

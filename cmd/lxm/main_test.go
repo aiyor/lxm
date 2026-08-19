@@ -11,10 +11,10 @@ import (
 	"testing"
 
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/output"
 	"github.com/aiyor/lxm/internal/plan"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/fake"
 )
 
 func TestMain(m *testing.M) {
@@ -30,10 +30,10 @@ func TestMain(m *testing.M) {
 }
 
 func TestRun_Help(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	var stdout, stderr bytes.Buffer
 
-	code := run([]string{"--help"}, &stdout, &stderr, fake)
+	code := run([]string{"--help"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Errorf("run(--help) returned %d, want 0", code)
 	}
@@ -99,14 +99,14 @@ func TestRun_OfflineLXD_LXDCommandsFailExit4(t *testing.T) {
 }
 
 func TestRun_ApplyPreflightConfigError_Exit3(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "invalid.yaml")
 	// Invalid status value violates config validation
 	_ = os.WriteFile(cfgFile, []byte("name: test\nimage: ubuntu:22.04\nstatus: invalid-status\n"), 0644)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"apply", cfgFile}, &stdout, &stderr, fake)
+	code := run([]string{"apply", cfgFile}, &stdout, &stderr, driver)
 	if code != 3 {
 		t.Errorf("run(apply invalid config) returned %d, want 3 (CONFIG_ERROR)", code)
 	}
@@ -116,7 +116,7 @@ func TestRun_ApplyPreflightConfigError_Exit3(t *testing.T) {
 }
 
 func TestRun_RunPreflightConfigError_Exit3(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "invalid.yaml")
 	_ = os.WriteFile(cfgFile, []byte("name: test\nimage: ubuntu:22.04\nstatus: invalid-status\n"), 0644)
@@ -125,29 +125,29 @@ func TestRun_RunPreflightConfigError_Exit3(t *testing.T) {
 	_ = os.WriteFile(scriptFile, []byte("#!/bin/bash\necho ok\n"), 0755)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", tmpDir, scriptFile}, &stdout, &stderr, fake)
+	code := run([]string{"run", tmpDir, scriptFile}, &stdout, &stderr, driver)
 	if code != 3 {
 		t.Errorf("run(run dir with invalid config) returned %d, want 3 (CONFIG_ERROR). Stderr: %s", code, stderr.String())
 	}
 }
 
 func TestRun_ApplyNoStartFlag(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "dev.yaml")
 	_ = os.WriteFile(cfgFile, []byte("name: dev-box\nimage: ubuntu:22.04\nstatus: present\n"), 0644)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"apply", cfgFile, "--no-start"}, &stdout, &stderr, fake)
+	code := run([]string{"apply", cfgFile, "--no-start"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("apply --no-start returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
-	inst, _, err := fake.GetInstance("dev-box")
+	inst, _, err := driver.GetInstance(context.Background(), "dev-box")
 	if err != nil {
-		t.Fatalf("dev-box container should exist in fake server, got: %v", err)
+		t.Fatalf("dev-box container should exist in driver server, got: %v", err)
 	}
-	if inst.StatusCode != api.Stopped {
-		t.Errorf("container status under --no-start = %v, want %v (Stopped)", inst.StatusCode, api.Stopped)
+	if inst.StatusCode != 102 {
+		t.Errorf("container status under --no-start = %v, want 102 (Stopped)", inst.StatusCode)
 	}
 }
 
@@ -157,9 +157,9 @@ func TestRun_ApplyETagDrift_JSONRetryable(t *testing.T) {
 	// detect drift. Regression for the envelope path, which previously
 	// rebuilt error entries from the single exit error with retryable
 	// hardcoded to false.
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "dev-box"})
-	fake.UpdateInstanceFunc = func(name string, put api.InstancePut, etag string) error {
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "dev-box"})
+	driver.UpdateInstanceFunc = func(name string, put provider.InstanceUpdateRequest, etag string) error {
 		return fmt.Errorf("ETag does not match: stale vs fresh. The configuration has been modified since this change began. Please retrieve the updated configuration before proceeding.")
 	}
 
@@ -168,7 +168,7 @@ func TestRun_ApplyETagDrift_JSONRetryable(t *testing.T) {
 	_ = os.WriteFile(cfgFile, []byte("name: dev-box\nimage: ubuntu:22.04\nstatus: present\nuser: ubuntu\n"), 0644)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"apply", cfgFile, "--format", "json"}, &stdout, &stderr, fake)
+	code := run([]string{"apply", cfgFile, "--format", "json"}, &stdout, &stderr, driver)
 	if code != 4 {
 		t.Fatalf("apply returned %d, want 4. Stderr: %s", code, stderr.String())
 	}
@@ -208,9 +208,9 @@ func TestRun_ApplyInterrupt_EnvelopeKeepsInternalError(t *testing.T) {
 	// an interrupted apply forces exit 1 and must pair it with a single
 	// INTERNAL_ERROR entry, never with the report's per-container
 	// LXD_ERROR/retryable entries (SPEC_RESULT code-to-exit mapping).
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "dev-box"})
-	fake.UpdateInstanceFunc = func(name string, put api.InstancePut, etag string) error {
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "dev-box"})
+	driver.UpdateInstanceFunc = func(name string, put provider.InstanceUpdateRequest, etag string) error {
 		return fmt.Errorf("ETag does not match: stale vs fresh. The configuration has been modified since this change began. Please retrieve the updated configuration before proceeding.")
 	}
 
@@ -222,7 +222,7 @@ func TestRun_ApplyInterrupt_EnvelopeKeepsInternalError(t *testing.T) {
 	cancel() // pre-canceled: simulates an interrupt
 
 	var stdout, stderr bytes.Buffer
-	code := runWithContext(ctx, []string{"apply", cfgFile, "--format", "json"}, &stdout, &stderr, fake)
+	code := runWithContext(ctx, []string{"apply", cfgFile, "--format", "json"}, &stdout, &stderr, driver)
 	if code != 1 {
 		t.Fatalf("interrupted apply returned %d, want 1. Stderr: %s", code, stderr.String())
 	}
@@ -264,40 +264,40 @@ func TestRun_ApplyInterrupt_EnvelopeKeepsInternalError(t *testing.T) {
 }
 
 func TestRun_RunEnvVars(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "dev-box"})
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "dev-box"})
 
 	tmpDir := t.TempDir()
 	scriptFile := filepath.Join(tmpDir, "test.sh")
 	_ = os.WriteFile(scriptFile, []byte("#!/bin/bash\necho $FOO\n"), 0755)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "dev-box", scriptFile, "--env", "FOO=bar"}, &stdout, &stderr, fake)
+	code := run([]string{"run", "dev-box", scriptFile, "--env", "FOO=bar"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("run with --env returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
 }
 
 func TestRun_ApplyNameSelectorAndRenameTo(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "dev.yaml")
 	_ = os.WriteFile(cfgFile, []byte("name: dev-box\nimage: ubuntu:22.04\nstatus: present\n"), 0644)
 
 	t.Run("single file rename-to on matching name", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"apply", cfgFile, "--name", "dev-box", "--rename-to", "renamed-box"}, &stdout, &stderr, fake)
+		code := run([]string{"apply", cfgFile, "--name", "dev-box", "--rename-to", "renamed-box"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("apply with --name and --rename-to returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
-		if _, _, err := fake.GetInstance("renamed-box"); err != nil {
+		if _, _, err := driver.GetInstance(context.Background(), "renamed-box"); err != nil {
 			t.Errorf("container renamed-box should have been created")
 		}
 	})
 
 	t.Run("single file name mismatch exits 5", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"apply", cfgFile, "--name", "other-box"}, &stdout, &stderr, fake)
+		code := run([]string{"apply", cfgFile, "--name", "other-box"}, &stdout, &stderr, driver)
 		if code != 5 {
 			t.Errorf("apply with mismatching --name returned %d, want 5", code)
 		}
@@ -305,7 +305,7 @@ func TestRun_ApplyNameSelectorAndRenameTo(t *testing.T) {
 
 	t.Run("directory target with rename-to exits 2", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"apply", tmpDir, "--rename-to", "renamed-box"}, &stdout, &stderr, fake)
+		code := run([]string{"apply", tmpDir, "--rename-to", "renamed-box"}, &stdout, &stderr, driver)
 		if code != 2 {
 			t.Errorf("apply directory with --rename-to returned %d, want 2", code)
 		}
@@ -313,12 +313,12 @@ func TestRun_ApplyNameSelectorAndRenameTo(t *testing.T) {
 }
 
 func TestRun_SSHInterspersedFlags(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box1"})
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
 
 	var stdout, stderr bytes.Buffer
 	// Test passing SSH flag -o after container name box1 with --dry-run
-	code := run([]string{"--dry-run", "ssh", "box1", "-o", "StrictHostKeyChecking=no"}, &stdout, &stderr, fake)
+	code := run([]string{"--dry-run", "ssh", "box1", "-o", "StrictHostKeyChecking=no"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Errorf("ssh with -o flag returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
@@ -332,12 +332,12 @@ func TestRun_SSHInterspersedFlags(t *testing.T) {
 // "No ... host key is known". Bypass paths (--insecure or user-supplied
 // -o StrictHostKeyChecking=no) must not gain the alias.
 func TestRun_SSHStrictInvocation_HostKeyAlias(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box1"})
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
 
 	// Strict verification path.
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--dry-run", "ssh", "box1", "hostname"}, &stdout, &stderr, fake)
+	code := run([]string{"--dry-run", "ssh", "box1", "hostname"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("ssh --dry-run returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
@@ -355,7 +355,7 @@ func TestRun_SSHStrictInvocation_HostKeyAlias(t *testing.T) {
 		args := []string{"--dry-run", "ssh", "box1"}
 		args = append(args, bypass...)
 		args = append(args, "hostname")
-		code = run(args, &out, &errB, fake)
+		code = run(args, &out, &errB, driver)
 		if code != 0 {
 			t.Fatalf("ssh bypass %v returned %d, want 0. Stderr: %s", bypass, code, errB.String())
 		}
@@ -364,7 +364,7 @@ func TestRun_SSHStrictInvocation_HostKeyAlias(t *testing.T) {
 		}
 	}
 	var out3, err3 bytes.Buffer
-	code = run([]string{"--dry-run", "ssh", "box1", "--insecure", "hostname"}, &out3, &err3, fake)
+	code = run([]string{"--dry-run", "ssh", "box1", "--insecure", "hostname"}, &out3, &err3, driver)
 	if code != 0 {
 		t.Fatalf("ssh --insecure --dry-run returned %d, want 0. Stderr: %s", code, err3.String())
 	}
@@ -381,12 +381,12 @@ func TestRun_SSHStrictInvocation_HostKeyAlias(t *testing.T) {
 // `-o StrictHostKeyChecking=no` (which also skipped key registration and then
 // failed strict verification).
 func TestRun_SSHUserOverridesEffective(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box1"})
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
 
 	t.Run("user -o StrictHostKeyChecking=no replaces lxm default", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "box1", "-o", "StrictHostKeyChecking=no", "hostname"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "box1", "-o", "StrictHostKeyChecking=no", "hostname"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -401,7 +401,7 @@ func TestRun_SSHUserOverridesEffective(t *testing.T) {
 
 	t.Run("user -p overrides lxm Port default", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "box1", "-p", "2222", "hostname"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "box1", "-p", "2222", "hostname"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -416,7 +416,7 @@ func TestRun_SSHUserOverridesEffective(t *testing.T) {
 
 	t.Run("defaults present without user options", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "box1", "hostname"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "box1", "hostname"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -431,7 +431,7 @@ func TestRun_SSHUserOverridesEffective(t *testing.T) {
 		// isHostKeyBypassArg's lowercasing, otherwise a lowercase spelling is
 		// not deduped and lxm's strict default (emitted first) wins.
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "box1", "-o", "stricthostkeychecking=no", "hostname"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "box1", "-o", "stricthostkeychecking=no", "hostname"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -443,7 +443,7 @@ func TestRun_SSHUserOverridesEffective(t *testing.T) {
 
 	t.Run("attached -p2222 overrides Port", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "box1", "-p2222", "hostname"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "box1", "-p2222", "hostname"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -455,7 +455,7 @@ func TestRun_SSHUserOverridesEffective(t *testing.T) {
 
 	t.Run("config-line space form deduped", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "box1", "-o", "Port 2222", "hostname"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "box1", "-o", "Port 2222", "hostname"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -471,7 +471,7 @@ func TestRun_SSHUserOverridesEffective(t *testing.T) {
 		// checking against an empty store (unconnectable). It completes the
 		// bypass and never emits the strict default.
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "box1", "-o", "UserKnownHostsFile=/dev/null", "hostname"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "box1", "-o", "UserKnownHostsFile=/dev/null", "hostname"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -491,7 +491,7 @@ func TestRun_SSHUserOverridesEffective(t *testing.T) {
 		// strict default stays, yielding an unconnectable strict-vs-empty
 		// combination.
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "box1", "-o", "UserKnownHostsFile /dev/null", "hostname"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "box1", "-o", "UserKnownHostsFile /dev/null", "hostname"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -506,11 +506,11 @@ func TestRun_SSHUserOverridesEffective(t *testing.T) {
 }
 
 func TestRun_ListJSONFormat(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box1"})
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"list", "--format", "json"}, &stdout, &stderr, fake)
+	code := run([]string{"list", "--format", "json"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("list --format json returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
@@ -528,23 +528,23 @@ func TestRun_ListJSONFormat(t *testing.T) {
 }
 
 func TestRun_RunMissingTarget_Exit5(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	tmpDir := t.TempDir()
 	scriptFile := filepath.Join(tmpDir, "script.sh")
 	_ = os.WriteFile(scriptFile, []byte("#!/bin/bash\necho ok\n"), 0755)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "nonexistent-box", scriptFile}, &stdout, &stderr, fake)
+	code := run([]string{"run", "nonexistent-box", scriptFile}, &stdout, &stderr, driver)
 	if code != 5 {
 		t.Errorf("run on nonexistent container returned %d, want 5 (TARGET_NOT_FOUND). Stderr: %s", code, stderr.String())
 	}
 }
 
 func TestRun_SubcommandHelp(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	var stdout, stderr bytes.Buffer
 
-	code := run([]string{"apply", "--help"}, &stdout, &stderr, fake)
+	code := run([]string{"apply", "--help"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Errorf("run(apply --help) returned %d, want 0", code)
 	}
@@ -554,10 +554,10 @@ func TestRun_SubcommandHelp(t *testing.T) {
 }
 
 func TestRun_UnknownCommand(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	var stdout, stderr bytes.Buffer
 
-	code := run([]string{"invalidcmd"}, &stdout, &stderr, fake)
+	code := run([]string{"invalidcmd"}, &stdout, &stderr, driver)
 	if code != 2 {
 		t.Errorf("run(invalidcmd) returned %d, want 2", code)
 	}
@@ -571,12 +571,12 @@ func TestRun_UnknownCommand(t *testing.T) {
 
 func TestRun_RemovedCommands(t *testing.T) {
 	removedCmds := []string{"launch", "bootstrap", "attach"}
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 
 	for _, cmdName := range removedCmds {
 		t.Run(cmdName, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run([]string{cmdName}, &stdout, &stderr, fake)
+			code := run([]string{cmdName}, &stdout, &stderr, driver)
 			if code != 2 {
 				t.Errorf("run(%s) returned %d, want 2 (Usage error for removed command)", cmdName, code)
 			}
@@ -588,10 +588,10 @@ func TestRun_RemovedCommands(t *testing.T) {
 }
 
 func TestRun_UnknownFlag(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	var stdout, stderr bytes.Buffer
 
-	code := run([]string{"--nonexistent-flag"}, &stdout, &stderr, fake)
+	code := run([]string{"--nonexistent-flag"}, &stdout, &stderr, driver)
 	if code != 2 {
 		t.Errorf("run(--nonexistent-flag) returned %d, want 2", code)
 	}
@@ -601,13 +601,13 @@ func TestRun_UnknownFlag(t *testing.T) {
 }
 
 func TestRun_ApplyPruneSingleFile_Exit2(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "test.yaml")
 	_ = os.WriteFile(cfgFile, []byte("name: test\nimage: ubuntu:22.04\nstatus: present\n"), 0644)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"apply", cfgFile, "--prune"}, &stdout, &stderr, fake)
+	code := run([]string{"apply", cfgFile, "--prune"}, &stdout, &stderr, driver)
 	if code != 2 {
 		t.Errorf("run(apply file --prune) returned %d, want 2", code)
 	}
@@ -617,10 +617,10 @@ func TestRun_ApplyPruneSingleFile_Exit2(t *testing.T) {
 }
 
 func TestRun_ApplyTargetNotFound_Exit5(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	var stdout, stderr bytes.Buffer
 
-	code := run([]string{"apply", "/nonexistent/path/target.yaml"}, &stdout, &stderr, fake)
+	code := run([]string{"apply", "/nonexistent/path/target.yaml"}, &stdout, &stderr, driver)
 	if code != 5 {
 		t.Errorf("run(apply nonexistent) returned %d, want 5", code)
 	}
@@ -630,7 +630,7 @@ func TestRun_ApplyTargetNotFound_Exit5(t *testing.T) {
 }
 
 func TestRun_ApplySuccess(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "dev.yaml")
 	content := `
@@ -643,14 +643,14 @@ status: present
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"apply", cfgFile, "--debug"}, &stdout, &stderr, fake)
+	code := run([]string{"apply", cfgFile, "--debug"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("run(apply) returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
 
-	inst, _, err := fake.GetInstance("dev-box")
+	inst, _, err := driver.GetInstance(context.Background(), "dev-box")
 	if err != nil {
-		t.Fatalf("expected instance dev-box created in fake server, got err: %v", err)
+		t.Fatalf("expected instance dev-box created in driver server, got err: %v", err)
 	}
 	if inst.Name != "dev-box" {
 		t.Errorf("expected instance name dev-box, got %s", inst.Name)
@@ -658,7 +658,7 @@ status: present
 }
 
 func TestRun_GroupFiltersSpaceAndEquals(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	tmpDir := t.TempDir()
 
 	cfg1 := filepath.Join(tmpDir, "dev.yaml")
@@ -669,38 +669,38 @@ func TestRun_GroupFiltersSpaceAndEquals(t *testing.T) {
 
 	// Test --group dev (space syntax)
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"apply", tmpDir, "--group", "dev"}, &stdout, &stderr, fake)
+	code := run([]string{"apply", tmpDir, "--group", "dev"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("run(apply --group dev) returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
-	if _, _, err := fake.GetInstance("dev-box"); err != nil {
+	if _, _, err := driver.GetInstance(context.Background(), "dev-box"); err != nil {
 		t.Errorf("dev-box should be created")
 	}
-	if _, _, err := fake.GetInstance("prod-box"); err == nil {
+	if _, _, err := driver.GetInstance(context.Background(), "prod-box"); err == nil {
 		t.Errorf("prod-box should not be created under --group dev")
 	}
 
 	// Test --group=prod (equals syntax)
 	stdout.Reset()
 	stderr.Reset()
-	code = run([]string{"apply", tmpDir, "--group=prod"}, &stdout, &stderr, fake)
+	code = run([]string{"apply", tmpDir, "--group=prod"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("run(apply --group=prod) returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
-	if _, _, err := fake.GetInstance("prod-box"); err != nil {
+	if _, _, err := driver.GetInstance(context.Background(), "prod-box"); err != nil {
 		t.Errorf("prod-box should be created under --group=prod")
 	}
 }
 
 func TestRun_Plan(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "test.yaml")
 	_ = os.WriteFile(cfgFile, []byte("name: test\nimage: ubuntu:22.04\nstatus: present\n"), 0644)
 
 	t.Run("text format", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"plan", tmpDir}, &stdout, &stderr, fake)
+		code := run([]string{"plan", tmpDir}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Errorf("plan returned %d, want 0", code)
 		}
@@ -711,7 +711,7 @@ func TestRun_Plan(t *testing.T) {
 
 	t.Run("json format", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"plan", tmpDir, "--format", "json"}, &stdout, &stderr, fake)
+		code := run([]string{"plan", tmpDir, "--format", "json"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Errorf("plan --format json returned %d, want 0", code)
 		}
@@ -726,7 +726,7 @@ func TestRun_Plan(t *testing.T) {
 
 	t.Run("invalid format", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"plan", tmpDir, "--format", "yaml"}, &stdout, &stderr, fake)
+		code := run([]string{"plan", tmpDir, "--format", "yaml"}, &stdout, &stderr, driver)
 		if code != 2 {
 			t.Errorf("plan --format yaml returned %d, want 2", code)
 		}
@@ -734,8 +734,8 @@ func TestRun_Plan(t *testing.T) {
 }
 
 func TestRun_ScriptAndRunAs(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box1"})
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
 
 	tmpDir := t.TempDir()
 	scriptFile := filepath.Join(tmpDir, "setup.sh")
@@ -745,7 +745,7 @@ func TestRun_ScriptAndRunAs(t *testing.T) {
 
 	t.Run("script with --run-as flag", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"script", "box1", scriptFile, "--run-as", "ubuntu"}, &stdout, &stderr, fake)
+		code := run([]string{"script", "box1", scriptFile, "--run-as", "ubuntu"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Errorf("script with --run-as returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -753,7 +753,7 @@ func TestRun_ScriptAndRunAs(t *testing.T) {
 
 	t.Run("script with positional user", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"script", "box1", scriptFile, "ubuntu"}, &stdout, &stderr, fake)
+		code := run([]string{"script", "box1", scriptFile, "ubuntu"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Errorf("script with positional user returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -761,12 +761,12 @@ func TestRun_ScriptAndRunAs(t *testing.T) {
 }
 
 func TestRun_SnapshotAndRollback(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box1"})
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
 
 	t.Run("create_snapshot", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"snapshot", "box1", "user.lxm.snap.test1"}, &stdout, &stderr, fake)
+		code := run([]string{"snapshot", "box1", "user.lxm.snap.test1"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Errorf("snapshot create returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -774,7 +774,7 @@ func TestRun_SnapshotAndRollback(t *testing.T) {
 
 	t.Run("list_snapshot", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"snapshot", "box1"}, &stdout, &stderr, fake)
+		code := run([]string{"snapshot", "box1"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Errorf("snapshot list returned %d, want 0", code)
 		}
@@ -785,7 +785,7 @@ func TestRun_SnapshotAndRollback(t *testing.T) {
 
 	t.Run("snapshot_gc_dryrun", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"snapshot", "box1", "--gc", "--dry-run", "--older-than", "0s"}, &stdout, &stderr, fake)
+		code := run([]string{"snapshot", "box1", "--gc", "--dry-run", "--older-than", "0s"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Errorf("snapshot --gc --dry-run returned %d, want 0", code)
 		}
@@ -796,7 +796,7 @@ func TestRun_SnapshotAndRollback(t *testing.T) {
 
 	t.Run("snapshot_gc_prune", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"snapshot", "box1", "--gc", "--older-than", "0s"}, &stdout, &stderr, fake)
+		code := run([]string{"snapshot", "box1", "--gc", "--older-than", "0s"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Errorf("snapshot --gc returned %d, want 0", code)
 		}
@@ -807,7 +807,7 @@ func TestRun_SnapshotAndRollback(t *testing.T) {
 
 	t.Run("rollback", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"rollback", "box1", "user.lxm.snap.test1"}, &stdout, &stderr, fake)
+		code := run([]string{"rollback", "box1", "user.lxm.snap.test1"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Errorf("rollback returned %d, want 0", code)
 		}
@@ -815,14 +815,14 @@ func TestRun_SnapshotAndRollback(t *testing.T) {
 }
 
 func TestRun_CompileAndDoctor(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "dev.yaml")
 	_ = os.WriteFile(cfgFile, []byte("name: dev-box\nimage: ubuntu:22.04\nstatus: present\n"), 0644)
 
 	t.Run("compile", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"compile", tmpDir}, &stdout, &stderr, fake)
+		code := run([]string{"compile", tmpDir}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Errorf("compile returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -830,7 +830,7 @@ func TestRun_CompileAndDoctor(t *testing.T) {
 
 	t.Run("doctor", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"doctor"}, &stdout, &stderr, fake)
+		code := run([]string{"doctor"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Errorf("doctor returned %d, want 0", code)
 		}
@@ -841,13 +841,13 @@ func TestRun_CompileAndDoctor(t *testing.T) {
 }
 
 func TestRun_Include(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "dev.yaml")
 	_ = os.WriteFile(cfgFile, []byte("name: dev-box\nimage: ubuntu:22.04\nstatus: present\n"), 0644)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"include", tmpDir, "_base.yaml", "--dry-run"}, &stdout, &stderr, fake)
+	code := run([]string{"include", tmpDir, "_base.yaml", "--dry-run"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Errorf("include returned %d, want 0", code)
 	}
@@ -992,13 +992,13 @@ func TestRun_FormatJSON_Errors(t *testing.T) {
 	})
 
 	t.Run("Target Not Found Error Exit 5", func(t *testing.T) {
-		fake := lxd.NewFakeInstanceServer()
+		driver := fake.New()
 		tmpDir := t.TempDir()
 		scriptFile := filepath.Join(tmpDir, "test.sh")
 		_ = os.WriteFile(scriptFile, []byte("#!/bin/bash\necho ok\n"), 0755)
 
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"run", "non-existent-box", scriptFile, "--format", "json"}, &stdout, &stderr, fake)
+		code := run([]string{"run", "non-existent-box", scriptFile, "--format", "json"}, &stdout, &stderr, driver)
 		if code != 5 {
 			t.Fatalf("returned exit code %d, want 5", code)
 		}
@@ -1013,12 +1013,12 @@ func TestRun_FormatJSON_Errors(t *testing.T) {
 }
 
 func TestRun_FormatJSON_InteractiveCarveOut(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box1"})
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
 
 	t.Run("shell rejects --format json", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"shell", "box1", "--format", "json"}, &stdout, &stderr, fake)
+		code := run([]string{"shell", "box1", "--format", "json"}, &stdout, &stderr, driver)
 		if code != 2 {
 			t.Fatalf("shell --format json returned exit code %d, want 2", code)
 		}
@@ -1033,7 +1033,7 @@ func TestRun_FormatJSON_InteractiveCarveOut(t *testing.T) {
 
 	t.Run("ssh rejects --format json", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "box1", "--format", "json"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "box1", "--format", "json"}, &stdout, &stderr, driver)
 		if code != 2 {
 			t.Fatalf("ssh --format json returned exit code %d, want 2", code)
 		}
@@ -1071,11 +1071,11 @@ func TestRun_FormatJSON_SingleDocument(t *testing.T) {
 	})
 
 	t.Run("status --format json single document", func(t *testing.T) {
-		fake := lxd.NewFakeInstanceServer()
-		_ = fake.CreateInstance(api.InstancesPost{Name: "box1"})
+		driver := fake.New()
+		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
 
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"status", "box1", "--format", "json"}, &stdout, &stderr, fake)
+		code := run([]string{"status", "box1", "--format", "json"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("status returned %d, want 0", code)
 		}
@@ -1136,11 +1136,11 @@ func TestRun_FormatJSON_SingleDocument(t *testing.T) {
 }
 
 func TestRun_SSH_RemoteCommandJSON_NotCarvedOut(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box1"})
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--dry-run", "ssh", "box1", "json"}, &stdout, &stderr, fake)
+	code := run([]string{"--dry-run", "ssh", "box1", "json"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("ssh box1 json returned %d, want 0 (should not be carved out). Stderr: %s", code, stderr.String())
 	}
@@ -1170,20 +1170,20 @@ func TestRun_SignalInterrupt(t *testing.T) {
 }
 
 func TestRun_List_SuccessAndFilter(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.Instances["c1"] = &api.Instance{
+	driver := fake.New()
+	driver.Instances["c1"] = &provider.Instance{
 		Name:       "c1",
 		Status:     "Running",
-		StatusCode: api.Running,
+		StatusCode: 103,
 		Config: map[string]string{
 			"user.lxm.managed": "true",
 			"user.lxm.groups":  "dev",
 		},
 	}
-	fake.Instances["c2"] = &api.Instance{
+	driver.Instances["c2"] = &provider.Instance{
 		Name:       "c2",
 		Status:     "Stopped",
-		StatusCode: api.Stopped,
+		StatusCode: 102,
 		Config: map[string]string{
 			"user.lxm.managed": "true",
 			"user.lxm.groups":  "prod",
@@ -1192,7 +1192,7 @@ func TestRun_List_SuccessAndFilter(t *testing.T) {
 
 	t.Run("list all text output", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"list"}, &stdout, &stderr, fake)
+		code := run([]string{"list"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("list returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -1204,7 +1204,7 @@ func TestRun_List_SuccessAndFilter(t *testing.T) {
 
 	t.Run("list filter group dev", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"list", "--group", "dev"}, &stdout, &stderr, fake)
+		code := run([]string{"list", "--group", "dev"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("list --group dev returned %d, want 0", code)
 		}
@@ -1216,7 +1216,7 @@ func TestRun_List_SuccessAndFilter(t *testing.T) {
 
 	t.Run("list filter no match exits 5", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"list", "--group", "nonexistent"}, &stdout, &stderr, fake)
+		code := run([]string{"list", "--group", "nonexistent"}, &stdout, &stderr, driver)
 		if code != 5 {
 			t.Fatalf("list --group nonexistent returned %d, want 5 (TARGET_ERROR)", code)
 		}
@@ -1224,11 +1224,11 @@ func TestRun_List_SuccessAndFilter(t *testing.T) {
 }
 
 func TestRun_Status_SuccessAndNotFound(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.Instances["dev1"] = &api.Instance{
+	driver := fake.New()
+	driver.Instances["dev1"] = &provider.Instance{
 		Name:         "dev1",
 		Status:       "Running",
-		StatusCode:   api.Running,
+		StatusCode:   103,
 		Architecture: "x86_64",
 		Config: map[string]string{
 			"user.lxm.managed":           "true",
@@ -1239,7 +1239,7 @@ func TestRun_Status_SuccessAndNotFound(t *testing.T) {
 
 	t.Run("status dev1 text", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"status", "dev1"}, &stdout, &stderr, fake)
+		code := run([]string{"status", "dev1"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("status dev1 returned %d, want 0", code)
 		}
@@ -1251,7 +1251,7 @@ func TestRun_Status_SuccessAndNotFound(t *testing.T) {
 
 	t.Run("status nonexistent exits 5", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"status", "ghost"}, &stdout, &stderr, fake)
+		code := run([]string{"status", "ghost"}, &stdout, &stderr, driver)
 		if code != 5 {
 			t.Fatalf("status ghost returned %d, want 5 (TARGET_ERROR)", code)
 		}
@@ -1338,10 +1338,10 @@ wait: true
 
 func TestRun_Doctor_Diagnostics(t *testing.T) {
 	tmpDir := t.TempDir()
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"doctor", tmpDir}, &stdout, &stderr, fake)
+	code := run([]string{"doctor", tmpDir}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("doctor returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
@@ -1408,20 +1408,18 @@ func TestRun_Doctor_ReportsLoadFailure(t *testing.T) {
 }
 
 func TestRun_Prune_OrphanGC(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 
-	// Pre-create orphan container with user.lxm.managed=true in fake LXD
-	fake.CreateInstance(api.InstancesPost{
+	// Pre-create orphan container with user.lxm.managed=true in driver LXD
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
 		Name: "orphan-box",
-		InstancePut: api.InstancePut{
-			Config: map[string]string{
-				"user.lxm.managed": "true",
-				"user.lxm.groups":  "dev",
-				"user.lxm.user":    "ubuntu",
-			},
+		Config: map[string]string{
+			"user.lxm.managed": "true",
+			"user.lxm.groups":  "dev",
+			"user.lxm.user":    "ubuntu",
 		},
 	})
-	fake.UpdateInstanceState("orphan-box", "start", false)
+	driver.UpdateInstanceState(context.Background(), "orphan-box", "start", false)
 
 	tmpDir := t.TempDir()
 	keeperPath := filepath.Join(tmpDir, "keeper.yaml")
@@ -1434,7 +1432,7 @@ groups: [dev]
 
 	t.Run("plan --prune previews delete step for orphan", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"plan", tmpDir, "--prune", "--format", "json"}, &stdout, &stderr, fake)
+		code := run([]string{"plan", tmpDir, "--prune", "--format", "json"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("plan --prune returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -1458,11 +1456,11 @@ groups: [dev]
 
 	t.Run("apply --prune deletes orphan container", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"apply", tmpDir, "--prune"}, &stdout, &stderr, fake)
+		code := run([]string{"apply", tmpDir, "--prune"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("apply --prune returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
-		inst, _, err := fake.GetInstance("orphan-box")
+		inst, _, err := driver.GetInstance(context.Background(), "orphan-box")
 		if err == nil && inst != nil {
 			t.Errorf("expected orphan-box to be deleted by apply --prune, but it still exists")
 		}
@@ -1473,21 +1471,19 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	khFile := filepath.Join(t.TempDir(), "known_hosts")
 	t.Setenv("LXM_KNOWN_HOSTS_FILE", khFile)
 
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
 		Name: "secure-box",
-		InstancePut: api.InstancePut{
-			Config: map[string]string{
-				"user.lxm.user":    "ubuntu",
-				"user.lxm.managed": "true",
-			},
+		Config: map[string]string{
+			"user.lxm.user":    "ubuntu",
+			"user.lxm.managed": "true",
 		},
 	})
-	fake.IPs["secure-box"] = "10.0.0.50"
+	driver.IPs["secure-box"] = "10.0.0.50"
 
 	t.Run("B1: dry-run does not write to known_hosts", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "secure-box"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "secure-box"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh dry-run returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -1497,18 +1493,16 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	})
 
 	t.Run("B2: stopped container with no IPv4 returns exit code 6", func(t *testing.T) {
-		_ = fake.CreateInstance(api.InstancesPost{
+		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
 			Name: "stopped-box",
-			InstancePut: api.InstancePut{
-				Config: map[string]string{"user.lxm.user": "ubuntu"},
-			},
+			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})
-		fake.Instances["stopped-box"].Status = "Stopped"
-		fake.Instances["stopped-box"].StatusCode = api.Stopped
-		delete(fake.IPs, "stopped-box")
+		driver.Instances["stopped-box"].Status = "Stopped"
+		driver.Instances["stopped-box"].StatusCode = 102
+		delete(driver.IPs, "stopped-box")
 
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"ssh", "stopped-box"}, &stdout, &stderr, fake)
+		code := run([]string{"ssh", "stopped-box"}, &stdout, &stderr, driver)
 		if code != 6 {
 			t.Fatalf("ssh stopped-box returned %d, want 6. Stderr: %s", code, stderr.String())
 		}
@@ -1519,7 +1513,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 
 	t.Run("B3: space-separated option passthrough preserved intact", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "secure-box", "-o", "ServerAliveInterval=5", "-p", "2222"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "secure-box", "-o", "ServerAliveInterval=5", "-p", "2222"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh with options returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -1538,7 +1532,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 		}
 		for _, v := range bypassVariants {
 			var stdout, stderr bytes.Buffer
-			code := run(v, &stdout, &stderr, fake)
+			code := run(v, &stdout, &stderr, driver)
 			if code != 0 {
 				t.Fatalf("ssh with %v returned %d, want 0. Stderr: %s", v, code, stderr.String())
 			}
@@ -1555,7 +1549,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 		}
 		for _, v := range benignVariants {
 			var stdout, stderr bytes.Buffer
-			code := run(v, &stdout, &stderr, fake)
+			code := run(v, &stdout, &stderr, driver)
 			if code != 0 {
 				t.Fatalf("ssh with benign %v returned %d, want 0. Stderr: %s", v, code, stderr.String())
 			}
@@ -1570,7 +1564,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 
 	t.Run("R2: options before name parses container name correctly", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "-o", "ServerAliveInterval=5", "secure-box"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "-o", "ServerAliveInterval=5", "secure-box"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh options-before-name returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -1580,18 +1574,16 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	})
 
 	t.Run("R5: keyscan failure on unreachable IP returns exit code 6", func(t *testing.T) {
-		_ = fake.CreateInstance(api.InstancesPost{
+		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
 			Name: "unreachable-box",
-			InstancePut: api.InstancePut{
-				Config: map[string]string{"user.lxm.user": "ubuntu"},
-			},
+			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})
-		fake.Instances["unreachable-box"].Status = "Running"
-		fake.Instances["unreachable-box"].StatusCode = api.Running
-		fake.IPs["unreachable-box"] = "192.0.2.1" // Non-routable documentation IP -> keyscan fails
+		driver.Instances["unreachable-box"].Status = "Running"
+		driver.Instances["unreachable-box"].StatusCode = 103
+		driver.IPs["unreachable-box"] = "192.0.2.1" // Non-routable documentation IP -> keyscan fails
 
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"ssh", "unreachable-box"}, &stdout, &stderr, fake)
+		code := run([]string{"ssh", "unreachable-box"}, &stdout, &stderr, driver)
 		if code != 6 {
 			t.Fatalf("ssh unreachable-box returned %d, want 6. Stderr: %s", code, stderr.String())
 		}
@@ -1601,18 +1593,16 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	})
 
 	t.Run("R9: IP resolution from running instance State.Network", func(t *testing.T) {
-		_ = fake.CreateInstance(api.InstancesPost{
+		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
 			Name: "running-box",
-			InstancePut: api.InstancePut{
-				Config: map[string]string{"user.lxm.user": "ubuntu"},
-			},
+			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})
-		fake.Instances["running-box"].Status = "Running"
-		fake.Instances["running-box"].StatusCode = api.Running
-		fake.IPs["running-box"] = "10.0.0.99"
+		driver.Instances["running-box"].Status = "Running"
+		driver.Instances["running-box"].StatusCode = 103
+		driver.IPs["running-box"] = "10.0.0.99"
 
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "running-box"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "running-box"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh running-box returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -1623,7 +1613,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 
 	t.Run("B5: --format JSON case variant returns exit code 2", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--format", "JSON", "ssh", "secure-box"}, &stdout, &stderr, fake)
+		code := run([]string{"--format", "JSON", "ssh", "secure-box"}, &stdout, &stderr, driver)
 		if code != 2 {
 			t.Fatalf("ssh --format JSON returned %d, want 2. Stderr: %s", code, stderr.String())
 		}
@@ -1631,7 +1621,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 
 	t.Run("ssh with --insecure emits warning", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "secure-box", "--insecure"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "secure-box", "--insecure"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh --insecure returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -1645,7 +1635,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 
 	t.Run("ssh secure mode uses StrictHostKeyChecking=yes", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--dry-run", "ssh", "secure-box"}, &stdout, &stderr, fake)
+		code := run([]string{"--dry-run", "ssh", "secure-box"}, &stdout, &stderr, driver)
 		if code != 0 {
 			t.Fatalf("ssh returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
@@ -1659,7 +1649,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 
 	t.Run("ssh nonexistent container returns exit code 5", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"ssh", "nonexistent-box"}, &stdout, &stderr, fake)
+		code := run([]string{"ssh", "nonexistent-box"}, &stdout, &stderr, driver)
 		if code != 5 {
 			t.Fatalf("ssh nonexistent-box returned %d, want 5. Stderr: %s", code, stderr.String())
 		}
@@ -1667,7 +1657,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 
 	t.Run("ssh --format json returns exit code 2", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run([]string{"--format", "json", "ssh", "secure-box"}, &stdout, &stderr, fake)
+		code := run([]string{"--format", "json", "ssh", "secure-box"}, &stdout, &stderr, driver)
 		if code != 2 {
 			t.Fatalf("ssh --format json returned %d, want 2. Stderr: %s", code, stderr.String())
 		}

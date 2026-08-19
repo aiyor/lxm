@@ -3,23 +3,22 @@ package incus
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 
+	"github.com/gorilla/websocket"
 	incus_client "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
-	"github.com/gorilla/websocket"
 	"golang.org/x/term"
 
 	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/common"
 )
 
 type Driver struct {
@@ -75,7 +74,7 @@ func NewUnixDriver(socket string) (*Driver, error) {
 	return NewDriver(client), nil
 }
 
-// NewRemoteDriver connects to a remote Incus HTTPS endpoint using mTLS.
+// NewRemoteDriver connects to a remote Incus HTTPS endpoint.
 func NewRemoteDriver(url string, args *incus_client.ConnectionArgs) (*Driver, error) {
 	client, err := incus_client.ConnectIncus(url, args)
 	if err != nil {
@@ -114,27 +113,7 @@ func (d *Driver) clusterClient() incus_client.InstanceServer {
 	return d.client
 }
 
-func waitOpContext(ctx context.Context, op incus_client.Operation) error {
-	if op == nil {
-		return nil
-	}
-	if ctx == nil {
-		return op.Wait()
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- op.Wait()
-	}()
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		_ = op.Cancel()
-		return ctx.Err()
-	}
-}
-
-func (d *Driver) GetInstance(name string) (*provider.Instance, string, error) {
+func (d *Driver) GetInstance(ctx context.Context, name string) (*provider.Instance, string, error) {
 	inst, etag, err := d.client.GetInstance(name)
 	if err != nil {
 		return nil, "", err
@@ -142,7 +121,7 @@ func (d *Driver) GetInstance(name string) (*provider.Instance, string, error) {
 	return toProviderInstance(inst, etag), etag, nil
 }
 
-func (d *Driver) ListInstances() ([]provider.Instance, error) {
+func (d *Driver) ListInstances(ctx context.Context) ([]provider.Instance, error) {
 	fullInstances, err := d.client.GetInstancesFull(api.InstanceTypeAny)
 	if err != nil {
 		return nil, err
@@ -154,26 +133,18 @@ func (d *Driver) ListInstances() ([]provider.Instance, error) {
 	return result, nil
 }
 
-func (d *Driver) CreateInstance(req provider.InstanceCreateRequest) error {
-	return d.CreateInstanceContext(context.Background(), req)
-}
-
-func (d *Driver) CreateInstanceContext(ctx context.Context, req provider.InstanceCreateRequest) error {
+func (d *Driver) CreateInstance(ctx context.Context, req provider.InstanceCreateRequest) error {
 	incusReq := toIncusInstancePost(req)
 	op, err := d.client.CreateInstance(incusReq)
 	if err != nil {
 		return err
 	}
-	return waitOpContext(ctx, op)
+	return common.WaitOpContext(ctx, op)
 }
 
-func (d *Driver) UpdateInstance(name string, req provider.InstanceUpdateRequest, etag string) error {
-	return d.UpdateInstanceContext(context.Background(), name, req, etag)
-}
-
-func (d *Driver) UpdateInstanceContext(ctx context.Context, name string, req provider.InstanceUpdateRequest, etag string) error {
+func (d *Driver) UpdateInstance(ctx context.Context, name string, req provider.InstanceUpdateRequest, etag string) error {
 	incusPut := api.InstancePut{
-		Config:      toIncusConfig(req.Config),
+		Config:      common.TranslateBootModeToDaemon(provider.InstanceTypeVM, req.Config),
 		Devices:     req.Devices,
 		Profiles:    req.Profiles,
 		Description: req.Description,
@@ -182,38 +153,26 @@ func (d *Driver) UpdateInstanceContext(ctx context.Context, name string, req pro
 	if err != nil {
 		return err
 	}
-	return waitOpContext(ctx, op)
+	return common.WaitOpContext(ctx, op)
 }
 
-func (d *Driver) DeleteInstance(name string) error {
-	return d.DeleteInstanceContext(context.Background(), name)
-}
-
-func (d *Driver) DeleteInstanceContext(ctx context.Context, name string) error {
+func (d *Driver) DeleteInstance(ctx context.Context, name string) error {
 	op, err := d.client.DeleteInstance(name)
 	if err != nil {
 		return err
 	}
-	return waitOpContext(ctx, op)
+	return common.WaitOpContext(ctx, op)
 }
 
-func (d *Driver) UpdateInstanceState(name string, action string, force bool) error {
-	return d.UpdateInstanceStateContext(context.Background(), name, action, force)
-}
-
-func (d *Driver) UpdateInstanceStateContext(ctx context.Context, name string, action string, force bool) error {
+func (d *Driver) UpdateInstanceState(ctx context.Context, name string, action string, force bool) error {
 	op, err := d.client.UpdateInstanceState(name, api.InstanceStatePut{Action: action, Force: force, Timeout: -1}, "")
 	if err != nil {
 		return err
 	}
-	return waitOpContext(ctx, op)
+	return common.WaitOpContext(ctx, op)
 }
 
-func (d *Driver) RebuildInstance(name string, req provider.InstanceRebuildRequest) error {
-	return d.RebuildInstanceContext(context.Background(), name, req)
-}
-
-func (d *Driver) RebuildInstanceContext(ctx context.Context, name string, req provider.InstanceRebuildRequest) error {
+func (d *Driver) RebuildInstance(ctx context.Context, name string, req provider.InstanceRebuildRequest) error {
 	op, err := d.client.RebuildInstance(name, api.InstanceRebuildPost{
 		Source: api.InstanceSource{
 			Type:        req.Source.Type,
@@ -227,14 +186,10 @@ func (d *Driver) RebuildInstanceContext(ctx context.Context, name string, req pr
 	if err != nil {
 		return err
 	}
-	return waitOpContext(ctx, op)
+	return common.WaitOpContext(ctx, op)
 }
 
-func (d *Driver) CreateInstanceSnapshot(name string, snapName string, stateful bool) error {
-	return d.CreateInstanceSnapshotContext(context.Background(), name, snapName, stateful)
-}
-
-func (d *Driver) CreateInstanceSnapshotContext(ctx context.Context, name string, snapName string, stateful bool) error {
+func (d *Driver) CreateInstanceSnapshot(ctx context.Context, name string, snapName string, stateful bool) error {
 	op, err := d.client.CreateInstanceSnapshot(name, api.InstanceSnapshotsPost{
 		Name:     snapName,
 		Stateful: stateful,
@@ -242,22 +197,18 @@ func (d *Driver) CreateInstanceSnapshotContext(ctx context.Context, name string,
 	if err != nil {
 		return err
 	}
-	return waitOpContext(ctx, op)
+	return common.WaitOpContext(ctx, op)
 }
 
-func (d *Driver) DeleteInstanceSnapshot(name string, snapName string) error {
-	return d.DeleteInstanceSnapshotContext(context.Background(), name, snapName)
-}
-
-func (d *Driver) DeleteInstanceSnapshotContext(ctx context.Context, name string, snapName string) error {
+func (d *Driver) DeleteInstanceSnapshot(ctx context.Context, name string, snapName string) error {
 	op, err := d.client.DeleteInstanceSnapshot(name, snapName)
 	if err != nil {
 		return err
 	}
-	return waitOpContext(ctx, op)
+	return common.WaitOpContext(ctx, op)
 }
 
-func (d *Driver) GetInstanceSnapshots(name string) ([]provider.Snapshot, error) {
+func (d *Driver) GetInstanceSnapshots(ctx context.Context, name string) ([]provider.Snapshot, error) {
 	snaps, err := d.client.GetInstanceSnapshots(name)
 	if err != nil {
 		return nil, err
@@ -273,19 +224,15 @@ func (d *Driver) GetInstanceSnapshots(name string) ([]provider.Snapshot, error) 
 	return result, nil
 }
 
-func (d *Driver) RestoreInstanceSnapshot(name string, snapName string) error {
-	return d.RestoreInstanceSnapshotContext(context.Background(), name, snapName)
-}
-
-func (d *Driver) RestoreInstanceSnapshotContext(ctx context.Context, name string, snapName string) error {
+func (d *Driver) RestoreInstanceSnapshot(ctx context.Context, name string, snapName string) error {
 	op, err := d.client.UpdateInstance(name, api.InstancePut{Restore: snapName}, "")
 	if err != nil {
 		return err
 	}
-	return waitOpContext(ctx, op)
+	return common.WaitOpContext(ctx, op)
 }
 
-func (d *Driver) GetNetworks() ([]provider.Network, error) {
+func (d *Driver) GetNetworks(ctx context.Context) ([]provider.Network, error) {
 	nets, err := d.clusterClient().GetNetworks()
 	if err != nil {
 		return nil, err
@@ -305,7 +252,7 @@ func (d *Driver) GetNetworks() ([]provider.Network, error) {
 	return result, nil
 }
 
-func (d *Driver) GetNetwork(name string) (*provider.Network, string, error) {
+func (d *Driver) GetNetwork(ctx context.Context, name string) (*provider.Network, string, error) {
 	n, etag, err := d.clusterClient().GetNetwork(name)
 	if err != nil {
 		return nil, "", err
@@ -318,11 +265,12 @@ func (d *Driver) GetNetwork(name string) (*provider.Network, string, error) {
 		Managed:     n.Managed,
 		Status:      n.Status,
 		Locations:   n.Locations,
+		UsedBy:      n.UsedBy,
 		ETag:        etag,
 	}, etag, nil
 }
 
-func (d *Driver) CreateNetwork(net provider.NetworkCreateRequest) error {
+func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRequest) error {
 	return d.clusterClient().CreateNetwork(api.NetworksPost{
 		NetworkPut: api.NetworkPut{
 			Description: net.Description,
@@ -333,18 +281,18 @@ func (d *Driver) CreateNetwork(net provider.NetworkCreateRequest) error {
 	})
 }
 
-func (d *Driver) UpdateNetwork(name string, net provider.NetworkUpdateRequest, etag string) error {
+func (d *Driver) UpdateNetwork(ctx context.Context, name string, net provider.NetworkUpdateRequest, etag string) error {
 	return d.clusterClient().UpdateNetwork(name, api.NetworkPut{
 		Description: net.Description,
 		Config:      net.Config,
 	}, etag)
 }
 
-func (d *Driver) DeleteNetwork(name string) error {
+func (d *Driver) DeleteNetwork(ctx context.Context, name string) error {
 	return d.clusterClient().DeleteNetwork(name)
 }
 
-func (d *Driver) GetNetworkACLs() ([]provider.NetworkACL, error) {
+func (d *Driver) GetNetworkACLs(ctx context.Context) ([]provider.NetworkACL, error) {
 	acls, err := d.clusterClient().GetNetworkACLs()
 	if err != nil {
 		return nil, err
@@ -356,7 +304,7 @@ func (d *Driver) GetNetworkACLs() ([]provider.NetworkACL, error) {
 	return result, nil
 }
 
-func (d *Driver) GetNetworkACL(name string) (*provider.NetworkACL, string, error) {
+func (d *Driver) GetNetworkACL(ctx context.Context, name string) (*provider.NetworkACL, string, error) {
 	acl, etag, err := d.clusterClient().GetNetworkACL(name)
 	if err != nil {
 		return nil, "", err
@@ -365,7 +313,7 @@ func (d *Driver) GetNetworkACL(name string) (*provider.NetworkACL, string, error
 	return &res, etag, nil
 }
 
-func (d *Driver) CreateNetworkACL(acl provider.NetworkACLCreateRequest) error {
+func (d *Driver) CreateNetworkACL(ctx context.Context, acl provider.NetworkACLCreateRequest) error {
 	return d.clusterClient().CreateNetworkACL(api.NetworkACLsPost{
 		NetworkACLPost: api.NetworkACLPost{
 			Name: acl.Name,
@@ -379,7 +327,7 @@ func (d *Driver) CreateNetworkACL(acl provider.NetworkACLCreateRequest) error {
 	})
 }
 
-func (d *Driver) UpdateNetworkACL(name string, acl provider.NetworkACLUpdateRequest, etag string) error {
+func (d *Driver) UpdateNetworkACL(ctx context.Context, name string, acl provider.NetworkACLUpdateRequest, etag string) error {
 	return d.clusterClient().UpdateNetworkACL(name, api.NetworkACLPut{
 		Description: acl.Description,
 		Egress:      toIncusRules(acl.Egress),
@@ -388,15 +336,15 @@ func (d *Driver) UpdateNetworkACL(name string, acl provider.NetworkACLUpdateRequ
 	}, etag)
 }
 
-func (d *Driver) DeleteNetworkACL(name string) error {
+func (d *Driver) DeleteNetworkACL(ctx context.Context, name string) error {
 	return d.clusterClient().DeleteNetworkACL(name)
 }
 
-func (d *Driver) GetStoragePoolNames() ([]string, error) {
+func (d *Driver) GetStoragePoolNames(ctx context.Context) ([]string, error) {
 	return d.client.GetStoragePoolNames()
 }
 
-func (d *Driver) GetStoragePoolVolume(pool, volType, name string) (*provider.StorageVolume, string, error) {
+func (d *Driver) GetStoragePoolVolume(ctx context.Context, pool, volType, name string) (*provider.StorageVolume, string, error) {
 	v, etag, err := d.client.GetStoragePoolVolume(pool, volType, name)
 	if err != nil {
 		return nil, "", err
@@ -406,13 +354,15 @@ func (d *Driver) GetStoragePoolVolume(pool, volType, name string) (*provider.Sto
 		Type:        v.Type,
 		ContentType: v.ContentType,
 		Description: v.Description,
+		Pool:        pool,
 		Config:      v.Config,
 		Location:    v.Location,
+		UsedBy:      v.UsedBy,
 		ETag:        etag,
 	}, etag, nil
 }
 
-func (d *Driver) GetStoragePoolVolumes(pool string) ([]provider.StorageVolume, error) {
+func (d *Driver) GetStoragePoolVolumes(ctx context.Context, pool string) ([]provider.StorageVolume, error) {
 	vols, err := d.client.GetStoragePoolVolumes(pool)
 	if err != nil {
 		return nil, err
@@ -424,14 +374,16 @@ func (d *Driver) GetStoragePoolVolumes(pool string) ([]provider.StorageVolume, e
 			Type:        v.Type,
 			ContentType: v.ContentType,
 			Description: v.Description,
+			Pool:        pool,
 			Config:      v.Config,
 			Location:    v.Location,
+			UsedBy:      v.UsedBy,
 		}
 	}
 	return result, nil
 }
 
-func (d *Driver) CreateStoragePoolVolume(pool string, vol provider.StorageVolumeCreateRequest) error {
+func (d *Driver) CreateStoragePoolVolume(ctx context.Context, pool string, vol provider.StorageVolumeCreateRequest) error {
 	return d.client.CreateStoragePoolVolume(pool, api.StorageVolumesPost{
 		Name:        vol.Name,
 		Type:        vol.Type,
@@ -443,18 +395,18 @@ func (d *Driver) CreateStoragePoolVolume(pool string, vol provider.StorageVolume
 	})
 }
 
-func (d *Driver) UpdateStoragePoolVolume(pool, volType, name string, vol provider.StorageVolumeUpdateRequest, etag string) error {
+func (d *Driver) UpdateStoragePoolVolume(ctx context.Context, pool, volType, name string, vol provider.StorageVolumeUpdateRequest, etag string) error {
 	return d.client.UpdateStoragePoolVolume(pool, volType, name, api.StorageVolumePut{
 		Description: vol.Description,
 		Config:      vol.Config,
 	}, etag)
 }
 
-func (d *Driver) DeleteStoragePoolVolume(pool, volType, name string) error {
+func (d *Driver) DeleteStoragePoolVolume(ctx context.Context, pool, volType, name string) error {
 	return d.client.DeleteStoragePoolVolume(pool, volType, name)
 }
 
-func (d *Driver) GetImages() ([]provider.Image, error) {
+func (d *Driver) GetImages(ctx context.Context) ([]provider.Image, error) {
 	images, err := d.client.GetImages()
 	if err != nil {
 		return nil, err
@@ -480,7 +432,7 @@ func (d *Driver) GetImages() ([]provider.Image, error) {
 	return result, nil
 }
 
-func (d *Driver) GetImageAliases() ([]provider.ImageAlias, error) {
+func (d *Driver) GetImageAliases(ctx context.Context) ([]provider.ImageAlias, error) {
 	aliases, err := d.client.GetImageAliases()
 	if err != nil {
 		return nil, err
@@ -513,18 +465,18 @@ func (d *Driver) CopyRemoteImage(ctx context.Context, remoteURL, alias, imageTyp
 	if err != nil {
 		return err
 	}
-	return waitOpContext(ctx, op)
+	return common.WaitOpContext(ctx, op)
 }
 
-func (d *Driver) IsClustered() bool {
+func (d *Driver) IsClustered(ctx context.Context) (bool, error) {
 	server, _, err := d.client.GetServer()
 	if err != nil {
-		return false
+		return false, err
 	}
-	return server.Environment.ServerClustered
+	return server.Environment.ServerClustered, nil
 }
 
-func (d *Driver) GetClusterMembers() ([]provider.ClusterMember, error) {
+func (d *Driver) GetClusterMembers(ctx context.Context) ([]provider.ClusterMember, error) {
 	members, err := d.client.GetClusterMembers()
 	if err != nil {
 		return nil, err
@@ -544,7 +496,7 @@ func (d *Driver) GetClusterMembers() ([]provider.ClusterMember, error) {
 	return result, nil
 }
 
-func (d *Driver) GetClusterMember(name string) (*provider.ClusterMember, error) {
+func (d *Driver) GetClusterMember(ctx context.Context, name string) (*provider.ClusterMember, error) {
 	m, _, err := d.client.GetClusterMember(name)
 	if err != nil {
 		return nil, err
@@ -560,11 +512,11 @@ func (d *Driver) GetClusterMember(name string) (*provider.ClusterMember, error) 
 	}, nil
 }
 
-func (d *Driver) GetProjects() ([]string, error) {
+func (d *Driver) GetProjects(ctx context.Context) ([]string, error) {
 	return d.client.GetProjectNames()
 }
 
-func (d *Driver) ProjectExists(name string) (bool, error) {
+func (d *Driver) ProjectExists(ctx context.Context, name string) (bool, error) {
 	projects, err := d.client.GetProjectNames()
 	if err != nil {
 		return false, err
@@ -577,7 +529,7 @@ func (d *Driver) ProjectExists(name string) (bool, error) {
 	return false, nil
 }
 
-func (d *Driver) CreateProject(name string, description string) error {
+func (d *Driver) CreateProject(ctx context.Context, name string, description string) error {
 	return d.client.CreateProject(api.ProjectsPost{
 		Name: name,
 		ProjectPut: api.ProjectPut{
@@ -594,103 +546,18 @@ func (d *Driver) HasExtension(name string) bool {
 }
 
 func (d *Driver) ClassifyError(err error, intent string) (int, bool) {
-	if err == nil {
-		return 0, false
-	}
-
-	errStr := err.Error()
-	var apiErr api.StatusError
-	if errors.As(err, &apiErr) {
-		code := apiErr.Status()
-		if code == 404 {
-			if intent == "lookup" {
-				return 5, false // TARGET_NOT_FOUND
-			}
-			return 0, false // existence check -> create signal
-		}
-		if isETagConflictMessage(errStr) || code == 412 {
-			return 4, true // PROVIDER_ERROR, ETag mismatch retryable
-		}
-		return 4, false
-	}
-
-	if strings.Contains(errStr, "not found") {
-		if intent == "lookup" {
-			return 5, false
-		}
-		return 0, false
-	}
-
-	if isETagConflictMessage(errStr) || strings.Contains(errStr, "412") {
-		return 4, true
-	}
-
-	return 4, false
+	return common.ClassifyError(err, intent)
 }
 
-func isETagConflictMessage(errStr string) bool {
-	lower := strings.ToLower(errStr)
-	return strings.Contains(lower, "etag mismatch") ||
-		strings.Contains(lower, "etag does not match") ||
-		strings.Contains(lower, "configuration has been modified since this change began")
+func (d *Driver) ResolveUID(ctx context.Context, name string, username string) (uint32, error) {
+	return common.ResolveUID(ctx, d.ExecInstance, name, username)
 }
 
-func (d *Driver) ResolveUID(name string, username string) (uint32, error) {
-	if username == "root" {
-		return 0, nil
-	}
-
-	res, err := d.ExecInstance(name, []string{"id", "-u", username}, 0, nil)
-	if err != nil {
-		return 0, fmt.Errorf("resolving UID for %q: %w", username, err)
-	}
-	if res.ExitCode != 0 {
-		return 0, fmt.Errorf("resolving UID for %q: id exited with code %d", username, res.ExitCode)
-	}
-
-	lines := strings.Split(strings.TrimSpace(res.Combined()), "\n")
-	uidStr := strings.TrimSpace(lines[0])
-	uid, err := strconv.ParseUint(uidStr, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("parsing UID %q for %q: %w", uidStr, username, err)
-	}
-
-	return uint32(uid), nil
+func (d *Driver) ResolveUserEnv(ctx context.Context, name string, username string) (*provider.UserEnv, error) {
+	return common.ResolveUserEnv(ctx, d.ExecInstance, name, username)
 }
 
-func (d *Driver) ResolveUserEnv(name string, username string) (*provider.UserEnv, error) {
-	res, err := d.ExecInstance(name, []string{"getent", "passwd", username}, 0, nil)
-	if err != nil {
-		return nil, fmt.Errorf("getting passwd entry for %q: %w", username, err)
-	}
-	if res.ExitCode != 0 {
-		return nil, fmt.Errorf("user %q not found in container (getent exited with code %d)", username, res.ExitCode)
-	}
-
-	lines := strings.Split(strings.TrimSpace(res.Combined()), "\n")
-	firstLine := strings.TrimSpace(lines[0])
-	parts := strings.Split(firstLine, ":")
-	if len(parts) < 7 {
-		return nil, fmt.Errorf("malformed passwd entry for %q: %s", username, res.Combined())
-	}
-
-	uid, _ := strconv.ParseUint(parts[2], 10, 32)
-	gid, _ := strconv.ParseUint(parts[3], 10, 32)
-
-	return &provider.UserEnv{
-		UID:   uint32(uid),
-		GID:   uint32(gid),
-		Home:  parts[5],
-		Shell: parts[6],
-		User:  username,
-	}, nil
-}
-
-func (d *Driver) ExecInstance(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
-	return d.ExecInstanceContext(context.Background(), name, cmd, uid, env)
-}
-
-func (d *Driver) ExecInstanceContext(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+func (d *Driver) ExecInstance(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
 	var stdout, stderr bytes.Buffer
 
 	execReq := api.InstanceExecPost{
@@ -711,15 +578,14 @@ func (d *Driver) ExecInstanceContext(ctx context.Context, name string, cmd []str
 	if err != nil {
 		return provider.ExecResult{ExitCode: -1}, err
 	}
-	waitErr := waitOpContext(ctx, op)
+	waitErr := common.WaitOpContext(ctx, op)
 
-	meta := op.Get()
-	exitCode := -1
-	if returnVal, ok := meta.Metadata["return"]; ok {
-		if codeFloat, ok := returnVal.(float64); ok {
-			exitCode = int(codeFloat)
-		}
+	var metadata map[string]interface{}
+	if op != nil {
+		meta := op.Get()
+		metadata = meta.Metadata
 	}
+	exitCode, finalErr := common.ExtractExecExitCode(metadata, waitErr)
 
 	res := provider.ExecResult{
 		ExitCode: exitCode,
@@ -727,13 +593,10 @@ func (d *Driver) ExecInstanceContext(ctx context.Context, name string, cmd []str
 		Stderr:   stderr.String(),
 	}
 
-	if waitErr != nil {
-		return res, waitErr
-	}
-	return res, nil
+	return res, finalErr
 }
 
-func (d *Driver) InteractiveExecInstance(name string, cmd []string, uid uint32, env map[string]string) error {
+func (d *Driver) InteractiveExecInstance(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) error {
 	stdinFd := int(os.Stdin.Fd())
 	var oldState *term.State
 	var isTerminal bool
@@ -861,7 +724,7 @@ func (d *Driver) InteractiveExecInstance(name string, cmd []string, uid uint32, 
 	return op.Wait()
 }
 
-func (d *Driver) CreateInstanceFile(name string, path string, content io.Reader, mode int, uid, gid int64) error {
+func (d *Driver) CreateInstanceFile(ctx context.Context, name string, path string, content io.Reader, mode int, uid, gid int64) error {
 	var readSeeker io.ReadSeeker
 	if rs, ok := content.(io.ReadSeeker); ok {
 		readSeeker = rs
@@ -884,91 +747,35 @@ func (d *Driver) CreateInstanceFile(name string, path string, content io.Reader,
 	return d.client.CreateInstanceFile(name, path, args)
 }
 
-func (d *Driver) DeleteInstanceFile(name string, path string) error {
+func (d *Driver) DeleteInstanceFile(ctx context.Context, name string, path string) error {
 	return d.client.DeleteInstanceFile(name, path)
 }
 
-func (d *Driver) GetIP(name string) (string, error) {
+func (d *Driver) GetIP(ctx context.Context, name string) (string, error) {
 	state, _, err := d.client.GetInstanceState(name)
 	if err != nil {
 		return "", err
 	}
-
-	// Try to find the first global IPv4 address
-	for _, network := range state.Network {
-		for _, addr := range network.Addresses {
-			if addr.Family == "inet" && addr.Scope == "global" {
-				return addr.Address, nil
-			}
-		}
+	pState := toProviderInstanceState(state)
+	if pState != nil {
+		return common.ExtractIPv4(pState.Network)
 	}
-
-	// Fallback to any IPv4 if global not found (e.g. some bridge setups)
-	for _, network := range state.Network {
-		for _, addr := range network.Addresses {
-			if addr.Family == "inet" {
-				return addr.Address, nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("no IPv4 address found for %q", name)
+	return "", fmt.Errorf("no state available for %q", name)
 }
 
 // ============================================================================
 // Helpers & Mapping Functions
 // ============================================================================
 
-func toIncusConfig(cfg map[string]string) map[string]string {
-	if cfg == nil {
-		return nil
-	}
-	out := make(map[string]string, len(cfg))
-	for k, v := range cfg {
-		if k == "boot.mode" {
-			switch v {
-			case "uefi-nosecureboot":
-				out["security.secureboot"] = "false"
-			case "uefi-secureboot":
-				out["security.secureboot"] = "true"
-			case "bios":
-				out["security.secureboot"] = "false"
-				out["security.csm"] = "true"
-			}
-			continue
-		}
-		out[k] = v
-	}
-	return out
-}
-
-func toProviderConfig(cfg map[string]string) map[string]string {
-	if cfg == nil {
-		return nil
-	}
-	out := make(map[string]string, len(cfg))
-	for k, v := range cfg {
-		out[k] = v
-	}
-	if _, ok := out["boot.mode"]; !ok {
-		switch out["security.secureboot"] {
-		case "false":
-			if out["security.csm"] == "true" {
-				out["boot.mode"] = "bios"
-			} else {
-				out["boot.mode"] = "uefi-nosecureboot"
-			}
-		case "true":
-			out["boot.mode"] = "uefi-secureboot"
-		}
-	}
-	return out
-}
-
 func toProviderInstance(inst *api.Instance, etag string) *provider.Instance {
 	if inst == nil {
 		return nil
 	}
+	cfg := inst.Config
+	if inst.Type == string(api.InstanceTypeVM) {
+		cfg = common.TranslateDaemonToBootMode(provider.InstanceTypeVM, cfg)
+	}
+
 	return &provider.Instance{
 		Name:            inst.Name,
 		Type:            provider.InstanceType(inst.Type),
@@ -976,8 +783,8 @@ func toProviderInstance(inst *api.Instance, etag string) *provider.Instance {
 		StatusCode:      int(inst.StatusCode),
 		Architecture:    inst.Architecture,
 		Location:        inst.Location,
-		Config:          toProviderConfig(inst.Config),
-		ExpandedConfig:  toProviderConfig(inst.ExpandedConfig),
+		Config:          cfg,
+		ExpandedConfig:  inst.ExpandedConfig,
 		Devices:         inst.Devices,
 		ExpandedDevices: inst.ExpandedDevices,
 		Profiles:        inst.Profiles,
@@ -1115,6 +922,11 @@ func toIncusRules(rules []provider.NetworkACLRule) []api.NetworkACLRule {
 }
 
 func toIncusInstancePost(req provider.InstanceCreateRequest) api.InstancesPost {
+	cfg := req.Config
+	if req.Type == provider.InstanceTypeVM || req.Type == provider.InstanceTypeVirtualMachine {
+		cfg = common.TranslateBootModeToDaemon(provider.InstanceTypeVM, cfg)
+	}
+
 	return api.InstancesPost{
 		Name: req.Name,
 		Type: api.InstanceType(req.Type),
@@ -1127,7 +939,7 @@ func toIncusInstancePost(req provider.InstanceCreateRequest) api.InstancesPost {
 			Secret:      req.Source.Secret,
 		},
 		InstancePut: api.InstancePut{
-			Config:    toIncusConfig(req.Config),
+			Config:    cfg,
 			Devices:   req.Devices,
 			Profiles:  req.Profiles,
 			Ephemeral: req.Ephemeral,

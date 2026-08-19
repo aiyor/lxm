@@ -13,7 +13,6 @@ import (
 	"syscall"
 
 	"github.com/aiyor/lxm/internal/apply"
-	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/output"
 	"github.com/aiyor/lxm/internal/plan"
 	"github.com/aiyor/lxm/internal/provider"
@@ -53,11 +52,11 @@ func main() {
 	os.Exit(code)
 }
 
-func run(args []string, stdout, stderr io.Writer, svc lxd.InstanceService) int {
+func run(args []string, stdout, stderr io.Writer, svc provider.Driver) int {
 	return runWithContext(context.Background(), args, stdout, stderr, svc)
 }
 
-func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer, svc lxd.InstanceService) int {
+func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer, svc provider.Driver) int {
 	logLevelVar.Set(slog.LevelInfo)
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: logLevelVar}))
 
@@ -66,11 +65,11 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 	lastCommandResults = nil
 
 	var once sync.Once
-	var cachedSvc lxd.InstanceService
+	var cachedSvc provider.Driver
 	var svcErr error
 	var opts *cmdOptions
 
-	getSvc := func() (lxd.InstanceService, error) {
+	getSvc := func() (provider.Driver, error) {
 		if svc != nil {
 			return svc, nil
 		}
@@ -87,7 +86,7 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 				svcErr = &exitError{code: 4, err: fmt.Errorf("failed to connect to provider: %w", err)}
 				return
 			}
-			cachedSvc = lxd.NewServiceFromDriver(d)
+			cachedSvc = d
 		})
 		if svcErr != nil {
 			return nil, svcErr

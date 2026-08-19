@@ -1,6 +1,7 @@
 package incus_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -85,6 +86,7 @@ func TestClassifyIncusError(t *testing.T) {
 }
 
 func TestIncusDriverMockServer(t *testing.T) {
+	ctx := context.Background()
 	mux := http.NewServeMux()
 
 	// Server info /1.0
@@ -197,16 +199,17 @@ func TestIncusDriverMockServer(t *testing.T) {
 	if !d.HasExtension("instances_rebuild") {
 		t.Errorf("expected instances_rebuild extension")
 	}
-	if !d.IsClustered() {
-		t.Errorf("expected clustered")
+	clustered, err := d.IsClustered(ctx)
+	if err != nil || !clustered {
+		t.Errorf("expected clustered, got %v, err=%v", clustered, err)
 	}
 
-	members, err := d.GetClusterMembers()
+	members, err := d.GetClusterMembers(ctx)
 	if err != nil || len(members) != 1 || members[0].ServerName != "node1" {
 		t.Errorf("unexpected cluster members: %+v (err=%v)", members, err)
 	}
 
-	instances, err := d.ListInstances()
+	instances, err := d.ListInstances(ctx)
 	if err != nil || len(instances) != 1 || instances[0].Name != "c1" {
 		t.Fatalf("unexpected instances: %+v (err=%v)", instances, err)
 	}
@@ -214,22 +217,22 @@ func TestIncusDriverMockServer(t *testing.T) {
 		t.Errorf("expected state and network on instance: %+v", instances[0])
 	}
 
-	ip, err := d.GetIP("c1")
+	ip, err := d.GetIP(ctx, "c1")
 	if err != nil || ip != "10.0.0.5" {
 		t.Errorf("unexpected IP for c1: %s (err=%v)", ip, err)
 	}
 
-	networks, err := d.GetNetworks()
+	networks, err := d.GetNetworks(ctx)
 	if err != nil || len(networks) != 1 {
 		t.Errorf("unexpected networks: %+v (err=%v)", networks, err)
 	}
 
-	acls, err := d.GetNetworkACLs()
+	acls, err := d.GetNetworkACLs(ctx)
 	if err != nil || len(acls) != 1 {
 		t.Errorf("unexpected network acls: %+v (err=%v)", acls, err)
 	}
 
-	projects, err := d.GetProjects()
+	projects, err := d.GetProjects(ctx)
 	if err != nil || len(projects) != 1 {
 		t.Errorf("unexpected projects: %+v (err=%v)", projects, err)
 	}

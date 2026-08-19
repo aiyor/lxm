@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/aiyor/lxm/internal/lxd"
+	"github.com/aiyor/lxm/internal/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -39,7 +39,7 @@ type cmdOptions struct {
 	skipRemote bool
 }
 
-type serviceGetter func() (lxd.InstanceService, error)
+type serviceGetter func() (provider.Driver, error)
 
 func newRootCmd(ctx context.Context, stdout, stderr io.Writer, getSvc serviceGetter, logger *slog.Logger) (*cobra.Command, *cmdOptions) {
 	opts := &cmdOptions{}

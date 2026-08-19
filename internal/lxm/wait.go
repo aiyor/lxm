@@ -19,7 +19,7 @@ func (m *Manager) WaitForCloudInit(ctx context.Context, name string, timeout tim
 		case <-ctx.Done():
 			return fmt.Errorf("timeout waiting for cloud-init on %q (%v)", name, timeout)
 		default:
-			res, err := m.client.ExecInstance(name, []string{"cloud-init", "status", "--long"}, 0, nil)
+			res, err := m.client.ExecInstance(ctx, name, []string{"cloud-init", "status", "--long"}, 0, nil)
 			if err != nil {
 				time.Sleep(pollInterval)
 				continue
@@ -52,7 +52,7 @@ func (m *Manager) WaitForNetwork(ctx context.Context, name string, timeout time.
 		case <-ctx.Done():
 			return fmt.Errorf("timeout waiting for network on %q (%v)", name, timeout)
 		default:
-			res, err := m.client.ExecInstance(name, []string{"ip", "-4", "route", "show", "default"}, 0, nil)
+			res, err := m.client.ExecInstance(ctx, name, []string{"ip", "-4", "route", "show", "default"}, 0, nil)
 			if err == nil && res.ExitCode == 0 && strings.TrimSpace(res.Combined()) != "" {
 				m.logger.Info("Network interface is ready", "name", name)
 				return nil

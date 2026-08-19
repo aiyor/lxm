@@ -1,19 +1,21 @@
 package fleet
 
 import (
+	"context"
 	"testing"
 
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/fake"
 )
 
 func TestGetInventory_Basic(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.Instances["c1"] = &api.Instance{
+	ctx := context.Background()
+	driver := fake.New()
+	driver.Instances["c1"] = &provider.Instance{
 		Name:         "c1",
 		Status:       "Running",
-		StatusCode:   api.Running,
+		StatusCode:   103,
 		Architecture: "x86_64",
 		Config: map[string]string{
 			"user.lxm.managed":           "true",
@@ -22,17 +24,17 @@ func TestGetInventory_Basic(t *testing.T) {
 			"user.lxm.recipe.setup.hash": "abc123hash",
 		},
 	}
-	fake.Instances["c2"] = &api.Instance{
+	driver.Instances["c2"] = &provider.Instance{
 		Name:         "c2",
 		Status:       "Stopped",
-		StatusCode:   api.Stopped,
+		StatusCode:   102,
 		Architecture: "x86_64",
 		Config: map[string]string{
 			"user.lxm.managed": "false",
 		},
 	}
 
-	inv, err := GetInventory(fake)
+	inv, err := GetInventory(ctx, driver)
 	if err != nil {
 		t.Fatalf("GetInventory failed: %v", err)
 	}
@@ -94,29 +96,40 @@ func TestFindOrphans_ScopedToSelectorAndTarget(t *testing.T) {
 }
 
 func TestGetInventory_FallbacksAndIPs(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.Instances["c3"] = &api.Instance{
+	ctx := context.Background()
+	driver := fake.New()
+	driver.Instances["c3"] = &provider.Instance{
 		Name:         "c3",
 		Status:       "Running",
-		StatusCode:   api.Running,
+		StatusCode:   103,
 		Architecture: "x86_64",
 		Config: map[string]string{
 			"volatile.base_image": "alpine:3.18",
 		},
-	}
-	fake.IPs["c3"] = "10.0.0.15"
-	fake.Snapshots["c3"] = map[string]*api.InstanceSnapshot{
-		"snap1": {Name: "c3/snap1"},
+		State: &provider.InstanceState{
+			Status:     "Running",
+			StatusCode: 103,
+			Network: map[string]provider.InstanceStateNetwork{
+				"eth0": {
+					Addresses: []provider.InstanceStateNetworkAddress{
+						{Family: "inet", Address: "10.0.0.15", Scope: "global"},
+					},
+				},
+			},
+		},
+		Snapshots: []provider.Snapshot{
+			{Name: "c3/snap1"},
+		},
 	}
 
-	fake.Instances["c4"] = &api.Instance{
+	driver.Instances["c4"] = &provider.Instance{
 		Name:         "c4",
 		Status:       "Stopped",
-		StatusCode:   api.Stopped,
+		StatusCode:   102,
 		Architecture: "x86_64",
 	}
 
-	inv, err := GetInventory(fake)
+	inv, err := GetInventory(ctx, driver)
 	if err != nil {
 		t.Fatalf("GetInventory failed: %v", err)
 	}

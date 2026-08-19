@@ -1,31 +1,32 @@
 package lxm
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/common"
 )
 
 func (m *Manager) CreateContainer(conf *config.Config, configBaseDir string) error {
+	ctx := context.Background()
 	m.logger.Info("Creating container", "name", conf.Name, "image", conf.Image)
 
-	source := api.InstanceSource{Type: "image"}
-	if lxd.IsHex(conf.Image) && len(conf.Image) >= 7 {
+	source := provider.InstanceSource{Type: "image"}
+	if common.IsHex(conf.Image) && len(conf.Image) >= 7 {
 		source.Fingerprint = conf.Image
 	} else {
 		source.Alias = conf.Image
 	}
 
-	req := api.InstancesPost{
-		Name:   conf.Name,
-		Source: source,
-		InstancePut: api.InstancePut{
-			Config:  make(map[string]string),
-			Devices: make(map[string]map[string]string),
-		},
+	req := provider.InstanceCreateRequest{
+		Name:    conf.Name,
+		Type:    provider.InstanceTypeContainer,
+		Source:  source,
+		Config:  make(map[string]string),
+		Devices: make(map[string]map[string]string),
 	}
 
 	cloudInitData, err := conf.ResolveCloudInit(configBaseDir)
@@ -54,7 +55,7 @@ func (m *Manager) CreateContainer(conf *config.Config, configBaseDir string) err
 	}
 
 	for _, mount := range conf.Mounts {
-		devName := lxd.DeviceName(mount.Path)
+		devName := common.DeviceName(mount.Path)
 		req.Devices[devName] = buildMountDevice(mount)
 		m.logger.Info("Adding mount", "source", mount.Source, "path", mount.Path)
 	}
@@ -70,13 +71,13 @@ func (m *Manager) CreateContainer(conf *config.Config, configBaseDir string) err
 		return nil
 	}
 
-	if err := m.client.CreateInstance(req); err != nil {
+	if err := m.client.CreateInstance(ctx, req); err != nil {
 		return fmt.Errorf("creating container: %w", err)
 	}
 	m.logger.Info("Container created", "name", conf.Name)
 
 	if !m.noStart {
-		if err := m.client.UpdateInstanceState(conf.Name, "start", false); err != nil {
+		if err := m.client.UpdateInstanceState(ctx, conf.Name, "start", false); err != nil {
 			return fmt.Errorf("starting container: %w", err)
 		}
 		m.logger.Info("Container started", "name", conf.Name)
@@ -88,7 +89,8 @@ func (m *Manager) CreateContainer(conf *config.Config, configBaseDir string) err
 	return m.runPostCreate(conf, configBaseDir, cloudInitData != "")
 }
 
-func (m *Manager) UpdateContainer(instance *api.Instance, etag string, conf *config.Config, configBaseDir string) (bool, error) {
+func (m *Manager) UpdateContainer(instance *provider.Instance, etag string, conf *config.Config, configBaseDir string) (bool, error) {
+	ctx := context.Background()
 	m.logger.Info("Checking container state", "name", conf.Name)
 
 	configChanged, err := m.updateContainerConfig(instance, conf, configBaseDir)
@@ -114,14 +116,14 @@ func (m *Manager) UpdateContainer(instance *api.Instance, etag string, conf *con
 		return true, nil
 	}
 
-	if err := m.client.UpdateInstance(conf.Name, instance.Writable(), etag); err != nil {
+	if err := m.client.UpdateInstance(ctx, conf.Name, instance.Writable(), etag); err != nil {
 		return true, fmt.Errorf("updating container: %w", err)
 	}
 	m.logger.Info("Container configuration updated", "name", conf.Name)
 	return true, nil
 }
 
-func (m *Manager) updateContainerConfig(instance *api.Instance, conf *config.Config, configBaseDir string) (bool, error) {
+func (m *Manager) updateContainerConfig(instance *provider.Instance, conf *config.Config, configBaseDir string) (bool, error) {
 	changed := false
 	if instance.Config == nil {
 		instance.Config = make(map[string]string)
@@ -174,12 +176,12 @@ func (m *Manager) updateContainerConfig(instance *api.Instance, conf *config.Con
 	return changed, nil
 }
 
-func (m *Manager) updateContainerMounts(instance *api.Instance, conf *config.Config) bool {
+func (m *Manager) updateContainerMounts(instance *provider.Instance, conf *config.Config) bool {
 	changed := false
 	desiredDevices := make(map[string]bool)
 
 	for _, mount := range conf.Mounts {
-		devName := lxd.DeviceName(mount.Path)
+		devName := common.DeviceName(mount.Path)
 		desiredDevices[devName] = true
 
 		expectedRecursive := "false"
@@ -217,7 +219,7 @@ func (m *Manager) updateContainerMounts(instance *api.Instance, conf *config.Con
 	return changed
 }
 
-func (m *Manager) updateContainerNetworks(instance *api.Instance, conf *config.Config) bool {
+func (m *Manager) updateContainerNetworks(instance *provider.Instance, conf *config.Config) bool {
 	changed := false
 	desiredDevices := make(map[string]bool)
 
@@ -245,22 +247,23 @@ func (m *Manager) updateContainerNetworks(instance *api.Instance, conf *config.C
 }
 
 func (m *Manager) DeleteContainer(name string) error {
-	instance, _, err := m.client.GetInstance(name)
+	ctx := context.Background()
+	instance, _, err := m.client.GetInstance(ctx, name)
 	if err != nil {
-		if code, _ := m.client.ClassifyLXDError(err, "lookup"); code == 5 {
+		if code, _ := m.client.ClassifyError(err, "lookup"); code == 5 {
 			m.logger.Info("Container does not exist. Nothing to delete.", "name", name)
 			return nil
 		}
 		return fmt.Errorf("getting container %q for deletion: %w", name, err)
 	}
 
-	if instance.StatusCode != api.Stopped {
+	if instance.StatusCode != 102 { // 102 is Stopped
 		m.logger.Info("Stopping container", "name", name)
 		if m.dryRun {
 			m.logger.Info("Dry-run: would stop and delete container", "name", name)
 			return nil
 		}
-		if err := m.client.UpdateInstanceState(name, "stop", true); err != nil {
+		if err := m.client.UpdateInstanceState(ctx, name, "stop", true); err != nil {
 			return fmt.Errorf("stopping container: %w", err)
 		}
 	}
@@ -271,7 +274,7 @@ func (m *Manager) DeleteContainer(name string) error {
 	}
 
 	m.logger.Info("Deleting container", "name", name)
-	if err := m.client.DeleteInstance(name); err != nil {
+	if err := m.client.DeleteInstance(ctx, name); err != nil {
 		return fmt.Errorf("deleting container: %w", err)
 	}
 	m.logger.Info("Container deleted", "name", name)
@@ -279,7 +282,8 @@ func (m *Manager) DeleteContainer(name string) error {
 }
 
 func (m *Manager) UpdateCloudInit(name string, data []byte) error {
-	instance, etag, err := m.client.GetInstance(name)
+	ctx := context.Background()
+	instance, etag, err := m.client.GetInstance(ctx, name)
 	if err != nil {
 		return fmt.Errorf("failed to get container %q: %w", name, err)
 	}
@@ -294,5 +298,5 @@ func (m *Manager) UpdateCloudInit(name string, data []byte) error {
 		return nil
 	}
 
-	return m.client.UpdateInstance(name, instance.Writable(), etag)
+	return m.client.UpdateInstance(ctx, name, instance.Writable(), etag)
 }

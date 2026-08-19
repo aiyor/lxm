@@ -9,7 +9,8 @@ import (
 	"testing"
 
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/fake"
 )
 
 func TestRemoteCLI_Lifecycle(t *testing.T) {
@@ -18,8 +19,8 @@ func TestRemoteCLI_Lifecycle(t *testing.T) {
 
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mockGetter := func() (lxd.InstanceService, error) {
-		return lxd.NewFakeInstanceServer(), nil
+	mockGetter := func() (provider.Driver, error) {
+		return fake.New(), nil
 	}
 
 	// 1. List initial default remotes
@@ -91,8 +92,8 @@ func TestRemoteCLI_Lifecycle(t *testing.T) {
 }
 
 func TestResolveFleetService(t *testing.T) {
-	baseSvc := lxd.NewFakeInstanceServer()
-	baseGetter := func() (lxd.InstanceService, error) {
+	baseSvc := fake.New()
+	baseGetter := func() (provider.Driver, error) {
 		return baseSvc, nil
 	}
 

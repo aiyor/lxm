@@ -1,13 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/network"
 	"github.com/aiyor/lxm/internal/plan"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
 )
 
 // computeNetworkPlan performs the fleet-scoped network reconciliation for an
@@ -17,7 +17,7 @@ import (
 //
 // Config/policy/union violations return exit code 3; a missing network_acl
 // extension (with grouped vswitches declared) returns exit code 4.
-func computeNetworkPlan(svc lxd.InstanceService, loaded []*config.Config, netReconciler plan.NetworkReconciler) (*plan.NetworkPlan, []string, error) {
+func computeNetworkPlan(ctx context.Context, svc provider.Driver, loaded []*config.Config, netReconciler plan.NetworkReconciler) (*plan.NetworkPlan, []string, error) {
 	fleet, err := network.Union(loaded)
 	if err != nil {
 		return nil, nil, &exitError{code: 3, err: err}
@@ -41,47 +41,37 @@ func computeNetworkPlan(svc lxd.InstanceService, loaded []*config.Config, netRec
 	}
 
 	live := &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{},
-		ACLs:     map[string]*api.NetworkACL{},
+		Networks: map[string]*provider.Network{},
+		ACLs:     map[string]*provider.NetworkACL{},
 	}
 
 	// Fetch live networks/ACLs whenever the service exposes the network
 	// surface: even a vswitch-less fleet needs the live network set so the
-	// NIC unknown-parent check (§4) doesn't misfire on the stock lxdbr0.
-	// The NetworkService *requirement* is only enforced when vswitches are
-	// actually declared.
+	// NIC unknown-parent check (§4) doesn't misfire on the stock lxdbr0 / incusbr0.
 	if svc != nil {
-		netSvc, ok := svc.(lxd.NetworkService)
-		if !ok {
-			if len(fleet.VSwitches) > 0 {
-				return nil, nil, &exitError{code: 4, err: fmt.Errorf("LXD service does not support network operations (network_policy unavailable)")}
-			}
-		} else {
-			if hasGrouped && !svc.HasExtension("network_acl") {
-				return nil, nil, &exitError{code: 4, err: fmt.Errorf("LXD server lacks the network_acl extension; grouped vswitches cannot be policy-managed (needs LXD with bridge network ACL support)")}
-			}
-			// Live-state listing failures are fatal (exit 4): planning against
-			// an empty live set would propose create steps for existing objects
-			// and silently skip the adoption-refusal/foreign-ACL checks (§9).
-			nets, err := netSvc.GetNetworks()
+		if hasGrouped && !svc.HasExtension("network_acl") {
+			return nil, nil, &exitError{code: 4, err: fmt.Errorf("server lacks the network_acl extension; grouped vswitches cannot be policy-managed (needs provider with bridge network ACL support)")}
+		}
+		// Live-state listing failures are fatal (exit 4): planning against
+		// an empty live set would propose create steps for existing objects
+		// and silently skip the adoption-refusal/foreign-ACL checks (§9).
+		nets, err := svc.GetNetworks(ctx)
+		if err != nil {
+			return nil, nil, &exitError{code: 4, err: fmt.Errorf("listing provider networks: %w", err)}
+		}
+		for i := range nets {
+			live.Networks[nets[i].Name] = &nets[i]
+		}
+		// The ACL listing is only meaningful (and only safe to call) when
+		// the server actually has the network_acl extension; otherwise the
+		// endpoint 404s and would turn every vswitch-less plan into exit 4.
+		if svc.HasExtension("network_acl") {
+			acls, err := svc.GetNetworkACLs(ctx)
 			if err != nil {
-				return nil, nil, &exitError{code: 4, err: fmt.Errorf("listing LXD networks: %w", err)}
+				return nil, nil, &exitError{code: 4, err: fmt.Errorf("listing provider network ACLs: %w", err)}
 			}
-			for i := range nets {
-				live.Networks[nets[i].Name] = &nets[i]
-			}
-			// The ACL listing is only meaningful (and only safe to call) when
-			// the server actually has the network_acl extension; otherwise the
-			// endpoint 404s and would turn every vswitch-less plan into exit 4
-			// (round-2 review N2).
-			if svc.HasExtension("network_acl") {
-				acls, err := netSvc.GetNetworkACLs()
-				if err != nil {
-					return nil, nil, &exitError{code: 4, err: fmt.Errorf("listing LXD network ACLs: %w", err)}
-				}
-				for i := range acls {
-					live.ACLs[acls[i].Name] = &acls[i]
-				}
+			for i := range acls {
+				live.ACLs[acls[i].Name] = &acls[i]
 			}
 		}
 	}

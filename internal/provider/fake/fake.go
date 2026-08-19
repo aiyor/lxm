@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/common"
 )
 
 // FakeDriver is an in-memory implementation of provider.Driver for unit and integration testing.
@@ -40,6 +41,7 @@ type FakeDriver struct {
 	// Images
 	Images  map[string]*provider.Image
 	Aliases map[string]*provider.ImageAlias
+	Fetches []ImageFetchRecord
 
 	// Cluster
 	Clustered bool
@@ -49,12 +51,24 @@ type FakeDriver struct {
 	Projects map[string]string // name -> description
 
 	// Custom hook overrides
-	GetInstanceFunc     func(name string) (*provider.Instance, string, error)
-	CreateInstanceFunc  func(req provider.InstanceCreateRequest) error
-	UpdateInstanceFunc  func(name string, req provider.InstanceUpdateRequest, etag string) error
-	DeleteInstanceFunc  func(name string) error
-	ExecInstanceFunc    func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error)
-	CopyRemoteImageFunc func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error
+	GetInstanceFunc              func(name string) (*provider.Instance, string, error)
+	CreateInstanceFunc           func(req provider.InstanceCreateRequest) error
+	UpdateInstanceFunc           func(name string, req provider.InstanceUpdateRequest, etag string) error
+	DeleteInstanceFunc           func(name string) error
+	UpdateInstanceStateFunc      func(name, action string, force bool) error
+	RebuildInstanceFunc          func(name string, req provider.InstanceRebuildRequest) error
+	ExecInstanceFunc             func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error)
+	CreateNetworkFunc            func(req provider.NetworkCreateRequest) error
+	UpdateNetworkFunc            func(name string, req provider.NetworkUpdateRequest, etag string) error
+	DeleteNetworkFunc            func(name string) error
+	CreateNetworkACLFunc         func(req provider.NetworkACLCreateRequest) error
+	UpdateNetworkACLFunc         func(name string, req provider.NetworkACLUpdateRequest, etag string) error
+	DeleteNetworkACLFunc         func(name string) error
+	DeleteStoragePoolVolumeFunc  func(pool, volType, name string) error
+	GetNetworksFunc              func() ([]provider.Network, error)
+	GetNetworkACLsFunc           func() ([]provider.NetworkACL, error)
+	GetImageAliasesFunc          func() ([]provider.ImageAlias, error)
+	CopyRemoteImageFunc          func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error
 }
 
 var _ provider.Driver = (*FakeDriver)(nil)
@@ -81,7 +95,6 @@ func New() *FakeDriver {
 		Projects:        map[string]string{"default": "Default project"},
 	}
 	f.addDefaultNetworks()
-	f.addDefaultImages()
 	return f
 }
 
@@ -100,18 +113,60 @@ func (f *FakeDriver) addDefaultNetworks() {
 	}
 }
 
-func (f *FakeDriver) addDefaultImages() {
-	fp := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-	f.Images[fp] = &provider.Image{
-		Fingerprint: fp,
-		Type:        provider.InstanceTypeContainer,
-		Aliases: []provider.ImageAlias{
-			{Name: "ubuntu/24.04", Target: fp},
-		},
+// Helper Seeders for Unit and Integration Tests
+
+func (f *FakeDriver) AddVolume(pool, name, contentType string, config map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.StoragePools[pool] = true
+	if f.Volumes[pool] == nil {
+		f.Volumes[pool] = make(map[string]*provider.StorageVolume)
 	}
-	f.Aliases["ubuntu/24.04"] = &provider.ImageAlias{
-		Name:   "ubuntu/24.04",
-		Target: fp,
+	f.Volumes[pool][name] = &provider.StorageVolume{
+		Name:        name,
+		Type:        "custom",
+		ContentType: contentType,
+		Config:      config,
+		ETag:        "fake-vol-etag",
+	}
+}
+
+func (f *FakeDriver) AddNetwork(name, netType string, config map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Networks[name] = &provider.Network{
+		Name:    name,
+		Type:    netType,
+		Managed: true,
+		Config:  config,
+		Status:  "Created",
+		ETag:    "fake-net-etag",
+	}
+}
+
+func (f *FakeDriver) AddNetworkACL(name string, ingress, egress []provider.NetworkACLRule, config map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.NetworkACLs[name] = &provider.NetworkACL{
+		Name:    name,
+		Ingress: ingress,
+		Egress:  egress,
+		Config:  config,
+		ETag:    "fake-acl-etag",
+	}
+}
+
+func (f *FakeDriver) AddImage(alias, fingerprint string, instType provider.InstanceType) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Images[fingerprint] = &provider.Image{
+		Fingerprint: fingerprint,
+		Type:        instType,
+		Aliases:     []provider.ImageAlias{{Name: alias, Target: fingerprint}},
+	}
+	f.Aliases[alias] = &provider.ImageAlias{
+		Name:   alias,
+		Target: fingerprint,
 	}
 }
 
@@ -159,13 +214,13 @@ func (f *FakeDriver) SetClusterMembers(members []provider.ClusterMember) {
 	}
 }
 
-func (f *FakeDriver) IsClustered() bool {
+func (f *FakeDriver) IsClustered(ctx context.Context) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.Clustered
+	return f.Clustered, nil
 }
 
-func (f *FakeDriver) GetClusterMembers() ([]provider.ClusterMember, error) {
+func (f *FakeDriver) GetClusterMembers(ctx context.Context) ([]provider.ClusterMember, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	result := make([]provider.ClusterMember, 0, len(f.Members))
@@ -175,7 +230,7 @@ func (f *FakeDriver) GetClusterMembers() ([]provider.ClusterMember, error) {
 	return result, nil
 }
 
-func (f *FakeDriver) GetClusterMember(name string) (*provider.ClusterMember, error) {
+func (f *FakeDriver) GetClusterMember(ctx context.Context, name string) (*provider.ClusterMember, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	m, ok := f.Members[name]
@@ -185,7 +240,7 @@ func (f *FakeDriver) GetClusterMember(name string) (*provider.ClusterMember, err
 	return m, nil
 }
 
-func (f *FakeDriver) GetProjects() ([]string, error) {
+func (f *FakeDriver) GetProjects(ctx context.Context) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	result := make([]string, 0, len(f.Projects))
@@ -195,14 +250,14 @@ func (f *FakeDriver) GetProjects() ([]string, error) {
 	return result, nil
 }
 
-func (f *FakeDriver) ProjectExists(name string) (bool, error) {
+func (f *FakeDriver) ProjectExists(ctx context.Context, name string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, ok := f.Projects[name]
 	return ok, nil
 }
 
-func (f *FakeDriver) CreateProject(name string, description string) error {
+func (f *FakeDriver) CreateProject(ctx context.Context, name string, description string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.Projects[name]; ok {
@@ -212,7 +267,7 @@ func (f *FakeDriver) CreateProject(name string, description string) error {
 	return nil
 }
 
-func (f *FakeDriver) GetInstance(name string) (*provider.Instance, string, error) {
+func (f *FakeDriver) GetInstance(ctx context.Context, name string) (*provider.Instance, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -233,7 +288,7 @@ func (f *FakeDriver) GetInstance(name string) (*provider.Instance, string, error
 	return &copyInst, etag, nil
 }
 
-func (f *FakeDriver) ListInstances() ([]provider.Instance, error) {
+func (f *FakeDriver) ListInstances(ctx context.Context) ([]provider.Instance, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -276,11 +331,7 @@ func (f *FakeDriver) enrichInstanceLocked(inst *provider.Instance) {
 	}
 }
 
-func (f *FakeDriver) CreateInstance(req provider.InstanceCreateRequest) error {
-	return f.CreateInstanceContext(context.Background(), req)
-}
-
-func (f *FakeDriver) CreateInstanceContext(ctx context.Context, req provider.InstanceCreateRequest) error {
+func (f *FakeDriver) CreateInstance(ctx context.Context, req provider.InstanceCreateRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -321,11 +372,7 @@ func (f *FakeDriver) CreateInstanceContext(ctx context.Context, req provider.Ins
 	return nil
 }
 
-func (f *FakeDriver) UpdateInstance(name string, req provider.InstanceUpdateRequest, etag string) error {
-	return f.UpdateInstanceContext(context.Background(), name, req, etag)
-}
-
-func (f *FakeDriver) UpdateInstanceContext(ctx context.Context, name string, req provider.InstanceUpdateRequest, etag string) error {
+func (f *FakeDriver) UpdateInstance(ctx context.Context, name string, req provider.InstanceUpdateRequest, etag string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -357,11 +404,7 @@ func (f *FakeDriver) UpdateInstanceContext(ctx context.Context, name string, req
 	return nil
 }
 
-func (f *FakeDriver) DeleteInstance(name string) error {
-	return f.DeleteInstanceContext(context.Background(), name)
-}
-
-func (f *FakeDriver) DeleteInstanceContext(ctx context.Context, name string) error {
+func (f *FakeDriver) DeleteInstance(ctx context.Context, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -381,13 +424,13 @@ func (f *FakeDriver) DeleteInstanceContext(ctx context.Context, name string) err
 	return nil
 }
 
-func (f *FakeDriver) UpdateInstanceState(name string, action string, force bool) error {
-	return f.UpdateInstanceStateContext(context.Background(), name, action, force)
-}
-
-func (f *FakeDriver) UpdateInstanceStateContext(ctx context.Context, name string, action string, force bool) error {
+func (f *FakeDriver) UpdateInstanceState(ctx context.Context, name string, action string, force bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.UpdateInstanceStateFunc != nil {
+		return f.UpdateInstanceStateFunc(name, action, force)
+	}
 
 	inst, ok := f.Instances[name]
 	if !ok {
@@ -408,13 +451,13 @@ func (f *FakeDriver) UpdateInstanceStateContext(ctx context.Context, name string
 	return nil
 }
 
-func (f *FakeDriver) RebuildInstance(name string, req provider.InstanceRebuildRequest) error {
-	return f.RebuildInstanceContext(context.Background(), name, req)
-}
-
-func (f *FakeDriver) RebuildInstanceContext(ctx context.Context, name string, req provider.InstanceRebuildRequest) error {
+func (f *FakeDriver) RebuildInstance(ctx context.Context, name string, req provider.InstanceRebuildRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.RebuildInstanceFunc != nil {
+		return f.RebuildInstanceFunc(name, req)
+	}
 
 	inst, ok := f.Instances[name]
 	if !ok {
@@ -427,11 +470,7 @@ func (f *FakeDriver) RebuildInstanceContext(ctx context.Context, name string, re
 	return nil
 }
 
-func (f *FakeDriver) CreateInstanceSnapshot(name string, snapName string, stateful bool) error {
-	return f.CreateInstanceSnapshotContext(context.Background(), name, snapName, stateful)
-}
-
-func (f *FakeDriver) CreateInstanceSnapshotContext(ctx context.Context, name string, snapName string, stateful bool) error {
+func (f *FakeDriver) CreateInstanceSnapshot(ctx context.Context, name string, snapName string, stateful bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -455,11 +494,7 @@ func (f *FakeDriver) CreateInstanceSnapshotContext(ctx context.Context, name str
 	return nil
 }
 
-func (f *FakeDriver) DeleteInstanceSnapshot(name string, snapName string) error {
-	return f.DeleteInstanceSnapshotContext(context.Background(), name, snapName)
-}
-
-func (f *FakeDriver) DeleteInstanceSnapshotContext(ctx context.Context, name string, snapName string) error {
+func (f *FakeDriver) DeleteInstanceSnapshot(ctx context.Context, name string, snapName string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -469,7 +504,7 @@ func (f *FakeDriver) DeleteInstanceSnapshotContext(ctx context.Context, name str
 	return nil
 }
 
-func (f *FakeDriver) GetInstanceSnapshots(name string) ([]provider.Snapshot, error) {
+func (f *FakeDriver) GetInstanceSnapshots(ctx context.Context, name string) ([]provider.Snapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -486,11 +521,7 @@ func (f *FakeDriver) GetInstanceSnapshots(name string) ([]provider.Snapshot, err
 	return result, nil
 }
 
-func (f *FakeDriver) RestoreInstanceSnapshot(name string, snapName string) error {
-	return f.RestoreInstanceSnapshotContext(context.Background(), name, snapName)
-}
-
-func (f *FakeDriver) RestoreInstanceSnapshotContext(ctx context.Context, name string, snapName string) error {
+func (f *FakeDriver) RestoreInstanceSnapshot(ctx context.Context, name string, snapName string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -502,9 +533,13 @@ func (f *FakeDriver) RestoreInstanceSnapshotContext(ctx context.Context, name st
 	return nil
 }
 
-func (f *FakeDriver) GetNetworks() ([]provider.Network, error) {
+func (f *FakeDriver) GetNetworks(ctx context.Context) ([]provider.Network, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.GetNetworksFunc != nil {
+		return f.GetNetworksFunc()
+	}
 
 	result := make([]provider.Network, 0, len(f.Networks))
 	for _, n := range f.Networks {
@@ -513,7 +548,7 @@ func (f *FakeDriver) GetNetworks() ([]provider.Network, error) {
 	return result, nil
 }
 
-func (f *FakeDriver) GetNetwork(name string) (*provider.Network, string, error) {
+func (f *FakeDriver) GetNetwork(ctx context.Context, name string) (*provider.Network, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -524,9 +559,13 @@ func (f *FakeDriver) GetNetwork(name string) (*provider.Network, string, error) 
 	return n, "fake-net-etag", nil
 }
 
-func (f *FakeDriver) CreateNetwork(net provider.NetworkCreateRequest) error {
+func (f *FakeDriver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.CreateNetworkFunc != nil {
+		return f.CreateNetworkFunc(net)
+	}
 
 	if _, ok := f.Networks[net.Name]; ok {
 		return fmt.Errorf("network %q already exists", net.Name)
@@ -544,9 +583,13 @@ func (f *FakeDriver) CreateNetwork(net provider.NetworkCreateRequest) error {
 	return nil
 }
 
-func (f *FakeDriver) UpdateNetwork(name string, net provider.NetworkUpdateRequest, etag string) error {
+func (f *FakeDriver) UpdateNetwork(ctx context.Context, name string, net provider.NetworkUpdateRequest, etag string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.UpdateNetworkFunc != nil {
+		return f.UpdateNetworkFunc(name, net, etag)
+	}
 
 	n, ok := f.Networks[name]
 	if !ok {
@@ -557,9 +600,13 @@ func (f *FakeDriver) UpdateNetwork(name string, net provider.NetworkUpdateReques
 	return nil
 }
 
-func (f *FakeDriver) DeleteNetwork(name string) error {
+func (f *FakeDriver) DeleteNetwork(ctx context.Context, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.DeleteNetworkFunc != nil {
+		return f.DeleteNetworkFunc(name)
+	}
 
 	if _, ok := f.Networks[name]; !ok {
 		return fmt.Errorf("network %q not found", name)
@@ -568,9 +615,13 @@ func (f *FakeDriver) DeleteNetwork(name string) error {
 	return nil
 }
 
-func (f *FakeDriver) GetNetworkACLs() ([]provider.NetworkACL, error) {
+func (f *FakeDriver) GetNetworkACLs(ctx context.Context) ([]provider.NetworkACL, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.GetNetworkACLsFunc != nil {
+		return f.GetNetworkACLsFunc()
+	}
 
 	result := make([]provider.NetworkACL, 0, len(f.NetworkACLs))
 	for _, a := range f.NetworkACLs {
@@ -579,7 +630,7 @@ func (f *FakeDriver) GetNetworkACLs() ([]provider.NetworkACL, error) {
 	return result, nil
 }
 
-func (f *FakeDriver) GetNetworkACL(name string) (*provider.NetworkACL, string, error) {
+func (f *FakeDriver) GetNetworkACL(ctx context.Context, name string) (*provider.NetworkACL, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -590,9 +641,13 @@ func (f *FakeDriver) GetNetworkACL(name string) (*provider.NetworkACL, string, e
 	return a, "fake-acl-etag", nil
 }
 
-func (f *FakeDriver) CreateNetworkACL(acl provider.NetworkACLCreateRequest) error {
+func (f *FakeDriver) CreateNetworkACL(ctx context.Context, acl provider.NetworkACLCreateRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.CreateNetworkACLFunc != nil {
+		return f.CreateNetworkACLFunc(acl)
+	}
 
 	if _, ok := f.NetworkACLs[acl.Name]; ok {
 		return fmt.Errorf("network ACL %q already exists", acl.Name)
@@ -609,9 +664,13 @@ func (f *FakeDriver) CreateNetworkACL(acl provider.NetworkACLCreateRequest) erro
 	return nil
 }
 
-func (f *FakeDriver) UpdateNetworkACL(name string, acl provider.NetworkACLUpdateRequest, etag string) error {
+func (f *FakeDriver) UpdateNetworkACL(ctx context.Context, name string, acl provider.NetworkACLUpdateRequest, etag string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.UpdateNetworkACLFunc != nil {
+		return f.UpdateNetworkACLFunc(name, acl, etag)
+	}
 
 	a, ok := f.NetworkACLs[name]
 	if !ok {
@@ -624,9 +683,13 @@ func (f *FakeDriver) UpdateNetworkACL(name string, acl provider.NetworkACLUpdate
 	return nil
 }
 
-func (f *FakeDriver) DeleteNetworkACL(name string) error {
+func (f *FakeDriver) DeleteNetworkACL(ctx context.Context, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.DeleteNetworkACLFunc != nil {
+		return f.DeleteNetworkACLFunc(name)
+	}
 
 	if _, ok := f.NetworkACLs[name]; !ok {
 		return fmt.Errorf("network ACL %q not found", name)
@@ -635,7 +698,7 @@ func (f *FakeDriver) DeleteNetworkACL(name string) error {
 	return nil
 }
 
-func (f *FakeDriver) GetStoragePoolNames() ([]string, error) {
+func (f *FakeDriver) GetStoragePoolNames(ctx context.Context) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -646,7 +709,7 @@ func (f *FakeDriver) GetStoragePoolNames() ([]string, error) {
 	return result, nil
 }
 
-func (f *FakeDriver) GetStoragePoolVolume(pool, volType, name string) (*provider.StorageVolume, string, error) {
+func (f *FakeDriver) GetStoragePoolVolume(ctx context.Context, pool, volType, name string) (*provider.StorageVolume, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -661,7 +724,7 @@ func (f *FakeDriver) GetStoragePoolVolume(pool, volType, name string) (*provider
 	return v, "fake-vol-etag", nil
 }
 
-func (f *FakeDriver) GetStoragePoolVolumes(pool string) ([]provider.StorageVolume, error) {
+func (f *FakeDriver) GetStoragePoolVolumes(ctx context.Context, pool string) ([]provider.StorageVolume, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -676,7 +739,7 @@ func (f *FakeDriver) GetStoragePoolVolumes(pool string) ([]provider.StorageVolum
 	return result, nil
 }
 
-func (f *FakeDriver) CreateStoragePoolVolume(pool string, vol provider.StorageVolumeCreateRequest) error {
+func (f *FakeDriver) CreateStoragePoolVolume(ctx context.Context, pool string, vol provider.StorageVolumeCreateRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -697,7 +760,7 @@ func (f *FakeDriver) CreateStoragePoolVolume(pool string, vol provider.StorageVo
 	return nil
 }
 
-func (f *FakeDriver) UpdateStoragePoolVolume(pool, volType, name string, vol provider.StorageVolumeUpdateRequest, etag string) error {
+func (f *FakeDriver) UpdateStoragePoolVolume(ctx context.Context, pool, volType, name string, vol provider.StorageVolumeUpdateRequest, etag string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -710,9 +773,13 @@ func (f *FakeDriver) UpdateStoragePoolVolume(pool, volType, name string, vol pro
 	return nil
 }
 
-func (f *FakeDriver) DeleteStoragePoolVolume(pool, volType, name string) error {
+func (f *FakeDriver) DeleteStoragePoolVolume(ctx context.Context, pool, volType, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.DeleteStoragePoolVolumeFunc != nil {
+		return f.DeleteStoragePoolVolumeFunc(pool, volType, name)
+	}
 
 	if f.Volumes[pool] != nil {
 		delete(f.Volumes[pool], name)
@@ -720,7 +787,7 @@ func (f *FakeDriver) DeleteStoragePoolVolume(pool, volType, name string) error {
 	return nil
 }
 
-func (f *FakeDriver) GetImages() ([]provider.Image, error) {
+func (f *FakeDriver) GetImages(ctx context.Context) ([]provider.Image, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -731,9 +798,13 @@ func (f *FakeDriver) GetImages() ([]provider.Image, error) {
 	return result, nil
 }
 
-func (f *FakeDriver) GetImageAliases() ([]provider.ImageAlias, error) {
+func (f *FakeDriver) GetImageAliases(ctx context.Context) ([]provider.ImageAlias, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.GetImageAliasesFunc != nil {
+		return f.GetImageAliasesFunc()
+	}
 
 	result := make([]provider.ImageAlias, 0, len(f.Aliases))
 	for _, a := range f.Aliases {
@@ -742,12 +813,31 @@ func (f *FakeDriver) GetImageAliases() ([]provider.ImageAlias, error) {
 	return result, nil
 }
 
+// ImageFetchRecord records one CopyRemoteImage invocation on the fake.
+type ImageFetchRecord struct {
+	RemoteURL  string
+	Alias      string
+	Type       string
+	LocalAlias string
+}
+
 func (f *FakeDriver) CopyRemoteImage(ctx context.Context, remoteURL, alias, imageType, localAlias string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	f.Fetches = append(f.Fetches, ImageFetchRecord{
+		RemoteURL:  remoteURL,
+		Alias:      alias,
+		Type:       imageType,
+		LocalAlias: localAlias,
+	})
+
 	if f.CopyRemoteImageFunc != nil {
 		return f.CopyRemoteImageFunc(ctx, remoteURL, alias, imageType, localAlias)
+	}
+
+	if _, ok := f.Aliases[localAlias]; ok {
+		return fmt.Errorf("alias already exists")
 	}
 
 	fp := fmt.Sprintf("fake-fingerprint-%s", localAlias)
@@ -763,14 +853,14 @@ func (f *FakeDriver) CopyRemoteImage(ctx context.Context, remoteURL, alias, imag
 	return nil
 }
 
-func (f *FakeDriver) ResolveUID(name string, username string) (uint32, error) {
+func (f *FakeDriver) ResolveUID(ctx context.Context, name string, username string) (uint32, error) {
 	if username == "root" {
 		return 0, nil
 	}
 	return 1000, nil
 }
 
-func (f *FakeDriver) ResolveUserEnv(name string, username string) (*provider.UserEnv, error) {
+func (f *FakeDriver) ResolveUserEnv(ctx context.Context, name string, username string) (*provider.UserEnv, error) {
 	return &provider.UserEnv{
 		UID:   1000,
 		GID:   1000,
@@ -780,11 +870,7 @@ func (f *FakeDriver) ResolveUserEnv(name string, username string) (*provider.Use
 	}, nil
 }
 
-func (f *FakeDriver) ExecInstance(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
-	return f.ExecInstanceContext(context.Background(), name, cmd, uid, env)
-}
-
-func (f *FakeDriver) ExecInstanceContext(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+func (f *FakeDriver) ExecInstance(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -794,11 +880,11 @@ func (f *FakeDriver) ExecInstanceContext(ctx context.Context, name string, cmd [
 	return provider.ExecResult{ExitCode: 0, Stdout: "fake output", Stderr: ""}, nil
 }
 
-func (f *FakeDriver) InteractiveExecInstance(name string, cmd []string, uid uint32, env map[string]string) error {
+func (f *FakeDriver) InteractiveExecInstance(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) error {
 	return nil
 }
 
-func (f *FakeDriver) CreateInstanceFile(name string, path string, content io.Reader, mode int, uid, gid int64) error {
+func (f *FakeDriver) CreateInstanceFile(ctx context.Context, name string, path string, content io.Reader, mode int, uid, gid int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -815,7 +901,7 @@ func (f *FakeDriver) CreateInstanceFile(name string, path string, content io.Rea
 	return nil
 }
 
-func (f *FakeDriver) DeleteInstanceFile(name string, path string) error {
+func (f *FakeDriver) DeleteInstanceFile(ctx context.Context, name string, path string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -825,7 +911,7 @@ func (f *FakeDriver) DeleteInstanceFile(name string, path string) error {
 	return nil
 }
 
-func (f *FakeDriver) GetIP(name string) (string, error) {
+func (f *FakeDriver) GetIP(ctx context.Context, name string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -836,18 +922,5 @@ func (f *FakeDriver) GetIP(name string) (string, error) {
 }
 
 func (f *FakeDriver) ClassifyError(err error, intent string) (int, bool) {
-	if err == nil {
-		return 0, false
-	}
-	errStr := err.Error()
-	if strings.Contains(errStr, "not found") {
-		if intent == "lookup" {
-			return 5, false
-		}
-		return 0, false
-	}
-	if strings.Contains(strings.ToLower(errStr), "etag") || strings.Contains(errStr, "412") {
-		return 4, true
-	}
-	return 4, false
+	return common.ClassifyError(err, intent)
 }

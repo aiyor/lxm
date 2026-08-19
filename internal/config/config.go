@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/aiyor/lxm/internal/recipe"
 	"gopkg.in/yaml.v3"
 )
 
@@ -351,17 +350,30 @@ type DiskConfig struct {
 	Managed  bool   `yaml:"-" json:"-"`
 }
 
-// VSwitchConfig models a managed LXD virtual switch (fleet-scoped).
+// VSwitchConfig models a managed virtual switch (fleet-scoped).
 type VSwitchConfig struct {
-	Name     string `yaml:"name"`
-	Status   string `yaml:"status,omitempty"` // "present" (default) | "absent"
-	Type     string `yaml:"type,omitempty"`   // "" = "bridge" (v1: only "bridge")
-	Driver   string `yaml:"driver,omitempty"` // "" = "native" (bridge.driver)
-	IPv4     string `yaml:"ipv4,omitempty"`
-	IPv6     string `yaml:"ipv6,omitempty"` // "" = "none"
-	NAT      *bool  `yaml:"nat,omitempty"`  // nil = true
-	Group    string `yaml:"group,omitempty"`
-	Internet *bool  `yaml:"internet,omitempty"` // nil = true
+	Name     string            `yaml:"name"`
+	Status   string            `yaml:"status,omitempty"` // "present" (default) | "absent"
+	Type     string            `yaml:"type,omitempty"`   // "" = "bridge" | "ovn"
+	Parent   string            `yaml:"parent,omitempty"` // Uplink parent network for OVN (e.g. "lxdbr0")
+	Driver   string            `yaml:"driver,omitempty"` // "" = "native" (bridge.driver)
+	IPv4     string            `yaml:"ipv4,omitempty"`
+	IPv6     string            `yaml:"ipv6,omitempty"`     // "" = "none"
+	NAT      *bool             `yaml:"nat,omitempty"`      // nil = true
+	Group    string            `yaml:"group,omitempty"`
+	Internet *bool             `yaml:"internet,omitempty"` // nil = true
+	Config   map[string]string `yaml:"config,omitempty"`   // Backend passthrough options
+}
+
+func (v *VSwitchConfig) EffectiveType() string {
+	if v.Type == "" {
+		return "bridge"
+	}
+	return v.Type
+}
+
+func (v *VSwitchConfig) EffectiveParent() string {
+	return v.Parent
 }
 
 // NetworkPolicyRule models one inter-group allowance.
@@ -480,7 +492,15 @@ type RecipeGroup struct {
 
 // RecipeHashKey returns a path-qualified key for recipe idempotency tracking.
 func RecipeHashKey(scriptPath, metadataName string) string {
-	return recipe.PathQualifiedHashKey(scriptPath, metadataName)
+	if metadataName != "" {
+		return "user.lxm.recipe." + metadataName + ".hash"
+	}
+	clean := filepath.Clean(scriptPath)
+	clean = strings.TrimPrefix(clean, "./")
+	clean = strings.ReplaceAll(clean, "/", "_")
+	clean = strings.ReplaceAll(clean, ".", "_")
+	clean = strings.ReplaceAll(clean, "-", "_")
+	return "user.lxm.recipe." + clean + ".hash"
 }
 
 // Validate checks that the config is valid before acting on it.

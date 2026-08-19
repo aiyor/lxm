@@ -3,7 +3,6 @@ package recipe
 import (
 	"context"
 	"crypto/sha256"
-
 	_ "embed"
 	"encoding/hex"
 	"fmt"
@@ -15,8 +14,9 @@ import (
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/encoding/yaml"
-	"github.com/aiyor/lxm/internal/lxd"
 	goyaml "gopkg.in/yaml.v3"
+
+	"github.com/aiyor/lxm/internal/provider"
 )
 
 //go:embed schemas/recipe_v1.cue
@@ -169,19 +169,19 @@ func ComputeScriptHash(scriptPath string, baseDir string) (string, error) {
 }
 
 // ExecuteRecipeScript runs a script inside a container with POSIX env map and retry policy.
-func ExecuteRecipeScript(svc lxd.InstanceService, containerName string, scriptPath string, baseDir string, runAs string, env map[string]string, retries int) (lxd.ExecResult, string, error) {
+func ExecuteRecipeScript(svc provider.InstanceService, containerName string, scriptPath string, baseDir string, runAs string, env map[string]string, retries int) (provider.ExecResult, string, error) {
 	return ExecuteRecipeScriptContext(context.Background(), svc, containerName, scriptPath, baseDir, runAs, env, retries)
 }
 
 // ExecuteRecipeScriptContext runs a script inside a container with POSIX env map, retry policy, and context cancellation.
-func ExecuteRecipeScriptContext(ctx context.Context, svc lxd.InstanceService, containerName string, scriptPath string, baseDir string, runAs string, env map[string]string, retries int) (lxd.ExecResult, string, error) {
+func ExecuteRecipeScriptContext(ctx context.Context, svc provider.InstanceService, containerName string, scriptPath string, baseDir string, runAs string, env map[string]string, retries int) (provider.ExecResult, string, error) {
 	if err := ValidateEnvKeys(env); err != nil {
-		return lxd.ExecResult{ExitCode: 3}, "", err
+		return provider.ExecResult{ExitCode: 3}, "", err
 	}
 
 	hash, err := ComputeScriptHash(scriptPath, baseDir)
 	if err != nil {
-		return lxd.ExecResult{ExitCode: 3}, "", err
+		return provider.ExecResult{ExitCode: 3}, "", err
 	}
 
 	target := scriptPath
@@ -192,13 +192,13 @@ func ExecuteRecipeScriptContext(ctx context.Context, svc lxd.InstanceService, co
 
 	scriptBytes, err := os.ReadFile(target)
 	if err != nil {
-		return lxd.ExecResult{ExitCode: 3}, "", err
+		return provider.ExecResult{ExitCode: 3}, "", err
 	}
 
-	uid, err := svc.ResolveUID(containerName, runAs)
+	uid, err := svc.ResolveUID(ctx, containerName, runAs)
 	if err != nil {
 		if runAs != "root" && runAs != "" {
-			return lxd.ExecResult{ExitCode: 6}, "", fmt.Errorf("failed to resolve UID for user %q in container %q: %w", runAs, containerName, err)
+			return provider.ExecResult{ExitCode: 6}, "", fmt.Errorf("failed to resolve UID for user %q in container %q: %w", runAs, containerName, err)
 		}
 		uid = 0
 	}
@@ -207,17 +207,17 @@ func ExecuteRecipeScriptContext(ctx context.Context, svc lxd.InstanceService, co
 	cmd := []string{"/bin/bash", "-l", "-c", string(scriptBytes)}
 
 	attempts := retries + 1
-	var lastRes lxd.ExecResult
+	var lastRes provider.ExecResult
 	var lastErr error
 
 	for i := 0; i < attempts; i++ {
 		select {
 		case <-ctx.Done():
-			return lxd.ExecResult{ExitCode: 1, Stderr: "recipe execution cancelled by user interrupt"}, hash, ctx.Err()
+			return provider.ExecResult{ExitCode: 1, Stderr: "recipe execution cancelled by user interrupt"}, hash, ctx.Err()
 		default:
 		}
 
-		res, execErr := svc.ExecInstanceContext(ctx, containerName, cmd, uid, env)
+		res, execErr := svc.ExecInstance(ctx, containerName, cmd, uid, env)
 		lastRes = res
 		lastErr = execErr
 		if execErr == nil && res.ExitCode == 0 {

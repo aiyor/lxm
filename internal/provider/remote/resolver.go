@@ -15,11 +15,12 @@ import (
 
 // ResolveOptions encapsulates inputs for resolving a target provider Driver.
 type ResolveOptions struct {
-	RemoteName string
-	Provider   provider.ProviderType
-	Project    string
-	TargetNode string
-	SocketPath string
+	RemoteName      string
+	Provider        provider.ProviderType
+	Project         string
+	TargetNode      string
+	SocketPath      string
+	ManifestRemotes map[string]RemoteEntry
 }
 
 // DetectLocalProvider probes host sockets to determine if Incus or LXD is running locally.
@@ -112,6 +113,9 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 		}
 	} else {
 		entry, ok := cfg.Remotes[remoteName]
+		if !ok && opts.ManifestRemotes != nil {
+			entry, ok = opts.ManifestRemotes[remoteName]
+		}
 		if !ok {
 			return nil, fmt.Errorf("remote %q not found in remotes configuration", remoteName)
 		}

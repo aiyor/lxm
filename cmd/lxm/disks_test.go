@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/plan"
+	"github.com/aiyor/lxm/internal/provider/fake"
 )
 
 func TestPlanComputeError_ExitCodeMapping(t *testing.T) {
@@ -35,7 +35,7 @@ func TestPlanComputeError_ExitCodeMapping(t *testing.T) {
 }
 
 func TestCheckDiskExtensions_BlockModeGate(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 
 	blockDisk := &config.Config{
 		Name: "db-vm",
@@ -53,14 +53,14 @@ func TestCheckDiskExtensions_BlockModeGate(t *testing.T) {
 	}
 
 	// Extension present → no error.
-	fake.Extensions["custom_block_volumes"] = true
-	if err := checkDiskExtensions(fake, []*config.Config{blockDisk}); err != nil {
+	driver.Extensions["custom_block_volumes"] = true
+	if err := checkDiskExtensions(driver, []*config.Config{blockDisk}); err != nil {
 		t.Errorf("expected no error with extension present, got %v", err)
 	}
 
 	// Extension absent with block disk → exit 4.
-	delete(fake.Extensions, "custom_block_volumes")
-	err := checkDiskExtensions(fake, []*config.Config{blockDisk})
+	delete(driver.Extensions, "custom_block_volumes")
+	err := checkDiskExtensions(driver, []*config.Config{blockDisk})
 	if err == nil {
 		t.Fatal("expected error when extension missing for block disk")
 	}
@@ -70,7 +70,7 @@ func TestCheckDiskExtensions_BlockModeGate(t *testing.T) {
 	}
 
 	// Extension absent with only filesystem disks → no error.
-	if err := checkDiskExtensions(fake, []*config.Config{fsDisk}); err != nil {
+	if err := checkDiskExtensions(driver, []*config.Config{fsDisk}); err != nil {
 		t.Errorf("expected no error for filesystem-only disks, got %v", err)
 	}
 
@@ -81,17 +81,17 @@ func TestCheckDiskExtensions_BlockModeGate(t *testing.T) {
 }
 
 func TestCheckDiskExtensions_IOBusGate(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.Extensions["custom_block_volumes"] = true
-	delete(fake.Extensions, "disk_io_bus")
-	delete(fake.Extensions, "disk_io_bus_virtio_blk")
+	driver := fake.New()
+	driver.Extensions["custom_block_volumes"] = true
+	delete(driver.Extensions, "disk_io_bus")
+	delete(driver.Extensions, "disk_io_bus_virtio_blk")
 
 	nvmeDisk := &config.Config{Name: "db-vm", Type: "virtual-machine", Disks: []config.DiskConfig{{Name: "wal", Path: "", Size: "20GiB", Bus: "nvme"}}}
 	virtioBlkDisk := &config.Config{Name: "db-vm", Type: "virtual-machine", Disks: []config.DiskConfig{{Name: "wal", Path: "", Size: "20GiB", Bus: "virtio-blk"}}}
 	scsiDisk := &config.Config{Name: "db-vm", Type: "virtual-machine", Disks: []config.DiskConfig{{Name: "wal", Path: "", Size: "20GiB", Bus: "virtio-scsi"}}}
 
 	// Non-default io.bus requires disk_io_bus.
-	err := checkDiskExtensions(fake, []*config.Config{nvmeDisk})
+	err := checkDiskExtensions(driver, []*config.Config{nvmeDisk})
 	if err == nil {
 		t.Fatal("expected disk_io_bus gate failure for nvme")
 	}
@@ -101,27 +101,27 @@ func TestCheckDiskExtensions_IOBusGate(t *testing.T) {
 	}
 
 	// virtio-blk additionally requires disk_io_bus_virtio_blk.
-	fake.Extensions["disk_io_bus"] = true
-	if err := checkDiskExtensions(fake, []*config.Config{virtioBlkDisk}); err == nil {
+	driver.Extensions["disk_io_bus"] = true
+	if err := checkDiskExtensions(driver, []*config.Config{virtioBlkDisk}); err == nil {
 		t.Error("expected disk_io_bus_virtio_blk gate failure for virtio-blk")
 	}
-	fake.Extensions["disk_io_bus_virtio_blk"] = true
-	if err := checkDiskExtensions(fake, []*config.Config{virtioBlkDisk}); err != nil {
+	driver.Extensions["disk_io_bus_virtio_blk"] = true
+	if err := checkDiskExtensions(driver, []*config.Config{virtioBlkDisk}); err != nil {
 		t.Errorf("expected no error for virtio-blk with both extensions, got %v", err)
 	}
 
 	// Default virtio-scsi needs no extra gate.
-	delete(fake.Extensions, "disk_io_bus")
-	delete(fake.Extensions, "disk_io_bus_virtio_blk")
-	if err := checkDiskExtensions(fake, []*config.Config{scsiDisk}); err != nil {
+	delete(driver.Extensions, "disk_io_bus")
+	delete(driver.Extensions, "disk_io_bus_virtio_blk")
+	if err := checkDiskExtensions(driver, []*config.Config{scsiDisk}); err != nil {
 		t.Errorf("expected no error for default bus, got %v", err)
 	}
 }
 
 func TestCheckDiskExtensions_Message(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	delete(fake.Extensions, "custom_block_volumes")
-	err := checkDiskExtensions(fake, []*config.Config{{
+	driver := fake.New()
+	delete(driver.Extensions, "custom_block_volumes")
+	err := checkDiskExtensions(driver, []*config.Config{{
 		Name: "db-vm",
 		Type: "virtual-machine",
 		Disks: []config.DiskConfig{

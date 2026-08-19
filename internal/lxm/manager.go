@@ -8,13 +8,13 @@ import (
 	"time"
 
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
+	"github.com/aiyor/lxm/internal/provider"
 )
 
 var ErrWaitTimeout = errors.New("cloud-init wait timed out")
 
 type Manager struct {
-	client  lxd.InstanceService
+	client  provider.Driver
 	logger  *slog.Logger
 	dryRun  bool
 	debug   bool
@@ -22,11 +22,11 @@ type Manager struct {
 	noStart bool
 }
 
-func NewManager(client lxd.InstanceService, logger *slog.Logger, dryRun, debug, force bool) *Manager {
+func NewManager(client provider.Driver, logger *slog.Logger, dryRun, debug, force bool) *Manager {
 	return NewManagerWithOptions(client, logger, dryRun, debug, force, false)
 }
 
-func NewManagerWithOptions(client lxd.InstanceService, logger *slog.Logger, dryRun, debug, force, noStart bool) *Manager {
+func NewManagerWithOptions(client provider.Driver, logger *slog.Logger, dryRun, debug, force, noStart bool) *Manager {
 	return &Manager{
 		client:  client,
 		logger:  logger,
@@ -38,11 +38,12 @@ func NewManagerWithOptions(client lxd.InstanceService, logger *slog.Logger, dryR
 }
 
 func (m *Manager) ApplyConfig(conf *config.Config, configBaseDir string) error {
+	ctx := context.Background()
 	if conf.Status == "absent" {
 		return m.DeleteContainer(conf.Name)
 	}
 
-	instance, etag, err := m.client.GetInstance(conf.Name)
+	instance, etag, err := m.client.GetInstance(ctx, conf.Name)
 	if err != nil {
 		return m.CreateContainer(conf, configBaseDir)
 	}

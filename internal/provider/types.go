@@ -20,6 +20,7 @@ type InstanceType string
 const (
 	InstanceTypeContainer      InstanceType = "container"
 	InstanceTypeVirtualMachine InstanceType = "virtual-machine"
+	InstanceTypeVM             InstanceType = "virtual-machine"
 	InstanceTypeAny            InstanceType = "any"
 )
 
@@ -44,6 +45,16 @@ type Instance struct {
 
 	State     *InstanceState `json:"state,omitempty"`
 	Snapshots []Snapshot     `json:"snapshots,omitempty"`
+}
+
+// Writable converts an Instance into an InstanceUpdateRequest payload.
+func (i *Instance) Writable() InstanceUpdateRequest {
+	return InstanceUpdateRequest{
+		Config:      i.Config,
+		Devices:     i.Devices,
+		Profiles:    i.Profiles,
+		Description: "",
+	}
 }
 
 // InstanceState represents the live runtime state of an instance.
@@ -181,6 +192,7 @@ type Network struct {
 	Managed     bool              `json:"managed"`
 	Status      string            `json:"status"`
 	Locations   []string          `json:"locations,omitempty"`
+	UsedBy      []string          `json:"used_by,omitempty"`
 	ETag        string            `json:"etag"`
 }
 
@@ -214,8 +226,10 @@ type StorageVolume struct {
 	Type        string            `json:"type"`         // "custom"
 	ContentType string            `json:"content_type"` // "filesystem" | "block"
 	Description string            `json:"description"`
+	Pool        string            `json:"pool,omitempty"`
 	Config      map[string]string `json:"config"`
 	Location    string            `json:"location,omitempty"`
+	UsedBy      []string          `json:"used_by,omitempty"`
 	ETag        string            `json:"etag"`
 }
 
