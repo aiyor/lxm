@@ -141,7 +141,7 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 					retryable = true
 				}
 				report.Errors = append(report.Errors, ErrorInfo{
-					Code:      "LXD_ERROR",
+					Code:      "PROVIDER_ERROR",
 					Message:   fmt.Sprintf("fetching image %q from remote %q: %v", op.Alias, op.RemoteURL, err),
 					Retryable: retryable,
 				})
@@ -173,7 +173,7 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 				if err := e.executeVolumeOp(ctx, op); err != nil {
 					storageFailed = true
 					report.Errors = append(report.Errors, ErrorInfo{
-						Code:      "LXD_ERROR",
+						Code:      "PROVIDER_ERROR",
 						Container: step.Container,
 						Message:   fmt.Sprintf("storage volume %q in pool %q: %v", op.Name, op.Pool, err),
 					})
@@ -270,7 +270,7 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 				seenVols[key] = true
 				if err := e.executeVolumeOp(ctx, op); err != nil {
 					report.Errors = append(report.Errors, ErrorInfo{
-						Code:      "LXD_ERROR",
+						Code:      "PROVIDER_ERROR",
 						Container: step.Container,
 						Message:   fmt.Sprintf("deleting storage volume %q in pool %q: %v", op.Name, op.Pool, err),
 					})
@@ -565,7 +565,7 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 				res.OK = false
 				res.Error = "etag mismatch: container modified externally"
 				return res, &ErrorInfo{
-					Code:      "LXD_ERROR",
+					Code:      "PROVIDER_ERROR",
 					Container: step.Container,
 					Message:   "etag mismatch: container modified externally",
 					Retryable: true,
@@ -921,7 +921,7 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 		case out := <-doneChan:
 			if out.err != nil {
 				return &ErrorInfo{
-					Code:      "LXD_ERROR",
+					Code:      "PROVIDER_ERROR",
 					Container: step.Container,
 					Message:   fmt.Sprintf("cloud-init wait exec error on %q: %v", step.Container, out.err),
 					Retryable: true,
@@ -1095,7 +1095,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 			snapName := fmt.Sprintf("user.lxm.snap.%s-%d", step.Container, time.Now().UnixNano())
 			if snapErr := e.driver.CreateInstanceSnapshot(ctx, step.Container, snapName, false); snapErr != nil {
 				return &ErrorInfo{
-					Code:      "LXD_ERROR",
+					Code:      "PROVIDER_ERROR",
 					Container: step.Container,
 					Message:   fmt.Sprintf("creating snapshot %q on %q: %v", snapName, step.Container, snapErr),
 				}
@@ -1136,7 +1136,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 		live, freshETag, getErr := e.driver.GetInstance(ctx, step.Container)
 		if getErr != nil {
 			return &ErrorInfo{
-				Code:      "LXD_ERROR",
+				Code:      "PROVIDER_ERROR",
 				Container: step.Container,
 				Message:   fmt.Sprintf("fetching container %q to update recipe metadata: %v", step.Container, getErr),
 			}
@@ -1148,7 +1148,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 		put.Config[hashKeys[i]] = hashVal
 		if putErr := e.driver.UpdateInstance(ctx, step.Container, put, freshETag); putErr != nil {
 			return &ErrorInfo{
-				Code:      "LXD_ERROR",
+				Code:      "PROVIDER_ERROR",
 				Container: step.Container,
 				Message:   fmt.Sprintf("updating recipe metadata on %q: %v", step.Container, putErr),
 			}
@@ -1186,7 +1186,7 @@ func errorCodeToExit(code string) int {
 		return 2
 	case "CONFIG_ERROR":
 		return 3
-	case "LXD_ERROR":
+	case "PROVIDER_ERROR":
 		return 4
 	case "TARGET_NOT_FOUND":
 		return 5
@@ -1208,7 +1208,7 @@ func exitToErrorCode(code int) string {
 	case 3:
 		return "CONFIG_ERROR"
 	case 4:
-		return "LXD_ERROR"
+		return "PROVIDER_ERROR"
 	case 5:
 		return "TARGET_NOT_FOUND"
 	case 6:

@@ -1701,7 +1701,7 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 }
 
 // planComputeError maps a reconciler.Compute error to its exit code. A missing
-// external storage volume is a state-level error (exit 4, LXD_ERROR); every
+// external storage volume is a state-level error (exit 4, PROVIDER_ERROR); every
 // other plan error is a manifest/config-level error (exit 3, CONFIG_ERROR) —
 // STORAGE-SPEC §7.6/§11.
 func planComputeError(err error) error {

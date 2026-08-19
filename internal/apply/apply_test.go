@@ -388,7 +388,7 @@ func TestExecutor_ErrorPrecedence(t *testing.T) {
 	}
 	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 4 {
-		t.Errorf("expected exit code 4 (LXD_ERROR) on LXD operation error, got %d", rep.ExitCode)
+		t.Errorf("expected exit code 4 (PROVIDER_ERROR) on LXD operation error, got %d", rep.ExitCode)
 	}
 }
 
@@ -868,7 +868,7 @@ func TestExecutor_WaitPolicy_TransportError(t *testing.T) {
 
 	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 4 {
-		t.Errorf("expected exit code 4 (LXD_ERROR) for transport error, got %d", rep.ExitCode)
+		t.Errorf("expected exit code 4 (PROVIDER_ERROR) for transport error, got %d", rep.ExitCode)
 	}
 }
 

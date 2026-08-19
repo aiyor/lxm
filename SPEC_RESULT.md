@@ -68,12 +68,12 @@ consumers:
 * **`errors[]` for network steps** carry the failing object's name in the `name` field (instance
   errors use `container`).
 * **Phase-abort**: a network-step LXD error aborts the apply before any instance step runs;
-  `network_results` records the failing step and its `LXD_ERROR` (exit 4) surfaces in the top-level
+  `network_results` records the failing step and its `PROVIDER_ERROR` (exit 4) surfaces in the top-level
   `errors` array.
 
 Exit-code mapping is unchanged and shared with the instance plane: manifest/policy/union/IPAM/NIC
 violations ⇒ `3` (`CONFIG_ERROR`); LXD API/extension errors (including `create_acl`/
-`create_vswitch`) ⇒ `4` (`LXD_ERROR`).
+`create_vswitch`) ⇒ `4` (`PROVIDER_ERROR`).
 
 ---
 
@@ -87,7 +87,7 @@ Every envelope error object specifies a string `code` that maps 1-to-1 to its co
 | **1** | `INTERNAL_ERROR` | Unhandled panic, runtime error, or internal crash. | Unexpected runtime failure or context error. |
 | **2** | `USAGE_ERROR` | Flag parsing error, missing arguments, or TTY carve-out. | Passing `--format json` to `lxm shell`. |
 | **3** | `CONFIG_ERROR` | Schema validation failure, YAML error, unbound variable. | Unbound variable `{{ .Env.MISSING }}`. |
-| **4** | `LXD_ERROR` | LXD daemon API error, socket error, ETag conflict. | Daemon connection refused or ETag 412 drift. |
+| **4** | `PROVIDER_ERROR` | LXD daemon API error, socket error, ETag conflict. | Daemon connection refused or ETag 412 drift. |
 | **5** | `TARGET_NOT_FOUND` | Container name, snapshot, or target set not found. | Selector matching 0 containers or missing target file. |
 | **6** | `EXEC_FAILED` | Recipe execution error, non-zero script exit code. | Recipe bash script returning non-zero exit status. |
 | **7** | `WAIT_TIMEOUT` | Cloud-init or network readiness timeout exceeded. | Cloud-init wait deadline exceeded (10m). |

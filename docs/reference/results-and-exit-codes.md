@@ -53,7 +53,7 @@ Pass `--format json` to any command (except the interactive `shell` and `ssh` ca
 | **1** | `INTERNAL_ERROR` | Unhandled panic or internal failure. | Unexpected runtime failure, interrupt/cancellation. |
 | **2** | `USAGE_ERROR` | Invalid arguments, flag syntax, or interactive carve-out. | `--prune` on a single file; `--format json` on `shell`/`ssh`. |
 | **3** | `CONFIG_ERROR` | YAML/schema validation failure or unbound variable. | Unknown key, bad mount path, unbound `{{ .Env.X }}`. |
-| **4** | `LXD_ERROR` | LXD daemon/API error, socket error, or ETag conflict. | Connection refused, ETag `412` drift. |
+| **4** | `PROVIDER_ERROR` | LXD daemon/API error, socket error, or ETag conflict. | Connection refused, ETag `412` drift. |
 | **5** | `TARGET_NOT_FOUND` | Container, snapshot, or target set not found. | Selector matches zero containers; missing file. |
 | **6** | `EXEC_FAILED` | Recipe or script execution failed. | A recipe script exits non-zero. |
 | **7** | `WAIT_TIMEOUT` | Readiness wait timed out. | Cloud-init/network wait deadline exceeded. |
@@ -68,7 +68,7 @@ Each envelope error object's `code` maps 1-to-1 to its exit class. Scripts shoul
 | 1 | `INTERNAL_ERROR` |
 | 2 | `USAGE_ERROR` |
 | 3 | `CONFIG_ERROR` |
-| 4 | `LXD_ERROR` |
+| 4 | `PROVIDER_ERROR` |
 | 5 | `TARGET_NOT_FOUND` |
 | 6 | `EXEC_FAILED` |
 | 7 | `WAIT_TIMEOUT` |

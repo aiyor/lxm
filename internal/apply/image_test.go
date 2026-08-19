@@ -123,8 +123,8 @@ func TestExecutor_PhaseMinusOne_FetchFailureAborts(t *testing.T) {
 	if report.ExitCode != 4 {
 		t.Fatalf("expected exit 4 on fetch failure, got %d", report.ExitCode)
 	}
-	if len(report.Errors) != 1 || report.Errors[0].Code != "LXD_ERROR" {
-		t.Errorf("expected one LXD_ERROR entry, got %+v", report.Errors)
+	if len(report.Errors) != 1 || report.Errors[0].Code != "PROVIDER_ERROR" {
+		t.Errorf("expected one PROVIDER_ERROR entry, got %+v", report.Errors)
 	}
 	// Phase-abort semantics: the instance step must NOT run after a fetch failure.
 	if _, ok := driver.Instances["box1"]; ok {

@@ -72,7 +72,7 @@ $ echo $?
 
 ```json
 {
-  "code": "LXD_ERROR",
+  "code": "PROVIDER_ERROR",
   "container": "ug5-etag3",
   "retryable": true
 }

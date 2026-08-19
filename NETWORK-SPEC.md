@@ -448,9 +448,9 @@ Full user documentation: `docs/reference/conntrack-lifecycle.md`.
   (instance errors use `container`).
 * Exit codes: manifest/policy/union conflicts, IPAM violations, NIC-subnet violations ⇒ `3`
   (`CONFIG_ERROR`); LXD API/extension errors, including `create_acl`/`create_vswitch` failures and
-  live-state listing failures ⇒ `4` (`LXD_ERROR`). No new codes.
+  live-state listing failures ⇒ `4` (`PROVIDER_ERROR`). No new codes.
 * **Phase-abort**: a network-step LXD error aborts the apply before any instance step runs; the
-  envelope's `network_results` records the failing step and its `LXD_ERROR` (exit 4) surfaces in
+  envelope's `network_results` records the failing step and its `PROVIDER_ERROR` (exit 4) surfaces in
   the top-level `errors` array.
 
 ## 11. LXD Service Surface (`internal/lxd`)

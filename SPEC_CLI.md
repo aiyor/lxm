@@ -60,7 +60,7 @@ The following persistent flags are defined on the `lxm` root command:
 | **1** | `INTERNAL_ERROR` | Unhandled error, panic, or internal logic failure. |
 | **2** | `USAGE_ERROR` | Invalid command arguments, flag syntax, or TTY carve-out violation. |
 | **3** | `CONFIG_ERROR` | YAML syntax error, schema validation failure, or unbound variable. |
-| **4** | `LXD_ERROR` | LXD daemon connection failure, API error, or ETag concurrency conflict. |
+| **4** | `PROVIDER_ERROR` | Provider (LXD/Incus) daemon connection failure, API error, TLS handshake failure, or ETag concurrency conflict. |
 | **5** | `TARGET_NOT_FOUND` | Container name, snapshot, or selector target set not found (empty match). |
 | **6** | `EXEC_FAILED` | Recipe execution failure, non-zero script exit code, or command error. |
 | **7** | `WAIT_TIMEOUT` | Cloud-init or network readiness wait timeout exceeded. |

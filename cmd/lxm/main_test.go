@@ -192,8 +192,8 @@ func TestRun_ApplyETagDrift_JSONRetryable(t *testing.T) {
 	if !env.Errors[0].Retryable {
 		t.Errorf("expected retryable=true on ETag drift error, got %+v", env.Errors[0])
 	}
-	if env.Errors[0].Code != "LXD_ERROR" {
-		t.Errorf("expected error code LXD_ERROR, got %q", env.Errors[0].Code)
+	if env.Errors[0].Code != "PROVIDER_ERROR" {
+		t.Errorf("expected error code PROVIDER_ERROR, got %q", env.Errors[0].Code)
 	}
 	if env.Errors[0].Container != "dev-box" {
 		t.Errorf("expected container dev-box on error, got %q", env.Errors[0].Container)
@@ -207,7 +207,7 @@ func TestRun_ApplyInterrupt_EnvelopeKeepsInternalError(t *testing.T) {
 	// The envelope's report-error propagation is gated on ctx.Err() == nil:
 	// an interrupted apply forces exit 1 and must pair it with a single
 	// INTERNAL_ERROR entry, never with the report's per-container
-	// LXD_ERROR/retryable entries (SPEC_RESULT code-to-exit mapping).
+	// PROVIDER_ERROR/retryable entries (SPEC_RESULT code-to-exit mapping).
 	driver := fake.New()
 	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "dev-box"})
 	driver.UpdateInstanceFunc = func(name string, put provider.InstanceUpdateRequest, etag string) error {
@@ -986,7 +986,7 @@ func TestRun_FormatJSON_Errors(t *testing.T) {
 		if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 			t.Fatalf("failed to parse JSON envelope: %v. Output: %s", err, stdout.String())
 		}
-		if env.OK || env.ExitCode != 4 || len(env.Errors) == 0 || env.Errors[0].Code != "LXD_ERROR" {
+		if env.OK || env.ExitCode != 4 || len(env.Errors) == 0 || env.Errors[0].Code != "PROVIDER_ERROR" {
 			t.Errorf("unexpected envelope for exit 4: %+v", env)
 		}
 	})

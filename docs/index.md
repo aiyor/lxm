@@ -1,12 +1,14 @@
-# lxm — Declarative LXD Fleet Manager
+# lxm — Declarative LXD & Incus Fleet Manager
 
-`lxm` is a command-line tool for **declarative, reproducible management of LXD container fleets**. You describe the containers you want in YAML manifests — their image, users, mounts, networks, and provisioning scripts — and `lxm` reconciles your live LXD host to match.
+`lxm` is a command-line tool for **declarative, reproducible management of LXD and Incus container and VM fleets**. You describe the containers and virtual machines you want in YAML manifests — their image, users, mounts, networks, and provisioning scripts — and `lxm` reconciles your live LXD or Incus host (locally over a UNIX socket, or remotely over HTTPS mTLS, across clusters and projects) to match.
 
 Every mutation is **previewed first** as a pure, deterministic diff (`lxm plan`), then applied only when you say so (`lxm apply`). Reconcile as often as you like — `apply` only performs the steps your fleet actually needs to match what you declared.
 
 ## Why use lxm?
 
-* **Plan-first, never blind.** Every change — create, update, rebuild, delete, start, stop — is a previewable, machine-readable diff before it touches LXD.
+* **Plan-first, never blind.** Every change — create, update, rebuild, delete, start, stop — is a previewable, machine-readable diff before it touches LXD or Incus.
+* **Dual-provider, one interface.** Drive Canonical LXD and Incus through a unified, provider-agnostic abstraction — the same manifests work against either backend.
+* **Remote, cluster & project ready.** mTLS-authenticated HTTPS endpoints, trust-token enrollment, cluster member targeting, and multi-tenant projects via `lxm remote` and `--remote/--target/--project`.
 * **Idempotent by design.** Reconcile as often as you like; `apply` only changes what drifted.
 * **A whole fleet from one directory.** One base manifest + one small manifest per container. Teams share and version them like code.
 * **Provisioning built in.** Recipes (shell scripts) run after the container boots, guarded by wait-for-cloud-init, snapshotted before they run, and safe to roll back.
@@ -17,7 +19,7 @@ Every mutation is **previewed first** as a pure, deterministic diff (`lxm plan`)
 
 === "I want a container running now"
 
-    Start here if you have LXD installed and want to see lxm work end-to-end in a few minutes.
+    Start here if you have LXD or Incus installed and want to see lxm work end-to-end in a few minutes.
 
     [**Get Started →**](getting-started/quickstart.md)
 

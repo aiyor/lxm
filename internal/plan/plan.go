@@ -88,7 +88,7 @@ type Step struct {
 }
 
 // MissingVolumeError reports an external (source-referenced) custom storage
-// volume that does not exist at plan time. Surfaced as exit 4 (LXD_ERROR).
+// volume that does not exist at plan time. Surfaced as exit 4 (PROVIDER_ERROR).
 type MissingVolumeError struct {
 	Instance string
 	Disk     string

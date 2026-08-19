@@ -375,7 +375,7 @@ declare it under image_remotes:` (§4.1).
 
 ### 7.4 Remote-resolution / fetch failure (apply time, exit 4)
 Any failure resolving the alias on the remote, pulling the image, or tagging the alias surfaces as
-`LXD_ERROR` (exit 4), retryable for transient network/connection errors. In addition to the errors
+`PROVIDER_ERROR` (exit 4), retryable for transient network/connection errors. In addition to the errors
 `ClassifyLXDError` marks retryable (ETag/412 conflicts), a fetch that times out
 (`waitOpContext` deadline) is explicitly flagged retryable.
 
@@ -483,7 +483,7 @@ simplestreams pull; `plan`/`diff` stay lenient (offline-capable) and degrade to 
 * **Exit codes**:
   * unknown remote / invalid URL / conflicting `image_remotes` / fetch-disabled miss ⇒ **3**
     (`CONFIG_ERROR`).
-  * remote alias missing, no `<type>` image, network failure, LXD pull error ⇒ **4** (`LXD_ERROR`);
+  * remote alias missing, no `<type>` image, network failure, LXD pull error ⇒ **4** (`PROVIDER_ERROR`);
     transient network errors are marked retryable.
   * local-alias/fingerprint miss at create ⇒ **4** (unchanged LXD error).
   * No new exit codes.

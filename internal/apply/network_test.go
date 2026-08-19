@@ -84,7 +84,7 @@ func TestApply_NetworkFailure_AbortsBeforeInstances(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if report.ExitCode != 4 {
-		t.Fatalf("expected exit 4 (LXD_ERROR), got %d", report.ExitCode)
+		t.Fatalf("expected exit 4 (PROVIDER_ERROR), got %d", report.ExitCode)
 	}
 	if len(report.NetworkResults) != 1 || report.NetworkResults[0].OK {
 		t.Fatalf("expected failing network result, got %+v", report.NetworkResults)

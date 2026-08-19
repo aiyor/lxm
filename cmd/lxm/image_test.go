@@ -158,7 +158,7 @@ func TestRun_ApplyImageAliasProbeFailure_Exit4(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"apply", cfgFile}, &stdout, &stderr, driver)
 	if code != 4 {
-		t.Fatalf("apply with probe failure returned %d, want 4 (LXD_ERROR). Stderr: %s", code, stderr.String())
+		t.Fatalf("apply with probe failure returned %d, want 4 (PROVIDER_ERROR). Stderr: %s", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "listing local image aliases") {
 		t.Errorf("stderr missing probe error: %q", stderr.String())

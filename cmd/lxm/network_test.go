@@ -199,7 +199,7 @@ name: web-a
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"apply", tmpDir, "--format", "json"}, &stdout, &stderr, driver)
 	if code != 4 {
-		t.Fatalf("expected exit 4 (LXD_ERROR), got %d. Stderr: %s", code, stderr.String())
+		t.Fatalf("expected exit 4 (PROVIDER_ERROR), got %d. Stderr: %s", code, stderr.String())
 	}
 	var env output.Envelope
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
