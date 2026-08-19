@@ -17,6 +17,8 @@ import (
 	"github.com/canonical/lxd/shared/api"
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
+
+	"github.com/aiyor/lxm/internal/provider"
 )
 
 // UserEnv contains environment information for a user inside a container.
@@ -89,6 +91,7 @@ type InstanceService interface {
 	GetInstanceSnapshots(name string) ([]api.InstanceSnapshot, error)
 	RestoreInstanceSnapshot(name string, snapshotName string) error
 	RestoreInstanceSnapshotContext(ctx context.Context, name string, snapshotName string) error
+	ProviderType() provider.ProviderType
 }
 
 // NetworkService defines the interface for interacting with LXD networks and
@@ -183,6 +186,10 @@ func waitOpContext(ctx context.Context, op lxd_client.Operation) error {
 		_ = op.Cancel()
 		return ctx.Err()
 	}
+}
+
+func (s *lxdService) ProviderType() provider.ProviderType {
+	return provider.ProviderTypeLXD
 }
 
 func (s *lxdService) CreateInstance(req api.InstancesPost) error {

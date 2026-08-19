@@ -3,7 +3,7 @@ set -euo pipefail
 
 VM="${1:-lxm-incus-lab}"
 echo "==> Resolving management IP for VM: ${VM}..."
-VM_IP=$(lxc list "^${VM}\$" --format json | jq -r '.[0].state.network.eth0.addresses[] | select(.family=="inet") | .address')
+VM_IP=$(lxc list "^${VM}\$" --format json | jq -r '.[0].state.network[] | select(.type=="broadcast") | .addresses[] | select(.family=="inet" and .scope=="global") | .address' | head -n1)
 
 if [ -z "${VM_IP}" ]; then
     echo "ERROR: Could not resolve IPv4 for ${VM}" >&2
@@ -18,5 +18,6 @@ else
     exit 1
 fi
 
-echo "==> Running lxm remote list to verify enrolled remotes..."
-lxm remote list || true
+LXM_CMD="${LXM_BIN:-lxm}"
+echo "==> Running ${LXM_CMD} remote list to verify enrolled remotes..."
+${LXM_CMD} remote list || true

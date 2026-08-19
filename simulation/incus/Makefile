@@ -1,32 +1,37 @@
 SRC ?= /mnt/devel/tools/lxm
 VM  ?= lxm-incus-lab
 VM2 ?= lxm-incus-lab-2
+LXM_BIN ?= $(SRC)/bin/lxm
+
+$(LXM_BIN):
+	@mkdir -p $(SRC)/bin
+	go build -o $(LXM_BIN) $(SRC)/cmd/lxm
 
 # Prerequisites check: host requires 'lxc' (LXD client) and 'jq'
 
 # 1. Provision the primary Incus Lab VM (incus-node1 Leader)
-provision:
-	lxm apply $(SRC)/simulation/incus/host/lxm-incus-lab.yaml
+provision: $(LXM_BIN)
+	$(LXM_BIN) apply $(SRC)/simulation/incus/host/lxm-incus-lab.yaml
 
 # 2. Rebuild in-VM lxm binary from live mounted source (hot iteration path)
-rebuild:
-	lxm run $(VM) -- $(SRC)/simulation/incus/host/recipes/build-lxm.sh
+rebuild: $(LXM_BIN)
+	$(LXM_BIN) run $(VM) -- $(SRC)/simulation/incus/host/recipes/build-lxm.sh
 
 # 3. Enroll host client with Lab VM over HTTPS mTLS (Token Handoff)
-remote-enroll:
+remote-enroll: $(LXM_BIN)
 	@echo "==> Fetching trust token from lab VM..."
 	$(eval TOKEN := $(shell lxc exec $(VM) -- cat /root/incus-trust-token))
-	$(eval IP := $(shell lxc list "^$(VM)$$" --format json | jq -r '.[0].state.network.eth0.addresses[] | select(.family=="inet") | .address'))
+	$(eval IP := $(shell lxc list "^$(VM)$$" --format json | jq -r '.[0].state.network[] | select(.type=="broadcast") | .addresses[] | select(.family=="inet" and .scope=="global") | .address' | head -n1))
 	@echo "==> Enrolling host remote 'lab-cluster' at https://$(IP):8443..."
-	lxm remote add lab-cluster https://$(IP):8443 --token $(TOKEN) --provider incus
+	$(LXM_BIN) remote add lab-cluster https://$(IP):8443 --token $(TOKEN) --provider incus --accept-certificate
 
 # 4. Provision and join Node 2 for a full 2-node cluster
-cluster-2node:
+cluster-2node: $(LXM_BIN)
 	@echo "==> Provisioning Node 2 VM..."
-	lxm apply $(SRC)/simulation/incus/host/lxm-incus-lab-2.yaml
+	$(LXM_BIN) apply $(SRC)/simulation/incus/host/lxm-incus-lab-2.yaml
 	@echo "==> Minting cluster join token on Node 1..."
 	$(eval JOIN_TOKEN := $(shell lxc exec $(VM) -- incus cluster add incus-node2 --quiet))
-	$(eval LEADER_IP := $(shell lxc list "^$(VM)$$" --format json | jq -r '.[0].state.network.eth0.addresses[] | select(.family=="inet") | .address'))
+	$(eval LEADER_IP := $(shell lxc list "^$(VM)$$" --format json | jq -r '.[0].state.network[] | select(.type=="broadcast") | .addresses[] | select(.family=="inet" and .scope=="global") | .address' | head -n1))
 	@echo "==> Joining Node 2 to cluster at $(LEADER_IP):8443..."
 	lxc exec $(VM2) -- env LEADER_IP=$(LEADER_IP) JOIN_TOKEN=$(JOIN_TOKEN) /bin/bash /opt/lxm-src/simulation/incus/host/recipes/setup-member-join.sh
 
@@ -39,24 +44,24 @@ test-cluster-placement:
 	lxc exec $(VM) -- su - lxm -c 'cd /opt/lxm-src/simulation/incus/vm/lab/multi-node && lxm apply .'
 
 # 7. Test Remote HTTPS Cluster API from host to Lab VM
-test-remote:
-	$(SRC)/simulation/incus/scripts/test-remote-https.sh $(VM)
+test-remote: $(LXM_BIN)
+	LXM_BIN="$(LXM_BIN)" $(SRC)/simulation/incus/scripts/test-remote-https.sh $(VM)
 
 # 8. Run full verification suite
-verify:
-	lxm run $(VM) -- $(SRC)/simulation/incus/scripts/verify-incus.sh
+verify: $(LXM_BIN)
+	$(LXM_BIN) run $(VM) -- $(SRC)/simulation/incus/scripts/verify-incus.sh
 
 # 9. Reset inner Incus to pristine state
-reset:
-	lxm run $(VM) -- $(SRC)/simulation/incus/scripts/reset-inner-incus.sh
+reset: $(LXM_BIN)
+	$(LXM_BIN) run $(VM) -- $(SRC)/simulation/incus/scripts/reset-inner-incus.sh
 
 # 10. Snapshots and Rollbacks
-snap-ready:
-	lxm snapshot create $(VM) ready
+snap-ready: $(LXM_BIN)
+	$(LXM_BIN) snapshot create $(VM) ready
 
-rollback:
-	lxm rollback $(VM) ready
+rollback: $(LXM_BIN)
+	$(LXM_BIN) rollback $(VM) ready
 
 # 11. Interactive shell into VM
-shell:
-	lxm shell $(VM) --run-as root
+shell: $(LXM_BIN)
+	$(LXM_BIN) shell $(VM) --run-as root

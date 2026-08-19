@@ -107,6 +107,13 @@ func (d *Driver) UseTarget(targetNode string) provider.Driver {
 	}
 }
 
+func (d *Driver) clusterClient() incus_client.InstanceServer {
+	if d.target != "" {
+		return d.client.UseTarget("")
+	}
+	return d.client
+}
+
 func waitOpContext(ctx context.Context, op incus_client.Operation) error {
 	if op == nil {
 		return nil
@@ -166,7 +173,7 @@ func (d *Driver) UpdateInstance(name string, req provider.InstanceUpdateRequest,
 
 func (d *Driver) UpdateInstanceContext(ctx context.Context, name string, req provider.InstanceUpdateRequest, etag string) error {
 	incusPut := api.InstancePut{
-		Config:      req.Config,
+		Config:      toIncusConfig(req.Config),
 		Devices:     req.Devices,
 		Profiles:    req.Profiles,
 		Description: req.Description,
@@ -279,7 +286,7 @@ func (d *Driver) RestoreInstanceSnapshotContext(ctx context.Context, name string
 }
 
 func (d *Driver) GetNetworks() ([]provider.Network, error) {
-	nets, err := d.client.GetNetworks()
+	nets, err := d.clusterClient().GetNetworks()
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +306,7 @@ func (d *Driver) GetNetworks() ([]provider.Network, error) {
 }
 
 func (d *Driver) GetNetwork(name string) (*provider.Network, string, error) {
-	n, etag, err := d.client.GetNetwork(name)
+	n, etag, err := d.clusterClient().GetNetwork(name)
 	if err != nil {
 		return nil, "", err
 	}
@@ -316,7 +323,7 @@ func (d *Driver) GetNetwork(name string) (*provider.Network, string, error) {
 }
 
 func (d *Driver) CreateNetwork(net provider.NetworkCreateRequest) error {
-	return d.client.CreateNetwork(api.NetworksPost{
+	return d.clusterClient().CreateNetwork(api.NetworksPost{
 		NetworkPut: api.NetworkPut{
 			Description: net.Description,
 			Config:      net.Config,
@@ -327,18 +334,18 @@ func (d *Driver) CreateNetwork(net provider.NetworkCreateRequest) error {
 }
 
 func (d *Driver) UpdateNetwork(name string, net provider.NetworkUpdateRequest, etag string) error {
-	return d.client.UpdateNetwork(name, api.NetworkPut{
+	return d.clusterClient().UpdateNetwork(name, api.NetworkPut{
 		Description: net.Description,
 		Config:      net.Config,
 	}, etag)
 }
 
 func (d *Driver) DeleteNetwork(name string) error {
-	return d.client.DeleteNetwork(name)
+	return d.clusterClient().DeleteNetwork(name)
 }
 
 func (d *Driver) GetNetworkACLs() ([]provider.NetworkACL, error) {
-	acls, err := d.client.GetNetworkACLs()
+	acls, err := d.clusterClient().GetNetworkACLs()
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +357,7 @@ func (d *Driver) GetNetworkACLs() ([]provider.NetworkACL, error) {
 }
 
 func (d *Driver) GetNetworkACL(name string) (*provider.NetworkACL, string, error) {
-	acl, etag, err := d.client.GetNetworkACL(name)
+	acl, etag, err := d.clusterClient().GetNetworkACL(name)
 	if err != nil {
 		return nil, "", err
 	}
@@ -359,7 +366,7 @@ func (d *Driver) GetNetworkACL(name string) (*provider.NetworkACL, string, error
 }
 
 func (d *Driver) CreateNetworkACL(acl provider.NetworkACLCreateRequest) error {
-	return d.client.CreateNetworkACL(api.NetworkACLsPost{
+	return d.clusterClient().CreateNetworkACL(api.NetworkACLsPost{
 		NetworkACLPost: api.NetworkACLPost{
 			Name: acl.Name,
 		},
@@ -373,7 +380,7 @@ func (d *Driver) CreateNetworkACL(acl provider.NetworkACLCreateRequest) error {
 }
 
 func (d *Driver) UpdateNetworkACL(name string, acl provider.NetworkACLUpdateRequest, etag string) error {
-	return d.client.UpdateNetworkACL(name, api.NetworkACLPut{
+	return d.clusterClient().UpdateNetworkACL(name, api.NetworkACLPut{
 		Description: acl.Description,
 		Egress:      toIncusRules(acl.Egress),
 		Ingress:     toIncusRules(acl.Ingress),
@@ -382,7 +389,7 @@ func (d *Driver) UpdateNetworkACL(name string, acl provider.NetworkACLUpdateRequ
 }
 
 func (d *Driver) DeleteNetworkACL(name string) error {
-	return d.client.DeleteNetworkACL(name)
+	return d.clusterClient().DeleteNetworkACL(name)
 }
 
 func (d *Driver) GetStoragePoolNames() ([]string, error) {
@@ -912,6 +919,52 @@ func (d *Driver) GetIP(name string) (string, error) {
 // Helpers & Mapping Functions
 // ============================================================================
 
+func toIncusConfig(cfg map[string]string) map[string]string {
+	if cfg == nil {
+		return nil
+	}
+	out := make(map[string]string, len(cfg))
+	for k, v := range cfg {
+		if k == "boot.mode" {
+			switch v {
+			case "uefi-nosecureboot":
+				out["security.secureboot"] = "false"
+			case "uefi-secureboot":
+				out["security.secureboot"] = "true"
+			case "bios":
+				out["security.secureboot"] = "false"
+				out["security.csm"] = "true"
+			}
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func toProviderConfig(cfg map[string]string) map[string]string {
+	if cfg == nil {
+		return nil
+	}
+	out := make(map[string]string, len(cfg))
+	for k, v := range cfg {
+		out[k] = v
+	}
+	if _, ok := out["boot.mode"]; !ok {
+		switch out["security.secureboot"] {
+		case "false":
+			if out["security.csm"] == "true" {
+				out["boot.mode"] = "bios"
+			} else {
+				out["boot.mode"] = "uefi-nosecureboot"
+			}
+		case "true":
+			out["boot.mode"] = "uefi-secureboot"
+		}
+	}
+	return out
+}
+
 func toProviderInstance(inst *api.Instance, etag string) *provider.Instance {
 	if inst == nil {
 		return nil
@@ -923,8 +976,8 @@ func toProviderInstance(inst *api.Instance, etag string) *provider.Instance {
 		StatusCode:      int(inst.StatusCode),
 		Architecture:    inst.Architecture,
 		Location:        inst.Location,
-		Config:          inst.Config,
-		ExpandedConfig:  inst.ExpandedConfig,
+		Config:          toProviderConfig(inst.Config),
+		ExpandedConfig:  toProviderConfig(inst.ExpandedConfig),
 		Devices:         inst.Devices,
 		ExpandedDevices: inst.ExpandedDevices,
 		Profiles:        inst.Profiles,
@@ -1074,7 +1127,7 @@ func toIncusInstancePost(req provider.InstanceCreateRequest) api.InstancesPost {
 			Secret:      req.Source.Secret,
 		},
 		InstancePut: api.InstancePut{
-			Config:    req.Config,
+			Config:    toIncusConfig(req.Config),
 			Devices:   req.Devices,
 			Profiles:  req.Profiles,
 			Ephemeral: req.Ephemeral,

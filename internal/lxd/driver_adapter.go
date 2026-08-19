@@ -24,6 +24,13 @@ func (a *driverAdapter) Driver() provider.Driver {
 	return a.driver
 }
 
+func (a *driverAdapter) ProviderType() provider.ProviderType {
+	if a.driver != nil {
+		return a.driver.ProviderType()
+	}
+	return provider.ProviderTypeLXD
+}
+
 func (a *driverAdapter) GetInstance(name string) (*api.Instance, string, error) {
 	inst, etag, err := a.driver.GetInstance(name)
 	if err != nil {

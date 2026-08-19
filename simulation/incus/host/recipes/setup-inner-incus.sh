@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+export DEBIAN_FRONTEND=noninteractive
+
 echo "==> Installing prerequisites..."
 apt-get update -y
 apt-get install -y curl gnupg tcpdump netcat-openbsd iputils-ping dnsutils jq
@@ -25,10 +27,13 @@ apt-get install -y incus incus-client
 echo "==> Waiting for Incus daemon readiness..."
 incus admin waitready --timeout=60
 
-echo "==> Detecting host-facing management IPv4 on eth0..."
-VM_IP=$(ip -4 -o addr show dev eth0 | awk '{print $4}' | cut -d/ -f1)
+echo "==> Detecting host-facing management IPv4..."
+VM_IP=$(hostname -I | awk '{print $1}')
 if [ -z "${VM_IP}" ]; then
-    echo "ERROR: Could not detect IPv4 on eth0" >&2
+    VM_IP=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)
+fi
+if [ -z "${VM_IP}" ]; then
+    echo "ERROR: Could not detect host-facing IPv4" >&2
     exit 1
 fi
 echo "==> Configuring Incus cluster leader with core.https_address: ${VM_IP}:8443"

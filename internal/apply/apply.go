@@ -780,10 +780,21 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 
 var transientAgentErrors = []string{
 	"LXD VM agent is not currently running",
+	"Incus VM agent is not currently running",
+	"VM agent isn't currently running",
+	"VM agent is not currently running",
+	"agent isn't currently running",
+	"agent is not currently running",
+	"agent not running",
 	"Failed connecting to lxd-agent",
+	"Failed connecting to incus-agent",
 	"The LXD agent is not running on this instance",
+	"The Incus agent is not running on this instance",
+	"The agent is not running on this instance",
 	"LXD agent not running",
+	"Incus agent not running",
 	"Failed to connect to lxd-agent",
+	"Failed to connect to incus-agent",
 	"Failed to connect to instance socket",
 	"websocket: close 1006 (abnormal closure)",
 }

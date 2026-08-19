@@ -10,6 +10,7 @@ import (
 
 	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/lxd"
+	"github.com/aiyor/lxm/internal/provider"
 	lxd_client "github.com/canonical/lxd/client"
 	"github.com/canonical/lxd/shared/api"
 )
@@ -189,6 +190,10 @@ func (m *mockLXDClient) RestoreInstanceSnapshot(name string, snapshotName string
 
 func (m *mockLXDClient) RestoreInstanceSnapshotContext(ctx context.Context, name string, snapshotName string) error {
 	return nil
+}
+
+func (m *mockLXDClient) ProviderType() provider.ProviderType {
+	return provider.ProviderTypeLXD
 }
 
 func newTestManager(mock *mockLXDClient) *Manager {

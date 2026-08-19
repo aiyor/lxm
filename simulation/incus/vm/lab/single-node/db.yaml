@@ -1,4 +1,5 @@
 schema: lxm/config/v2
+include: [_base.yaml]
 name: incus-test-db
 type: virtual-machine
 status: present

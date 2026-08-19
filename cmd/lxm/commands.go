@@ -130,7 +130,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			// decision (§4.1/§4.3). A failed inventory probe is fatal here:
 			// an empty inventory would plan redundant pulls for every cached
 			// remote image (M1).
-			imageRemotes, err := config.EffectiveImageRemotes(loaded)
+			imageRemotes, err := config.EffectiveImageRemotesForProvider(resolveProviderType(opts, svc, loaded), loaded)
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
@@ -331,7 +331,7 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				Steps:  []plan.Step{},
 			}
 
-			imageRemotes, err := config.EffectiveImageRemotes(loaded)
+			imageRemotes, err := config.EffectiveImageRemotesForProvider(resolveProviderType(opts, svc, loaded), loaded)
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
@@ -445,7 +445,7 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			}
 
 			reconciler := plan.NewReconciler()
-			imageRemotes, err := config.EffectiveImageRemotes([]*config.Config{conf})
+			imageRemotes, err := config.EffectiveImageRemotesForProvider(resolveProviderType(opts, svc, []*config.Config{conf}), []*config.Config{conf})
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
@@ -1136,6 +1136,46 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 				if strings.HasPrefix(arg, "--run-as=") {
 					user = strings.TrimPrefix(arg, "--run-as=")
 					i++
+					continue
+				}
+				if strings.HasPrefix(arg, "--remote=") {
+					opts.remote = strings.TrimPrefix(arg, "--remote=")
+					i++
+					continue
+				}
+				if arg == "--remote" && i+1 < len(args) {
+					opts.remote = args[i+1]
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(arg, "--provider=") {
+					opts.provider = strings.TrimPrefix(arg, "--provider=")
+					i++
+					continue
+				}
+				if arg == "--provider" && i+1 < len(args) {
+					opts.provider = args[i+1]
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(arg, "--project=") {
+					opts.project = strings.TrimPrefix(arg, "--project=")
+					i++
+					continue
+				}
+				if arg == "--project" && i+1 < len(args) {
+					opts.project = args[i+1]
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(arg, "--target=") {
+					opts.target = strings.TrimPrefix(arg, "--target=")
+					i++
+					continue
+				}
+				if arg == "--target" && i+1 < len(args) {
+					opts.target = args[i+1]
+					i += 2
 					continue
 				}
 				if strings.HasPrefix(arg, "-i=") || strings.HasPrefix(arg, "--identity=") {
@@ -1898,4 +1938,19 @@ func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opt
 
 	// 3. Fallback to base getter (default local provider)
 	return baseGetter()
+}
+
+func resolveProviderType(opts *cmdOptions, svc lxd.InstanceService, configs []*config.Config) string {
+	if opts != nil && opts.provider != "" {
+		return opts.provider
+	}
+	for _, conf := range configs {
+		if conf != nil && conf.Provider != "" {
+			return conf.Provider
+		}
+	}
+	if svc != nil {
+		return string(svc.ProviderType())
+	}
+	return ""
 }

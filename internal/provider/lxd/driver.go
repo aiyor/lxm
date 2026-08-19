@@ -94,6 +94,13 @@ func (d *Driver) UseTarget(targetNode string) provider.Driver {
 	}
 }
 
+func (d *Driver) clusterClient() lxd_client.InstanceServer {
+	if d.target != "" {
+		return d.client.UseTarget("")
+	}
+	return d.client
+}
+
 func waitOpContext(ctx context.Context, op lxd_client.Operation) error {
 	if op == nil {
 		return nil
@@ -266,7 +273,7 @@ func (d *Driver) RestoreInstanceSnapshotContext(ctx context.Context, name string
 }
 
 func (d *Driver) GetNetworks() ([]provider.Network, error) {
-	nets, err := d.client.GetNetworks()
+	nets, err := d.clusterClient().GetNetworks()
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +293,7 @@ func (d *Driver) GetNetworks() ([]provider.Network, error) {
 }
 
 func (d *Driver) GetNetwork(name string) (*provider.Network, string, error) {
-	n, etag, err := d.client.GetNetwork(name)
+	n, etag, err := d.clusterClient().GetNetwork(name)
 	if err != nil {
 		return nil, "", err
 	}
@@ -303,7 +310,7 @@ func (d *Driver) GetNetwork(name string) (*provider.Network, string, error) {
 }
 
 func (d *Driver) CreateNetwork(net provider.NetworkCreateRequest) error {
-	return d.client.CreateNetwork(api.NetworksPost{
+	return d.clusterClient().CreateNetwork(api.NetworksPost{
 		NetworkPut: api.NetworkPut{
 			Description: net.Description,
 			Config:      net.Config,
@@ -314,18 +321,18 @@ func (d *Driver) CreateNetwork(net provider.NetworkCreateRequest) error {
 }
 
 func (d *Driver) UpdateNetwork(name string, net provider.NetworkUpdateRequest, etag string) error {
-	return d.client.UpdateNetwork(name, api.NetworkPut{
+	return d.clusterClient().UpdateNetwork(name, api.NetworkPut{
 		Description: net.Description,
 		Config:      net.Config,
 	}, etag)
 }
 
 func (d *Driver) DeleteNetwork(name string) error {
-	return d.client.DeleteNetwork(name)
+	return d.clusterClient().DeleteNetwork(name)
 }
 
 func (d *Driver) GetNetworkACLs() ([]provider.NetworkACL, error) {
-	acls, err := d.client.GetNetworkACLs()
+	acls, err := d.clusterClient().GetNetworkACLs()
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +344,7 @@ func (d *Driver) GetNetworkACLs() ([]provider.NetworkACL, error) {
 }
 
 func (d *Driver) GetNetworkACL(name string) (*provider.NetworkACL, string, error) {
-	acl, etag, err := d.client.GetNetworkACL(name)
+	acl, etag, err := d.clusterClient().GetNetworkACL(name)
 	if err != nil {
 		return nil, "", err
 	}
@@ -346,7 +353,7 @@ func (d *Driver) GetNetworkACL(name string) (*provider.NetworkACL, string, error
 }
 
 func (d *Driver) CreateNetworkACL(acl provider.NetworkACLCreateRequest) error {
-	return d.client.CreateNetworkACL(api.NetworkACLsPost{
+	return d.clusterClient().CreateNetworkACL(api.NetworkACLsPost{
 		NetworkACLPost: api.NetworkACLPost{
 			Name: acl.Name,
 		},
@@ -360,7 +367,7 @@ func (d *Driver) CreateNetworkACL(acl provider.NetworkACLCreateRequest) error {
 }
 
 func (d *Driver) UpdateNetworkACL(name string, acl provider.NetworkACLUpdateRequest, etag string) error {
-	return d.client.UpdateNetworkACL(name, api.NetworkACLPut{
+	return d.clusterClient().UpdateNetworkACL(name, api.NetworkACLPut{
 		Description: acl.Description,
 		Egress:      toLXDRules(acl.Egress),
 		Ingress:     toLXDRules(acl.Ingress),
@@ -369,7 +376,7 @@ func (d *Driver) UpdateNetworkACL(name string, acl provider.NetworkACLUpdateRequ
 }
 
 func (d *Driver) DeleteNetworkACL(name string) error {
-	return d.client.DeleteNetworkACL(name)
+	return d.clusterClient().DeleteNetworkACL(name)
 }
 
 func (d *Driver) GetStoragePoolNames() ([]string, error) {

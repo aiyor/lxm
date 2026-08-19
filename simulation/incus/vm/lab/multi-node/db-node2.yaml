@@ -1,4 +1,5 @@
 schema: lxm/config/v2
+include: [../single-node/_base.yaml]
 name: incus-test-db-node2
 type: virtual-machine
 status: present

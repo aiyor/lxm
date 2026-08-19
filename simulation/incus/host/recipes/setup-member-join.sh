@@ -9,6 +9,8 @@ if [ -z "${JOIN_TOKEN}" ]; then
     exit 1
 fi
 
+export DEBIAN_FRONTEND=noninteractive
+
 echo "==> Installing prerequisites and Incus 7.x..."
 apt-get update -y
 apt-get install -y curl gnupg jq
@@ -27,7 +29,14 @@ apt-get update -y
 apt-get install -y incus incus-client
 incus admin waitready --timeout=60
 
-NODE2_IP=$(ip -4 -o addr show dev eth0 | awk '{print $4}' | cut -d/ -f1)
+NODE2_IP=$(hostname -I | awk '{print $1}')
+if [ -z "${NODE2_IP}" ]; then
+    NODE2_IP=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)
+fi
+if [ -z "${NODE2_IP}" ]; then
+    echo "ERROR: Could not detect host-facing IPv4 for Node 2" >&2
+    exit 1
+fi
 
 # Note: server_address supplies listener binding and cluster endpoint for Node 2.
 cat > /root/incus-join.yaml <<YAML

@@ -10,6 +10,8 @@ import (
 
 	lxd_client "github.com/canonical/lxd/client"
 	"github.com/canonical/lxd/shared/api"
+
+	"github.com/aiyor/lxm/internal/provider"
 )
 
 // FakeInstanceServer is an in-memory implementation of InstanceService for unit and integration testing.
@@ -245,6 +247,10 @@ func (f *FakeInstanceServer) RebuildInstance(name string, req api.InstanceRebuil
 	f.RebuiltLogs = append(f.RebuiltLogs, name)
 	f.ETags[name] = "fake-etag-rebuilt"
 	return nil
+}
+
+func (f *FakeInstanceServer) ProviderType() provider.ProviderType {
+	return provider.ProviderTypeLXD
 }
 
 func (f *FakeInstanceServer) HasExtension(name string) bool {
