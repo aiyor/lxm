@@ -109,7 +109,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				}
 			}
 
-			svc, err := resolveFleetService(getSvc, selectedConfigs, opts)
+			svc, err := resolveFleetService(getSvc, selectedConfigs, opts, remote.ResolveDriver)
 			if err != nil {
 				return &exitError{code: 4, err: err}
 			}
@@ -297,7 +297,7 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			liveVolumes := make(map[string]map[string]*provider.StorageVolume)
 			hasRebuild := false
 
-			svc, err := resolveFleetService(getSvc, selectedConfigs, opts)
+			svc, err := resolveFleetService(getSvc, selectedConfigs, opts, remote.ResolveDriver)
 			if err != nil {
 				hasTargeting := (opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != ""))
 				if !hasTargeting {
@@ -424,7 +424,7 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			liveVolumes := make(map[string]map[string]*provider.StorageVolume)
 			hasRebuild := false
 
-			svc, err := resolveFleetService(getSvc, []*config.Config{conf}, opts)
+			svc, err := resolveFleetService(getSvc, []*config.Config{conf}, opts, remote.ResolveDriver)
 			if err != nil {
 				hasTargeting := conf.Remote != "" || conf.Provider != "" || conf.Target != "" || conf.Project != "" || (opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != ""))
 				if hasTargeting {
@@ -1862,7 +1862,10 @@ func computePlanSummary(steps []plan.Step) plan.PlanSummary {
 	return s
 }
 
-func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opts *cmdOptions) (provider.Driver, error) {
+// resolveDriverFunc connects to a provider driver from resolved targeting options.
+type resolveDriverFunc func(opts remote.ResolveOptions) (provider.Driver, error)
+
+func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opts *cmdOptions, resolve resolveDriverFunc) (provider.Driver, error) {
 	// 1. CLI flags take highest precedence
 	if opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != "") {
 		resOpts := remote.ResolveOptions{
@@ -1871,7 +1874,7 @@ func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opt
 			TargetNode: opts.target,
 			Project:    opts.project,
 		}
-		d, err := remote.ResolveDriver(resOpts)
+		d, err := resolve(resOpts)
 		if err != nil {
 			return nil, fmt.Errorf("resolving provider from CLI flags: %w", err)
 		}
@@ -1915,7 +1918,7 @@ func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opt
 			TargetNode: manifestTarget,
 			Project:    manifestProject,
 		}
-		d, err := remote.ResolveDriver(resOpts)
+		d, err := resolve(resOpts)
 		if err != nil {
 			return nil, fmt.Errorf("resolving provider for fleet targets: %w", err)
 		}

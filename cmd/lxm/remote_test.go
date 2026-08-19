@@ -11,6 +11,7 @@ import (
 	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/provider"
 	"github.com/aiyor/lxm/internal/provider/fake"
+	"github.com/aiyor/lxm/internal/provider/remote"
 )
 
 func TestRemoteCLI_Lifecycle(t *testing.T) {
@@ -100,23 +101,32 @@ func TestResolveFleetService(t *testing.T) {
 	// 1. Conf without provider/remote/target/project returns baseSvc
 	conf := &config.Config{Name: "web"}
 	opts := &cmdOptions{}
-	svc, err := resolveFleetService(baseGetter, []*config.Config{conf}, opts)
+	svc, err := resolveFleetService(baseGetter, []*config.Config{conf}, opts, unexpectedResolve(t))
 	if err != nil || svc != baseSvc {
 		t.Fatalf("expected baseSvc, got err: %v", err)
 	}
 
-	// 2. Conf with CLI override returns resolved driver
+	// 2. Conf with CLI override returns resolved driver (fake resolver, no daemon needed)
 	optsCLI := &cmdOptions{provider: "lxd"}
 	confWithProv := &config.Config{Name: "web", Provider: "incus"}
-	svc, err = resolveFleetService(baseGetter, []*config.Config{confWithProv}, optsCLI)
+	override := fake.New()
+	svc, err = resolveFleetService(baseGetter, []*config.Config{confWithProv}, optsCLI, func(opts remote.ResolveOptions) (provider.Driver, error) {
+		if opts.Provider != provider.ProviderTypeLXD {
+			t.Errorf("expected CLI --provider override lxd, got %q", opts.Provider)
+		}
+		return override, nil
+	})
 	if err != nil || svc == nil {
 		t.Fatalf("expected resolved svc under CLI override, got err: %v", err)
+	}
+	if svc != override {
+		t.Errorf("expected CLI override to take precedence over baseGetter, got %T", svc)
 	}
 
 	// 3. Conflicting fleet targets returns error
 	confA := &config.Config{Name: "web", Remote: "remote-a"}
 	confB := &config.Config{Name: "db", Remote: "remote-b"}
-	_, err = resolveFleetService(baseGetter, []*config.Config{confA, confB}, opts)
+	_, err = resolveFleetService(baseGetter, []*config.Config{confA, confB}, opts, unexpectedResolve(t))
 	if err == nil || !strings.Contains(err.Error(), "conflicting remote targets") {
 		t.Fatalf("expected conflicting remote targets error, got: %v", err)
 	}
@@ -124,8 +134,17 @@ func TestResolveFleetService(t *testing.T) {
 	// 4. Conflicting cluster target nodes returns error
 	confNode1 := &config.Config{Name: "web", Target: "node1"}
 	confNode2 := &config.Config{Name: "db", Target: "node2"}
-	_, err = resolveFleetService(baseGetter, []*config.Config{confNode1, confNode2}, opts)
+	_, err = resolveFleetService(baseGetter, []*config.Config{confNode1, confNode2}, opts, unexpectedResolve(t))
 	if err == nil || !strings.Contains(err.Error(), "conflicting cluster target nodes") {
 		t.Fatalf("expected conflicting cluster target nodes error, got: %v", err)
+	}
+}
+
+// unexpectedResolve returns a resolver that fails the test if it is ever invoked.
+func unexpectedResolve(t *testing.T) resolveDriverFunc {
+	t.Helper()
+	return func(remote.ResolveOptions) (provider.Driver, error) {
+		t.Fatal("resolveFleetService resolver invoked unexpectedly")
+		return nil, nil
 	}
 }

@@ -91,7 +91,7 @@ func TestRun_OfflineLXD_LXDCommandsFailExit4(t *testing.T) {
 			if code != 4 {
 				t.Errorf("run(%v) with offline LXD returned %d, want 4. Stderr: %s", args, code, stderr.String())
 			}
-			if !strings.Contains(stderr.String(), "LXD") && !strings.Contains(stderr.String(), "Failed") {
+			if !strings.Contains(stderr.String(), "failed to connect to provider") {
 				t.Errorf("stderr missing connection error for %v: %q", args, stderr.String())
 			}
 		})
