@@ -6,7 +6,7 @@ test-lxd:
 	$(SRC)/simulation/scripts/test-lxd-e2e.sh
 
 test-incus:
-	$(MAKE) -C $(SRC)/simulation/incus test-local
+	$(SRC)/simulation/scripts/test-incus-e2e.sh
 
 test-all: test-lxd test-incus
 

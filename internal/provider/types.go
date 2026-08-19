@@ -125,7 +125,7 @@ const (
 )
 
 func (s ClusterMemberStatus) IsReady() bool {
-	return s == ClusterMemberStatusOnline
+	return strings.EqualFold(string(s), "online")
 }
 
 // ClusterMember represents a node in an Incus or LXD cluster.

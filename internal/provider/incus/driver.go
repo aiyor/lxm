@@ -275,12 +275,10 @@ func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRe
 		members, err := d.GetClusterMembers(ctx)
 		if err == nil && len(members) > 0 {
 			for _, m := range members {
-				if m.Status.IsReady() {
-					_ = d.client.UseTarget(m.ServerName).CreateNetwork(api.NetworksPost{
-						Name: net.Name,
-						Type: net.Type,
-					})
-				}
+				_ = d.client.UseTarget(m.ServerName).CreateNetwork(api.NetworksPost{
+					Name: net.Name,
+					Type: net.Type,
+				})
 			}
 		}
 	}

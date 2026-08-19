@@ -49,6 +49,9 @@ All core LXM features must be validated across the supported hypervisors and con
 | **VM (UEFI Secureboot)** | Supported (`boot.mode`) | Supported (`security.secureboot`) | Supported | VM boot + agent handshake |
 | **VM (UEFI NoSecureboot)** | Supported (`boot.mode`) | Supported (`security.secureboot=false`) | Supported | VM boot + agent handshake |
 | **VM (Legacy BIOS / CSM)** | Supported (`boot.mode=bios`) | Supported (`security.csm=true`) | Supported | VM boot + agent handshake |
+| **Host Directory Mounts** | Supported (`mounts`) | Supported (`mounts`) | Supported | In-guest file I/O & dynamic update |
+| **Managed Storage Disks** | Supported (`disks`) | Supported (`disks`) | Supported | Custom pool volume allocation |
+| **Disk Detach & Volume Delete** | Supported (`attach: false` / `status: absent`) | Supported | Supported | Device detachment & volume lifecycle |
 | **VSwitch (Bridge)** | Supported (`bridge`) | Supported (`bridge`) | N/A | Bridge creation & IPAM |
 | **VSwitch (OVN)** | Supported | Supported | Supported (`ovn`) | Uplink attach & L3 routing |
 | **Network ACLs / Policies** | Supported (`network_acl`) | Supported (`network_acl`) | Supported | Kernel packet drop & ping test |
@@ -165,6 +168,40 @@ Validates multi-node cluster awareness and secure remote API communication over 
 2. **Cluster Member Staging**:
    - On a multi-node cluster, verify pending networks are staged on all online cluster members prior to cluster-wide network creation.
    - Verify instance targeted placement via `target: <node-name>`.
+
+---
+
+### Pillar 5: Storage Volumes, Directory Mounts & Disk Lifecycle
+
+Validates host filesystem pass-through mounts, managed storage disk provisioning, hotplugging, detachment, and safe volume deletion.
+
+```mermaid
+flowchart TD
+    subgraph Provisioning["1. Provisioning Phase"]
+        M1["Host Directory Mounts (shift, readonly)"]
+        D1["Custom Storage Volumes (size, pool)"]
+    end
+
+    subgraph DynamicMutation["2. Post-Provisioning Lifecycle"]
+        M2["Dynamic Mount Addition / Removal"]
+        D2["Dynamic Disk Hotplug (New volume)"]
+        D3["Disk Detach (attach: false - Volume Preserved)"]
+        D4["Disk Deletion (status: absent - Volume Purged)"]
+    end
+
+    Provisioning --> DynamicMutation
+```
+
+#### Test Scenarios:
+1. **Host Directory Mounts (`mounts`)**:
+   - **Initial Provisioning**: Configure directory pass-through with UID/GID shifting (`shift: true`), read-only (`readonly: true`), or recursive flags. Verify file accessibility from inside container and VM.
+   - **Dynamic Addition**: Add a new host mount to an existing instance manifest and run `lxm apply`. Verify new mount path is immediately available without recreation.
+   - **Dynamic Removal**: Remove a host mount from the manifest and run `lxm apply`. Verify device entry is unmapped.
+2. **Managed Storage Disks (`disks`)**:
+   - **Initial Volume Allocation**: Define custom block or filesystem storage disks (`size: 10GiB`, `pool: default`, `path: /var/lib/data`). Verify custom storage volume is created in Phase 0 before instance attach.
+   - **Dynamic Hotplug**: Append an additional managed disk to a live instance manifest. Verify disk volume is created and attached without recreation.
+   - **Disk Detachment (`attach: false`)**: Set `attach: false` on an attached disk. Verify device is removed from instance while underlying storage volume remains preserved in the storage pool.
+   - **Disk & Volume Deletion (`status: absent`)**: Set `status: absent` on a managed disk. Verify instance device is detached and custom storage volume is deleted from the storage pool.
 
 ---
 
