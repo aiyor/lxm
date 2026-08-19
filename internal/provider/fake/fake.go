@@ -51,24 +51,24 @@ type FakeDriver struct {
 	Projects map[string]string // name -> description
 
 	// Custom hook overrides
-	GetInstanceFunc              func(name string) (*provider.Instance, string, error)
-	CreateInstanceFunc           func(req provider.InstanceCreateRequest) error
-	UpdateInstanceFunc           func(name string, req provider.InstanceUpdateRequest, etag string) error
-	DeleteInstanceFunc           func(name string) error
-	UpdateInstanceStateFunc      func(name, action string, force bool) error
-	RebuildInstanceFunc          func(name string, req provider.InstanceRebuildRequest) error
-	ExecInstanceFunc             func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error)
-	CreateNetworkFunc            func(req provider.NetworkCreateRequest) error
-	UpdateNetworkFunc            func(name string, req provider.NetworkUpdateRequest, etag string) error
-	DeleteNetworkFunc            func(name string) error
-	CreateNetworkACLFunc         func(req provider.NetworkACLCreateRequest) error
-	UpdateNetworkACLFunc         func(name string, req provider.NetworkACLUpdateRequest, etag string) error
-	DeleteNetworkACLFunc         func(name string) error
-	DeleteStoragePoolVolumeFunc  func(pool, volType, name string) error
-	GetNetworksFunc              func() ([]provider.Network, error)
-	GetNetworkACLsFunc           func() ([]provider.NetworkACL, error)
-	GetImageAliasesFunc          func() ([]provider.ImageAlias, error)
-	CopyRemoteImageFunc          func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error
+	GetInstanceFunc             func(name string) (*provider.Instance, string, error)
+	CreateInstanceFunc          func(req provider.InstanceCreateRequest) error
+	UpdateInstanceFunc          func(name string, req provider.InstanceUpdateRequest, etag string) error
+	DeleteInstanceFunc          func(name string) error
+	UpdateInstanceStateFunc     func(name, action string, force bool) error
+	RebuildInstanceFunc         func(name string, req provider.InstanceRebuildRequest) error
+	ExecInstanceFunc            func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error)
+	CreateNetworkFunc           func(req provider.NetworkCreateRequest) error
+	UpdateNetworkFunc           func(name string, req provider.NetworkUpdateRequest, etag string) error
+	DeleteNetworkFunc           func(name string) error
+	CreateNetworkACLFunc        func(req provider.NetworkACLCreateRequest) error
+	UpdateNetworkACLFunc        func(name string, req provider.NetworkACLUpdateRequest, etag string) error
+	DeleteNetworkACLFunc        func(name string) error
+	DeleteStoragePoolVolumeFunc func(pool, volType, name string) error
+	GetNetworksFunc             func() ([]provider.Network, error)
+	GetNetworkACLsFunc          func() ([]provider.NetworkACL, error)
+	GetImageAliasesFunc         func() ([]provider.ImageAlias, error)
+	CopyRemoteImageFunc         func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error
 }
 
 var _ provider.Driver = (*FakeDriver)(nil)
@@ -354,18 +354,18 @@ func (f *FakeDriver) CreateInstance(ctx context.Context, req provider.InstanceCr
 	}
 
 	inst := &provider.Instance{
-		Name:         req.Name,
-		Type:         req.Type,
-		Status:       "Stopped",
-		StatusCode:   102,
-		Location:     location,
-		Description:  req.Description,
-		Config:       cfg,
-		Devices:      req.Devices,
-		Ephemeral:    req.Ephemeral,
-		Profiles:     req.Profiles,
-		CreatedAt:    time.Now(),
-		LastUsedAt:   time.Now(),
+		Name:        req.Name,
+		Type:        req.Type,
+		Status:      "Stopped",
+		StatusCode:  102,
+		Location:    location,
+		Description: req.Description,
+		Config:      cfg,
+		Devices:     req.Devices,
+		Ephemeral:   req.Ephemeral,
+		Profiles:    req.Profiles,
+		CreatedAt:   time.Now(),
+		LastUsedAt:  time.Now(),
 	}
 
 	f.Instances[req.Name] = inst

@@ -15,8 +15,8 @@ func TestApply_VolumeDelete_Phase3_Success(t *testing.T) {
 	ctx := context.Background()
 	driver := fake.New()
 	driver.Instances["vm1"] = &provider.Instance{
-		Name:   "vm1",
-		Status: "Stopped",
+		Name:       "vm1",
+		Status:     "Stopped",
 		StatusCode: 102,
 		Devices: map[string]map[string]string{
 			"root":         {"type": "disk", "pool": "default", "path": "/"},
@@ -81,8 +81,8 @@ func TestApply_VolumeDelete_IdempotentNotFound(t *testing.T) {
 	ctx := context.Background()
 	driver := fake.New()
 	driver.Instances["vm1"] = &provider.Instance{
-		Name:   "vm1",
-		Status: "Stopped",
+		Name:       "vm1",
+		Status:     "Stopped",
 		StatusCode: 102,
 	}
 	driver.ETags["vm1"] = "etag-1"
@@ -236,8 +236,8 @@ func TestApply_SteadyStateVolume_BackfillsMarker(t *testing.T) {
 	ctx := context.Background()
 	driver := fake.New()
 	driver.Instances["vm1"] = &provider.Instance{
-		Name:   "vm1",
-		Status: "Running",
+		Name:       "vm1",
+		Status:     "Running",
 		StatusCode: 103,
 		Devices: map[string]map[string]string{
 			"root":      {"type": "disk", "pool": "default", "path": "/"},
@@ -295,8 +295,8 @@ func TestApply_ExternalVolume_NotBackfilledAsManaged(t *testing.T) {
 	ctx := context.Background()
 	driver := fake.New()
 	driver.Instances["vm1"] = &provider.Instance{
-		Name:   "vm1",
-		Status: "Running",
+		Name:       "vm1",
+		Status:     "Running",
 		StatusCode: 103,
 		Devices: map[string]map[string]string{
 			"root":         {"type": "disk", "pool": "default", "path": "/"},

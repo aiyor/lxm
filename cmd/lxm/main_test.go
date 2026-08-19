@@ -1494,7 +1494,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 
 	t.Run("B2: stopped container with no IPv4 returns exit code 6", func(t *testing.T) {
 		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
-			Name: "stopped-box",
+			Name:   "stopped-box",
 			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})
 		driver.Instances["stopped-box"].Status = "Stopped"
@@ -1575,7 +1575,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 
 	t.Run("R5: keyscan failure on unreachable IP returns exit code 6", func(t *testing.T) {
 		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
-			Name: "unreachable-box",
+			Name:   "unreachable-box",
 			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})
 		driver.Instances["unreachable-box"].Status = "Running"
@@ -1594,7 +1594,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 
 	t.Run("R9: IP resolution from running instance State.Network", func(t *testing.T) {
 		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
-			Name: "running-box",
+			Name:   "running-box",
 			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})
 		driver.Instances["running-box"].Status = "Running"

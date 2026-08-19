@@ -8,7 +8,6 @@ import (
 	"strings"
 )
 
-
 // SplitImageRef parses an image reference. It returns (remote, alias, true)
 // for the remote:alias form and ("", image, false) otherwise (a fingerprint
 // or a bare local alias). A reference with more than one ':' is never a valid

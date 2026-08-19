@@ -21,8 +21,8 @@ func volumeOpPlan(ops []plan.VolumeOp) *plan.Plan {
 				Changed:   true,
 				VolumeOps: ops,
 				InstancesPost: &provider.InstanceCreateRequest{
-					Name: "db-vm",
-					Type: "virtual-machine",
+					Name:    "db-vm",
+					Type:    "virtual-machine",
 					Config:  map[string]string{"user.lxm.managed": "true"},
 					Devices: map[string]map[string]string{},
 				},
