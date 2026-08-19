@@ -7,7 +7,7 @@ import (
 
 	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/plan"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
 )
 
 // normalizedDisksVM returns a VM manifest with normalized DiskConfig values
@@ -33,7 +33,7 @@ func normalizedDisksVM() *config.Config {
 func TestReconciler_Create_DeviceShape(t *testing.T) {
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
-	volumes := map[string]map[string]*api.StorageVolume{
+	volumes := map[string]map[string]*provider.StorageVolume{
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Type: "custom", ContentType: "filesystem"}},
 	}
 
@@ -133,7 +133,7 @@ func TestReconciler_Update_DefaultBusReconstructed(t *testing.T) {
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "", ""), // no io.bus
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
 			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
@@ -173,7 +173,7 @@ func TestReconciler_Create_ExternalVolume_PresentOnEmptyLive(t *testing.T) {
 	// instance list (regression: previously dropped when no snapshot carried it).
 	rec := plan.NewReconciler()
 	conf := normalizedDisksVM()
-	volumes := map[string]map[string]*api.StorageVolume{
+	volumes := map[string]map[string]*provider.StorageVolume{
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Type: "custom", ContentType: "filesystem"}},
 	}
 	p, err := rec.Compute(conf, map[string]*plan.InstanceSnapshot{}, volumes, nil, config.BuiltinImageRemotes(), false)
@@ -195,7 +195,7 @@ func TestReconciler_Update_RewordedEqualSize_NoDiff(t *testing.T) {
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "10GiB"}},
 			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
@@ -223,7 +223,7 @@ func TestReconciler_Update_ManagedPoolChange_Restart(t *testing.T) {
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
 			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
@@ -266,7 +266,7 @@ func TestReconciler_Create_NoExternalVolumesProbed(t *testing.T) {
 	}
 }
 
-func liveVMWithDisk(devices map[string]map[string]string, volumes map[string]map[string]*api.StorageVolume) (map[string]*plan.InstanceSnapshot, map[string]map[string]*api.StorageVolume) {
+func liveVMWithDisk(devices map[string]map[string]string, volumes map[string]map[string]*provider.StorageVolume) (map[string]*plan.InstanceSnapshot, map[string]map[string]*provider.StorageVolume) {
 	return map[string]*plan.InstanceSnapshot{
 		"db-vm": {
 			Name:            "db-vm",
@@ -302,7 +302,7 @@ func TestReconciler_Update_NoDiskDiff(t *testing.T) {
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
 			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
@@ -329,7 +329,7 @@ func TestReconciler_Update_DiskAdded(t *testing.T) {
 	// live has only the wal disk; data (managed) and shared-fs (external) added.
 	live, volumes := liveVMWithDisk(map[string]map[string]string{
 		"disk-wal": diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default":   {"db-vm-wal": {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}}},
 		"fast-pool": {"web-root-vol": {Name: "web-root-vol", Config: map[string]string{"size": "10GiB"}}},
 	})
@@ -366,7 +366,7 @@ func TestReconciler_Update_DiskRemoved(t *testing.T) {
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
 		"disk-gone":      diskDev("", "default", "db-vm-gone", "/var/lib/gone", "", ""),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
 			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
@@ -407,7 +407,7 @@ func TestReconciler_Update_Grow(t *testing.T) {
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
 			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
@@ -445,7 +445,7 @@ func TestReconciler_Update_Shrink_Error(t *testing.T) {
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
 			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
@@ -472,7 +472,7 @@ func TestReconciler_Update_ModeSwitch_Error(t *testing.T) {
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
 			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
@@ -497,7 +497,7 @@ func TestReconciler_Update_PathChange_Restart(t *testing.T) {
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
 			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
@@ -527,7 +527,7 @@ func TestReconciler_Update_ManagedPoolChange_CreateOp(t *testing.T) {
 		"disk-data":      diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":       diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
 		"disk-shared-fs": diskDev("", "fast-pool", "web-root-vol", "/srv/www", "", "true"),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
 			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},
@@ -561,7 +561,7 @@ func TestReconciler_Update_ExternalMissing_Error(t *testing.T) {
 	live, volumes := liveVMWithDisk(map[string]map[string]string{
 		"disk-data": diskDev("", "default", "db-vm-data", "/var/lib/postgresql", "", ""),
 		"disk-wal":  diskDev("", "default", "db-vm-wal", "", "virtio-scsi", ""),
-	}, map[string]map[string]*api.StorageVolume{
+	}, map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"db-vm-data": {Name: "db-vm-data", Config: map[string]string{"size": "100GiB"}},
 			"db-vm-wal":  {Name: "db-vm-wal", Config: map[string]string{"size": "20GiB"}},

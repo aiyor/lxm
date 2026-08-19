@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/plan"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/fake"
 )
 
 func writeManifest(t *testing.T, content string) string {
@@ -26,22 +26,22 @@ func writeManifest(t *testing.T, content string) string {
 }
 
 func TestRun_ApplyRemoteImage_FetchesAndCreates(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	cfgFile := writeManifest(t, "name: dev-box\nimage: ubuntu:24.04\nstatus: present\n")
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"apply", cfgFile}, &stdout, &stderr, fake)
+	code := run([]string{"apply", cfgFile}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("apply returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
-	if len(fake.Images.Fetches) != 1 {
-		t.Fatalf("expected 1 remote fetch, got %d: %+v", len(fake.Images.Fetches), fake.Images.Fetches)
+	if len(driver.Fetches) != 1 {
+		t.Fatalf("expected 1 remote fetch, got %d: %+v", len(driver.Fetches), driver.Fetches)
 	}
-	f := fake.Images.Fetches[0]
+	f := driver.Fetches[0]
 	if f.RemoteURL != "https://cloud-images.ubuntu.com/releases" || f.Alias != "24.04" || f.LocalAlias != "ubuntu/24.04" {
 		t.Errorf("unexpected fetch record: %+v", f)
 	}
-	inst, _, err := fake.GetInstance("dev-box")
+	inst, _, err := driver.GetInstance(context.Background(), "dev-box")
 	if err != nil {
 		t.Fatalf("expected dev-box created: %v", err)
 	}
@@ -51,34 +51,34 @@ func TestRun_ApplyRemoteImage_FetchesAndCreates(t *testing.T) {
 }
 
 func TestRun_ApplyCachedRemote_NoFetch(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	// Pre-seed the canonical local alias: the image is already cached. The
 	// seeding itself is not an apply-time fetch, so its record is cleared.
-	if err := fake.CopyRemoteImage(context.Background(), "https://cloud-images.ubuntu.com/releases", "24.04", "container", "ubuntu/24.04"); err != nil {
+	if err := driver.CopyRemoteImage(context.Background(), "https://cloud-images.ubuntu.com/releases", "24.04", "container", "ubuntu/24.04"); err != nil {
 		t.Fatalf("seeding fake alias: %v", err)
 	}
-	fake.Images.Fetches = nil
+	driver.Fetches = nil
 	cfgFile := writeManifest(t, "name: dev-box\nimage: ubuntu:24.04\nstatus: present\n")
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"apply", cfgFile}, &stdout, &stderr, fake)
+	code := run([]string{"apply", cfgFile}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("apply returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
-	if len(fake.Images.Fetches) != 0 {
-		t.Errorf("cached image must not be re-fetched, got %d fetch(es): %+v", len(fake.Images.Fetches), fake.Images.Fetches)
+	if len(driver.Fetches) != 0 {
+		t.Errorf("cached image must not be re-fetched, got %d fetch(es): %+v", len(driver.Fetches), driver.Fetches)
 	}
-	if _, _, err := fake.GetInstance("dev-box"); err != nil {
+	if _, _, err := driver.GetInstance(context.Background(), "dev-box"); err != nil {
 		t.Errorf("expected dev-box created from cached image: %v", err)
 	}
 }
 
 func TestRun_PlanRemoteImage_JSONShowsFetchOp(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	cfgFile := writeManifest(t, "name: dev-box\nimage: ubuntu:24.04\nstatus: present\n")
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"plan", cfgFile, "--format", "json"}, &stdout, &stderr, fake)
+	code := run([]string{"plan", cfgFile, "--format", "json"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Fatalf("plan returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
@@ -105,17 +105,17 @@ func TestRun_PlanRemoteImage_JSONShowsFetchOp(t *testing.T) {
 	}
 	// The plan is offline: the fetch op carries the resolved URL but the
 	// remote is never contacted.
-	if len(fake.Images.Fetches) != 0 {
-		t.Errorf("plan must not contact the remote, got %d fetch(es)", len(fake.Images.Fetches))
+	if len(driver.Fetches) != 0 {
+		t.Errorf("plan must not contact the remote, got %d fetch(es)", len(driver.Fetches))
 	}
 }
 
 func TestRun_PlanUnknownRemote_Exit3(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	cfgFile := writeManifest(t, "name: dev-box\nimage: no-such-remote:22.04\nstatus: present\n")
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"plan", cfgFile}, &stdout, &stderr, fake)
+	code := run([]string{"plan", cfgFile}, &stdout, &stderr, driver)
 	if code != 3 {
 		t.Fatalf("plan with unknown remote returned %d, want 3 (CONFIG_ERROR). Stderr: %s", code, stderr.String())
 	}
@@ -125,7 +125,7 @@ func TestRun_PlanUnknownRemote_Exit3(t *testing.T) {
 }
 
 func TestRun_PlanImageRemotesConflict_Exit3(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	dir := t.TempDir()
 	// Two leaf manifests declare the same remote with different URLs: fleet
 	// union must fail with exit 3 citing both files.
@@ -135,7 +135,7 @@ func TestRun_PlanImageRemotesConflict_Exit3(t *testing.T) {
 	_ = os.WriteFile(cfgB, []byte("name: b\nimage: mirror:alpine\nstatus: present\nimage_remotes:\n  mirror: https://b.example.com\n"), 0644)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"plan", dir}, &stdout, &stderr, fake)
+	code := run([]string{"plan", dir}, &stdout, &stderr, driver)
 	if code != 3 {
 		t.Fatalf("plan with conflicting image_remotes returned %d, want 3. Stderr: %s", code, stderr.String())
 	}
@@ -149,16 +149,16 @@ func TestRun_PlanImageRemotesConflict_Exit3(t *testing.T) {
 // silently plan redundant simplestreams pulls for every cached remote image.
 // plan/diff remain lenient (offline-capable).
 func TestRun_ApplyImageAliasProbeFailure_Exit4(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.GetImageAliasesFunc = func() ([]api.ImageAliasesEntry, error) {
+	driver := fake.New()
+	driver.GetImageAliasesFunc = func() ([]provider.ImageAlias, error) {
 		return nil, errors.New("probe failed")
 	}
 	cfgFile := writeManifest(t, "name: dev-box\nimage: ubuntu:24.04\nstatus: present\n")
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"apply", cfgFile}, &stdout, &stderr, fake)
+	code := run([]string{"apply", cfgFile}, &stdout, &stderr, driver)
 	if code != 4 {
-		t.Fatalf("apply with probe failure returned %d, want 4 (LXD_ERROR). Stderr: %s", code, stderr.String())
+		t.Fatalf("apply with probe failure returned %d, want 4 (PROVIDER_ERROR). Stderr: %s", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "listing local image aliases") {
 		t.Errorf("stderr missing probe error: %q", stderr.String())
@@ -167,7 +167,7 @@ func TestRun_ApplyImageAliasProbeFailure_Exit4(t *testing.T) {
 	// plan stays lenient: probe failure degrades to an empty inventory.
 	stdout.Reset()
 	stderr.Reset()
-	code = run([]string{"plan", cfgFile, "--format", "json"}, &stdout, &stderr, fake)
+	code = run([]string{"plan", cfgFile, "--format", "json"}, &stdout, &stderr, driver)
 	if code != 0 {
 		t.Errorf("plan with probe failure returned %d, want 0 (lenient). Stderr: %s", code, stderr.String())
 	}
@@ -177,11 +177,11 @@ func TestRun_ApplyImageAliasProbeFailure_Exit4(t *testing.T) {
 // end: the fetch op computed at plan time carries the resolved URL, and the
 // executor consumes exactly that op.
 func TestRun_ApplyPlan_ImageOpRoundTrip(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	driver := fake.New()
 	cfgFile := writeManifest(t, "name: dev-box\nimage: ubuntu:24.04\nstatus: present\n")
 
 	var planOut, planErr bytes.Buffer
-	code := run([]string{"plan", cfgFile, "--format", "json"}, &planOut, &planErr, fake)
+	code := run([]string{"plan", cfgFile, "--format", "json"}, &planOut, &planErr, driver)
 	if code != 0 {
 		t.Fatalf("plan returned %d, want 0. Stderr: %s", code, planErr.String())
 	}
@@ -200,11 +200,11 @@ func TestRun_ApplyPlan_ImageOpRoundTrip(t *testing.T) {
 	}
 
 	var out, errB bytes.Buffer
-	code = run([]string{"apply", cfgFile}, &out, &errB, fake)
+	code = run([]string{"apply", cfgFile}, &out, &errB, driver)
 	if code != 0 {
 		t.Fatalf("apply returned %d, want 0. Stderr: %s", code, errB.String())
 	}
-	if len(fake.Images.Fetches) != 1 {
-		t.Fatalf("expected the planned fetch to be executed once, got %d", len(fake.Images.Fetches))
+	if len(driver.Fetches) != 1 {
+		t.Fatalf("expected the planned fetch to be executed once, got %d", len(driver.Fetches))
 	}
 }

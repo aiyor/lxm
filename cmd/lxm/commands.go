@@ -18,11 +18,11 @@ import (
 	"github.com/aiyor/lxm/internal/apply"
 	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/fleet"
-	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/output"
 	"github.com/aiyor/lxm/internal/plan"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/remote"
 	"github.com/aiyor/lxm/internal/recipe"
-	"github.com/canonical/lxd/shared/api"
 	"github.com/spf13/cobra"
 )
 
@@ -44,6 +44,7 @@ func registerCommands(rootCmd *cobra.Command, opts *cmdOptions, ctx context.Cont
 	rootCmd.AddCommand(newDoctorCmd(opts, ctx, stdout, stderr, getSvc, logger))
 	rootCmd.AddCommand(newDiskCmd(opts, ctx, stdout, stderr, getSvc, logger))
 	rootCmd.AddCommand(newVSwitchCmd(opts, ctx, stdout, stderr, getSvc, logger))
+	rootCmd.AddCommand(newRemoteCmd(opts, ctx, stdout, stderr, logger))
 }
 
 func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, getSvc serviceGetter, logger *slog.Logger) *cobra.Command {
@@ -108,16 +109,16 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				}
 			}
 
-			svc, err := getSvc()
+			svc, err := resolveFleetService(getSvc, selectedConfigs, opts, remote.ResolveDriver)
 			if err != nil {
-				return err
+				return &exitError{code: 4, err: err}
 			}
 
 			if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
 				return err
 			}
 
-			liveSnapshots, liveVolumes, err := fetchLiveSnapshots(svc, selectedConfigs)
+			liveSnapshots, liveVolumes, err := fetchLiveSnapshots(ctx, svc, selectedConfigs)
 			if err != nil {
 				return &exitError{code: 4, err: fmt.Errorf("fetching live instance state: %w", err)}
 			}
@@ -127,11 +128,11 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			// decision (§4.1/§4.3). A failed inventory probe is fatal here:
 			// an empty inventory would plan redundant pulls for every cached
 			// remote image (M1).
-			imageRemotes, err := config.EffectiveImageRemotes(loaded)
+			imageRemotes, err := config.EffectiveImageRemotesForProvider(resolveProviderType(opts, svc, loaded), loaded)
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
-			imageAliases, err := fetchImageAliases(svc)
+			imageAliases, err := fetchImageAliases(ctx, svc)
 			if err != nil {
 				return &exitError{code: 4, err: fmt.Errorf("listing local image aliases: %w", err)}
 			}
@@ -158,7 +159,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			if !netOK {
 				return &exitError{code: 1, err: fmt.Errorf("reconciler does not support network operations (network_policy unavailable)")}
 			}
-			netPlan, netWarnings, netErr := computeNetworkPlan(svc, loaded, netReconciler)
+			netPlan, netWarnings, netErr := computeNetworkPlan(ctx, svc, loaded, netReconciler)
 			if netErr != nil {
 				return netErr
 			}
@@ -166,7 +167,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			combinedPlan.Warnings = append(combinedPlan.Warnings, netWarnings...)
 
 			if opts.prune && info.IsDir() && svc != nil {
-				inv, err := fleet.GetInventory(svc)
+				inv, err := fleet.GetInventory(ctx, svc)
 				if err == nil && inv != nil {
 					orphans := fleet.FindOrphans(inv.Instances, loaded, sel)
 					for _, orphan := range orphans {
@@ -191,11 +192,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			combinedPlan.Summary = computePlanSummary(combinedPlan.Steps)
 			lastComputedPlan = combinedPlan
 
-			services, ok := svc.(apply.Services)
-			if !ok {
-				return &exitError{code: 4, err: fmt.Errorf("LXD service does not support network operations (network_policy unavailable)")}
-			}
-			executor := apply.NewExecutor(services)
+			executor := apply.NewExecutor(svc)
 			report, applyErr := executor.Apply(ctx, combinedPlan, apply.ApplyOpts{
 				Jobs:         5,
 				DryRun:       opts.dryRun,
@@ -297,15 +294,28 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			}
 
 			liveSnapshots := make(map[string]*plan.InstanceSnapshot)
-			liveVolumes := make(map[string]map[string]*api.StorageVolume)
+			liveVolumes := make(map[string]map[string]*provider.StorageVolume)
 			hasRebuild := false
 
-			svc, err := getSvc()
-			if err == nil && svc != nil {
-				if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
-					return err
+			svc, err := resolveFleetService(getSvc, selectedConfigs, opts, remote.ResolveDriver)
+			if err != nil {
+				hasTargeting := (opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != ""))
+				if !hasTargeting {
+					for _, c := range selectedConfigs {
+						if c.Remote != "" || c.Provider != "" || c.Target != "" || c.Project != "" {
+							hasTargeting = true
+							break
+						}
+					}
 				}
-				liveSnapshots, liveVolumes, _ = fetchLiveSnapshots(svc, selectedConfigs)
+				if hasTargeting || strings.Contains(err.Error(), "fleet contains conflicting") {
+					return &exitError{code: 2, err: err}
+				}
+			} else if svc != nil {
+				if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
+					return &exitError{code: 4, err: err}
+				}
+				liveSnapshots, liveVolumes, _ = fetchLiveSnapshots(ctx, svc, selectedConfigs)
 				hasRebuild = svc.HasExtension("instances_rebuild")
 			}
 
@@ -315,14 +325,14 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				Steps:  []plan.Step{},
 			}
 
-			imageRemotes, err := config.EffectiveImageRemotes(loaded)
+			imageRemotes, err := config.EffectiveImageRemotesForProvider(resolveProviderType(opts, svc, loaded), loaded)
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
 			// Plan is a preview: a probe failure degrades to an empty
 			// inventory (every remote reference plans a fetch) rather than
 			// aborting the offline-capable plan command.
-			imageAliases, _ := fetchImageAliases(svc)
+			imageAliases, _ := fetchImageAliases(ctx, svc)
 
 			for _, conf := range selectedConfigs {
 				p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, imageAliases, imageRemotes, hasRebuild)
@@ -338,7 +348,7 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			if !netOK {
 				return &exitError{code: 1, err: fmt.Errorf("reconciler does not support network operations (network_policy unavailable)")}
 			}
-			netPlan, netWarnings, netErr := computeNetworkPlan(svc, loaded, netReconciler)
+			netPlan, netWarnings, netErr := computeNetworkPlan(ctx, svc, loaded, netReconciler)
 			if netErr != nil {
 				return netErr
 			}
@@ -346,7 +356,7 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			combinedPlan.Warnings = append(combinedPlan.Warnings, netWarnings...)
 
 			if opts.prune && info.IsDir() && svc != nil {
-				inv, err := fleet.GetInventory(svc)
+				inv, err := fleet.GetInventory(ctx, svc)
 				if err == nil && inv != nil {
 					orphans := fleet.FindOrphans(inv.Instances, loaded, sel)
 					for _, orphan := range orphans {
@@ -411,24 +421,29 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			conf.Name = containerName
 
 			liveSnapshots := make(map[string]*plan.InstanceSnapshot)
-			liveVolumes := make(map[string]map[string]*api.StorageVolume)
+			liveVolumes := make(map[string]map[string]*provider.StorageVolume)
 			hasRebuild := false
 
-			svc, err := getSvc()
-			if err == nil && svc != nil {
+			svc, err := resolveFleetService(getSvc, []*config.Config{conf}, opts, remote.ResolveDriver)
+			if err != nil {
+				hasTargeting := conf.Remote != "" || conf.Provider != "" || conf.Target != "" || conf.Project != "" || (opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != ""))
+				if hasTargeting {
+					return &exitError{code: 4, err: err}
+				}
+			} else if svc != nil {
 				if err := checkDiskExtensions(svc, []*config.Config{conf}); err != nil {
 					return err
 				}
-				liveSnapshots, liveVolumes, _ = fetchLiveSnapshots(svc, []*config.Config{conf})
+				liveSnapshots, liveVolumes, _ = fetchLiveSnapshots(ctx, svc, []*config.Config{conf})
 				hasRebuild = svc.HasExtension("instances_rebuild")
 			}
 
 			reconciler := plan.NewReconciler()
-			imageRemotes, err := config.EffectiveImageRemotes([]*config.Config{conf})
+			imageRemotes, err := config.EffectiveImageRemotesForProvider(resolveProviderType(opts, svc, []*config.Config{conf}), []*config.Config{conf})
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
-			imageAliases, _ := fetchImageAliases(svc)
+			imageAliases, _ := fetchImageAliases(ctx, svc)
 			p, err := reconciler.Compute(conf, liveSnapshots, liveVolumes, imageAliases, imageRemotes, hasRebuild)
 			if err != nil {
 				return planComputeError(err)
@@ -466,7 +481,7 @@ func newListCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			if err != nil {
 				return err
 			}
-			inv, err := fleet.GetInventory(svc)
+			inv, err := fleet.GetInventory(ctx, svc)
 			if err != nil {
 				return &exitError{code: 4, err: fmt.Errorf("failed to list instances: %w", err)}
 			}
@@ -540,7 +555,7 @@ func newStatusCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				return err
 			}
 			name := args[0]
-			inst, _, err := svc.GetInstance(name)
+			inst, _, err := svc.GetInstance(ctx, name)
 			if err != nil || inst == nil {
 				return &exitError{code: 5, err: fmt.Errorf("container %q not found: %w", name, err)}
 			}
@@ -553,7 +568,7 @@ func newStatusCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				},
 			}
 
-			ip, _ := svc.GetIP(name)
+			ip, _ := svc.GetIP(ctx, name)
 			recipeHashes := make(map[string]string)
 			for k, v := range inst.Config {
 				if strings.HasPrefix(k, "user.lxm.recipe.") && strings.HasSuffix(k, ".hash") {
@@ -638,7 +653,7 @@ func newRunCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 			}
 
 			// If target is a single container name
-			inst, _, err := svc.GetInstance(target)
+			inst, _, err := svc.GetInstance(cmd.Context(), target)
 			if err == nil && inst != nil {
 				res, _, execErr := recipe.ExecuteRecipeScriptContext(cmd.Context(), svc, target, scriptPath, "", runAs, envMap, 0)
 				if execErr != nil || res.ExitCode != 0 {
@@ -735,7 +750,7 @@ func newScriptCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				return &exitError{code: 3, err: err}
 			}
 
-			_, _, err = svc.GetInstance(name)
+			_, _, err = svc.GetInstance(cmd.Context(), name)
 			if err != nil {
 				return &exitError{code: 5, err: fmt.Errorf("container %q not found: %w", name, err)}
 			}
@@ -831,7 +846,7 @@ func newSnapshotCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 				if targetName != "" {
 					instancesToGC = append(instancesToGC, targetName)
 				} else {
-					insts, err := svc.ListInstances()
+					insts, err := svc.ListInstances(cmd.Context())
 					if err != nil {
 						return &exitError{code: 4, err: fmt.Errorf("listing instances for snapshot GC: %w", err)}
 					}
@@ -843,7 +858,7 @@ func newSnapshotCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 				prunedCount := 0
 				now := time.Now()
 				for _, name := range instancesToGC {
-					snaps, err := svc.GetInstanceSnapshots(name)
+					snaps, err := svc.GetInstanceSnapshots(cmd.Context(), name)
 					if err != nil {
 						continue
 					}
@@ -854,7 +869,7 @@ func newSnapshotCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 									prunedCount++
 									continue
 								}
-								if err := svc.DeleteInstanceSnapshot(name, s.Name); err == nil {
+								if err := svc.DeleteInstanceSnapshot(cmd.Context(), name, s.Name); err == nil {
 									prunedCount++
 								}
 							}
@@ -877,7 +892,7 @@ func newSnapshotCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 			}
 
 			name := args[0]
-			_, _, err = svc.GetInstance(name)
+			_, _, err = svc.GetInstance(cmd.Context(), name)
 			if err != nil {
 				return &exitError{code: 5, err: fmt.Errorf("container %q not found: %w", name, err)}
 			}
@@ -889,7 +904,7 @@ func newSnapshotCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 					}
 					return nil
 				}
-				if err := svc.DeleteInstanceSnapshot(name, deleteSnapName); err != nil {
+				if err := svc.DeleteInstanceSnapshot(cmd.Context(), name, deleteSnapName); err != nil {
 					return &exitError{code: 4, err: fmt.Errorf("deleting snapshot %q on %q: %w", deleteSnapName, name, err)}
 				}
 				if opts.format == "text" {
@@ -906,8 +921,7 @@ func newSnapshotCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 					}
 					return nil
 				}
-				req := api.InstanceSnapshotsPost{Name: snapName}
-				if err := svc.CreateInstanceSnapshotContext(cmd.Context(), name, req); err != nil {
+				if err := svc.CreateInstanceSnapshot(cmd.Context(), name, snapName, false); err != nil {
 					return &exitError{code: 4, err: fmt.Errorf("creating snapshot %q on %q: %w", snapName, name, err)}
 				}
 				if opts.format == "text" {
@@ -916,7 +930,7 @@ func newSnapshotCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 				return nil
 			}
 
-			snaps, err := svc.GetInstanceSnapshots(name)
+			snaps, err := svc.GetInstanceSnapshots(cmd.Context(), name)
 			if err != nil {
 				return &exitError{code: 4, err: fmt.Errorf("listing snapshots for %q: %w", name, err)}
 			}
@@ -954,7 +968,7 @@ func newRollbackCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 			name := args[0]
 			snapName := args[1]
 
-			_, _, err = svc.GetInstance(name)
+			_, _, err = svc.GetInstance(cmd.Context(), name)
 			if err != nil {
 				return &exitError{code: 5, err: fmt.Errorf("container %q not found: %w", name, err)}
 			}
@@ -966,7 +980,7 @@ func newRollbackCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 				return nil
 			}
 
-			if err := svc.RestoreInstanceSnapshotContext(cmd.Context(), name, snapName); err != nil {
+			if err := svc.RestoreInstanceSnapshot(cmd.Context(), name, snapName); err != nil {
 				return &exitError{code: 4, err: fmt.Errorf("restoring container %q to snapshot %q: %w", name, snapName, err)}
 			}
 
@@ -1117,6 +1131,46 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 					i++
 					continue
 				}
+				if strings.HasPrefix(arg, "--remote=") {
+					opts.remote = strings.TrimPrefix(arg, "--remote=")
+					i++
+					continue
+				}
+				if arg == "--remote" && i+1 < len(args) {
+					opts.remote = args[i+1]
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(arg, "--provider=") {
+					opts.provider = strings.TrimPrefix(arg, "--provider=")
+					i++
+					continue
+				}
+				if arg == "--provider" && i+1 < len(args) {
+					opts.provider = args[i+1]
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(arg, "--project=") {
+					opts.project = strings.TrimPrefix(arg, "--project=")
+					i++
+					continue
+				}
+				if arg == "--project" && i+1 < len(args) {
+					opts.project = args[i+1]
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(arg, "--target=") {
+					opts.target = strings.TrimPrefix(arg, "--target=")
+					i++
+					continue
+				}
+				if arg == "--target" && i+1 < len(args) {
+					opts.target = args[i+1]
+					i += 2
+					continue
+				}
 				if strings.HasPrefix(arg, "-i=") || strings.HasPrefix(arg, "--identity=") {
 					identity = strings.SplitN(arg, "=", 2)[1]
 					i++
@@ -1160,13 +1214,13 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 				return err
 			}
 
-			inst, _, err := svc.GetInstance(name)
+			inst, _, err := svc.GetInstance(cmd.Context(), name)
 			if err != nil {
 				return &exitError{code: 5, err: fmt.Errorf("container %q not found: %w", name, err)}
 			}
 
 			var ip string
-			fullInstances, err := svc.ListInstances()
+			fullInstances, err := svc.ListInstances(cmd.Context())
 			if err == nil {
 				for _, full := range fullInstances {
 					if full.Name == name {
@@ -1188,14 +1242,12 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 			}
 
 			if ip == "" {
-				if getIPer, ok := svc.(interface{ GetIP(string) (string, error) }); ok {
-					if testIP, err := getIPer.GetIP(name); err == nil && testIP != "" {
-						ip = testIP
-					}
+				if testIP, err := svc.GetIP(cmd.Context(), name); err == nil && testIP != "" {
+					ip = testIP
 				}
 			}
 
-			if ip == "" || inst.Status == "Stopped" || inst.StatusCode == api.Stopped {
+			if ip == "" || inst.Status == "Stopped" || inst.StatusCode == 102 {
 				if isDryRun {
 					ip = "<no-ipv4>"
 				} else {
@@ -1335,7 +1387,7 @@ func newShellCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				return err
 			}
 			name := args[0]
-			_, _, err = svc.GetInstance(name)
+			_, _, err = svc.GetInstance(cmd.Context(), name)
 			if err != nil {
 				return &exitError{code: 5, err: fmt.Errorf("container %q not found: %w", name, err)}
 			}
@@ -1345,13 +1397,13 @@ func newShellCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				runAs = "root"
 			}
 
-			uid, err := svc.ResolveUID(name, runAs)
+			uid, err := svc.ResolveUID(cmd.Context(), name, runAs)
 			if err != nil {
 				return &exitError{code: 6, err: fmt.Errorf("resolving user %q in %q: %w", runAs, name, err)}
 			}
 
 			shellCmd := []string{"/bin/bash", "-l"}
-			if err := svc.InteractiveExecInstance(name, shellCmd, uid, nil); err != nil {
+			if err := svc.InteractiveExecInstance(cmd.Context(), name, shellCmd, uid, nil); err != nil {
 				return &exitError{code: 6, err: fmt.Errorf("interactive shell failed: %w", err)}
 			}
 			return nil
@@ -1531,24 +1583,22 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				// authoritative check is creating and deleting a throwaway
 				// bridge ACL.
 				if svc.HasExtension("network_acl") {
-					checks = append(checks, "[OK] LXD network_acl extension")
-					if netSvc, ok := svc.(lxd.NetworkService); ok {
-						probeName := fmt.Sprintf("lxm-doctor-probe-%d", time.Now().UnixNano())
-						probeErr := netSvc.CreateNetworkACL(api.NetworkACLsPost{
-							NetworkACLPost: api.NetworkACLPost{Name: probeName},
-							NetworkACLPut:  api.NetworkACLPut{Config: map[string]string{}},
-						})
-						if probeErr != nil {
-							warnings = append(warnings, fmt.Sprintf("bridge network ACL probe failed (bridge ACLs may be unsupported): %v", probeErr))
-							checks = append(checks, "[WARN] bridge network ACL capability")
-						} else {
-							_ = netSvc.DeleteNetworkACL(probeName)
-							checks = append(checks, "[OK] bridge network ACL capability (probe create/delete)")
-						}
+					checks = append(checks, "[OK] provider network_acl extension")
+					probeName := fmt.Sprintf("lxm-doctor-probe-%d", time.Now().UnixNano())
+					probeErr := svc.CreateNetworkACL(ctx, provider.NetworkACLCreateRequest{
+						Name:   probeName,
+						Config: map[string]string{},
+					})
+					if probeErr != nil {
+						warnings = append(warnings, fmt.Sprintf("bridge network ACL probe failed (bridge ACLs may be unsupported): %v", probeErr))
+						checks = append(checks, "[WARN] bridge network ACL capability")
+					} else {
+						_ = svc.DeleteNetworkACL(ctx, probeName)
+						checks = append(checks, "[OK] bridge network ACL capability (probe create/delete)")
 					}
 				} else {
-					warnings = append(warnings, "LXD server lacks the network_acl extension; network_policy (vswitches groups) is unavailable")
-					checks = append(checks, "[WARN] LXD network_acl extension")
+					warnings = append(warnings, "provider server lacks the network_acl extension; network_policy (vswitches groups) is unavailable")
+					checks = append(checks, "[WARN] provider network_acl extension")
 				}
 			} else {
 				checks = append(checks, "[SKIP] Remote LXD socket check skipped")
@@ -1651,7 +1701,7 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 }
 
 // planComputeError maps a reconciler.Compute error to its exit code. A missing
-// external storage volume is a state-level error (exit 4, LXD_ERROR); every
+// external storage volume is a state-level error (exit 4, PROVIDER_ERROR); every
 // other plan error is a manifest/config-level error (exit 3, CONFIG_ERROR) —
 // STORAGE-SPEC §7.6/§11.
 func planComputeError(err error) error {
@@ -1667,7 +1717,7 @@ func planComputeError(err error) error {
 // non-default `io.bus` (`nvme`/`virtio-blk`) additionally requires the
 // `disk_io_bus` / `disk_io_bus_virtio_blk` markers. A gate failure is a
 // plan-time error, exit 4.
-func checkDiskExtensions(svc lxd.InstanceService, configs []*config.Config) error {
+func checkDiskExtensions(svc provider.Driver, configs []*config.Config) error {
 	if svc == nil {
 		return nil
 	}
@@ -1689,13 +1739,13 @@ func checkDiskExtensions(svc lxd.InstanceService, configs []*config.Config) erro
 		}
 	}
 	if hasBlock && !svc.HasExtension("custom_block_volumes") {
-		return &exitError{code: 4, err: fmt.Errorf("LXD server lacks the custom_block_volumes extension; block-mode disks require LXD with custom block volume support")}
+		return &exitError{code: 4, err: fmt.Errorf("provider server lacks the custom_block_volumes extension; block-mode disks require provider with custom block volume support")}
 	}
 	if hasNonDefaultBus && !svc.HasExtension("disk_io_bus") {
-		return &exitError{code: 4, err: fmt.Errorf("LXD server lacks the disk_io_bus extension; io.bus values other than virtio-scsi require a newer LXD")}
+		return &exitError{code: 4, err: fmt.Errorf("provider server lacks the disk_io_bus extension; io.bus values other than virtio-scsi require a newer provider")}
 	}
 	if hasVirtioBlk && !svc.HasExtension("disk_io_bus_virtio_blk") {
-		return &exitError{code: 4, err: fmt.Errorf("LXD server lacks the disk_io_bus_virtio_blk extension; io.bus virtio-blk requires a newer LXD")}
+		return &exitError{code: 4, err: fmt.Errorf("provider server lacks the disk_io_bus_virtio_blk extension; io.bus virtio-blk requires a newer provider")}
 	}
 	return nil
 }
@@ -1704,48 +1754,46 @@ func checkDiskExtensions(svc lxd.InstanceService, configs []*config.Config) erro
 // metadata (pool → name → volume) for the pools referenced by loaded
 // manifests. Volumes are returned alongside the snapshots — not attached to
 // them — so they survive an empty instance list (the create path probes
-// external volumes on a fresh LXD with zero live instances).
-func fetchLiveSnapshots(svc lxd.InstanceService, configs []*config.Config) (map[string]*plan.InstanceSnapshot, map[string]map[string]*api.StorageVolume, error) {
-	instances, err := svc.ListInstances()
+// external volumes on a fresh provider with zero live instances).
+func fetchLiveSnapshots(ctx context.Context, svc provider.Driver, configs []*config.Config) (map[string]*plan.InstanceSnapshot, map[string]map[string]*provider.StorageVolume, error) {
+	instances, err := svc.ListInstances(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// Live custom-volume metadata for the pools referenced by loaded manifests,
 	// so disk size diffs and the external-volume probe work offline (plan).
-	volumes := make(map[string]map[string]*api.StorageVolume)
-	if storageSvc, ok := svc.(lxd.StorageService); ok {
-		seenPool := make(map[string]bool)
-		for _, conf := range configs {
-			for _, d := range conf.Disks {
-				if d.Pool == "" || seenPool[d.Pool] {
-					continue
-				}
-				seenPool[d.Pool] = true
-				poolVols := make(map[string]*api.StorageVolume)
-				if vols, err := storageSvc.GetStoragePoolVolumes(d.Pool); err == nil {
-					for i := range vols {
-						if vols[i].Type == "custom" {
-							poolVols[vols[i].Name] = &vols[i]
-						}
+	volumes := make(map[string]map[string]*provider.StorageVolume)
+	seenPool := make(map[string]bool)
+	for _, conf := range configs {
+		for _, d := range conf.Disks {
+			if d.Pool == "" || seenPool[d.Pool] {
+				continue
+			}
+			seenPool[d.Pool] = true
+			poolVols := make(map[string]*provider.StorageVolume)
+			if vols, err := svc.GetStoragePoolVolumes(ctx, d.Pool); err == nil {
+				for i := range vols {
+					if vols[i].Type == "custom" {
+						poolVols[vols[i].Name] = &vols[i]
 					}
 				}
-				volumes[d.Pool] = poolVols
 			}
+			volumes[d.Pool] = poolVols
 		}
 	}
 
 	result := make(map[string]*plan.InstanceSnapshot)
 	for _, full := range instances {
 		instName := full.Name
-		inst, etag, err := svc.GetInstance(instName)
+		inst, etag, err := svc.GetInstance(ctx, instName)
 		if err != nil || inst == nil {
-			inst = &full.Instance
+			inst = &full
 			etag = ""
 		}
-		instType := inst.Type
+		instType := string(inst.Type)
 		if instType == "" {
-			instType = full.Type
+			instType = string(full.Type)
 		}
 		if instType == "" {
 			instType = "container"
@@ -1754,7 +1802,7 @@ func fetchLiveSnapshots(svc lxd.InstanceService, configs []*config.Config) (map[
 			Name:            inst.Name,
 			Type:            instType,
 			Status:          inst.Status,
-			StatusCode:      int(inst.StatusCode),
+			StatusCode:      inst.StatusCode,
 			Architecture:    inst.Architecture,
 			Config:          inst.Config,
 			ExpandedConfig:  full.ExpandedConfig,
@@ -1770,18 +1818,17 @@ func fetchLiveSnapshots(svc lxd.InstanceService, configs []*config.Config) (map[
 }
 
 // fetchImageAliases returns the live local-alias inventory — the set of alias
-// NAMES from the LXD image store (IMAGE-SPEC §8) — that keys the remote:alias
+// NAMES from the image store (IMAGE-SPEC §8) — that keys the remote:alias
 // cache probe, plus any listing error. The plan/diff commands may run without
 // a service (degraded offline mode) and tolerate the error (an empty
 // inventory simply plans a fetch); the apply command treats a probe failure as
 // fatal (exit 4, like fetchLiveSnapshots) so a broken probe cannot silently
 // turn every cached remote image into a redundant simplestreams pull.
-func fetchImageAliases(svc lxd.InstanceService) (map[string]bool, error) {
-	imgSvc, ok := svc.(lxd.ImageService)
-	if !ok {
+func fetchImageAliases(ctx context.Context, svc provider.Driver) (map[string]bool, error) {
+	if svc == nil {
 		return nil, nil
 	}
-	aliases, err := imgSvc.GetImageAliases()
+	aliases, err := svc.GetImageAliases(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1813,4 +1860,86 @@ func computePlanSummary(steps []plan.Step) plan.PlanSummary {
 		}
 	}
 	return s
+}
+
+// resolveDriverFunc connects to a provider driver from resolved targeting options.
+type resolveDriverFunc func(opts remote.ResolveOptions) (provider.Driver, error)
+
+func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opts *cmdOptions, resolve resolveDriverFunc) (provider.Driver, error) {
+	// 1. CLI flags take highest precedence
+	if opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != "") {
+		resOpts := remote.ResolveOptions{
+			Provider:   provider.ProviderType(opts.provider),
+			RemoteName: opts.remote,
+			TargetNode: opts.target,
+			Project:    opts.project,
+		}
+		d, err := resolve(resOpts)
+		if err != nil {
+			return nil, fmt.Errorf("resolving provider from CLI flags: %w", err)
+		}
+		return d, nil
+	}
+
+	// 2. Check if manifests declare targeting parameters
+	var manifestRemote, manifestProvider, manifestProject, manifestTarget string
+	for _, c := range configs {
+		if c.Remote != "" {
+			if manifestRemote != "" && manifestRemote != c.Remote {
+				return nil, fmt.Errorf("fleet contains conflicting remote targets (%q, %q); specify --remote or target individually", manifestRemote, c.Remote)
+			}
+			manifestRemote = c.Remote
+		}
+		if c.Provider != "" {
+			if manifestProvider != "" && manifestProvider != c.Provider {
+				return nil, fmt.Errorf("fleet contains conflicting provider targets (%q, %q); specify --provider or target individually", manifestProvider, c.Provider)
+			}
+			manifestProvider = c.Provider
+		}
+		if c.Project != "" {
+			if manifestProject != "" && manifestProject != c.Project {
+				return nil, fmt.Errorf("fleet contains conflicting project targets (%q, %q); specify --project or target individually", manifestProject, c.Project)
+			}
+			manifestProject = c.Project
+		}
+		if c.Target != "" {
+			if manifestTarget != "" && manifestTarget != c.Target {
+				return nil, fmt.Errorf("fleet contains conflicting cluster target nodes (%q, %q); specify --target or target individually", manifestTarget, c.Target)
+			}
+			manifestTarget = c.Target
+		}
+	}
+
+	// If any manifest targeting parameter was found across the fleet
+	if manifestRemote != "" || manifestProvider != "" || manifestProject != "" || manifestTarget != "" {
+		resOpts := remote.ResolveOptions{
+			Provider:   provider.ProviderType(manifestProvider),
+			RemoteName: manifestRemote,
+			TargetNode: manifestTarget,
+			Project:    manifestProject,
+		}
+		d, err := resolve(resOpts)
+		if err != nil {
+			return nil, fmt.Errorf("resolving provider for fleet targets: %w", err)
+		}
+		return d, nil
+	}
+
+	// 3. Fallback to base getter (default local provider)
+	return baseGetter()
+}
+
+func resolveProviderType(opts *cmdOptions, svc provider.Driver, configs []*config.Config) string {
+	if opts != nil && opts.provider != "" {
+		return opts.provider
+	}
+	for _, conf := range configs {
+		if conf != nil && conf.Provider != "" {
+			return conf.Provider
+		}
+	}
+	if svc != nil {
+		return string(svc.ProviderType())
+	}
+	return ""
 }

@@ -193,7 +193,7 @@ func TestEffectiveImageRemotes_BuiltinsAndOverrides(t *testing.T) {
 	if out["ubuntu-daily"] != "https://cloud-images.ubuntu.com/daily" {
 		t.Errorf("expected built-in ubuntu-daily preserved, got %q", out["ubuntu-daily"])
 	}
-	if out["images"] != "https://images.lxd.canonical.com" {
+	if out["images"] != "https://images.linuxcontainers.org" {
 		t.Errorf("expected built-in images preserved, got %q", out["images"])
 	}
 	if out["corp"] != "https://images.corp.example.com" {
@@ -222,6 +222,36 @@ func TestEffectiveImageRemotes_Conflict(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "mirror") || !strings.Contains(err.Error(), "a.yaml") || !strings.Contains(err.Error(), "b.yaml") {
 		t.Errorf("conflict error should cite name and both files, got %v", err)
+	}
+}
+
+func TestEffectiveImageRemotes_ProviderDefaults(t *testing.T) {
+	// Incus default
+	incusRemotes, err := EffectiveImageRemotesForProvider("incus", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if incusRemotes["images"] != "https://images.linuxcontainers.org" {
+		t.Errorf("expected incus default images remote to be linuxcontainers.org, got %q", incusRemotes["images"])
+	}
+
+	// LXD default
+	lxdRemotes, err := EffectiveImageRemotesForProvider("lxd", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lxdRemotes["images"] != "https://images.lxd.canonical.com" {
+		t.Errorf("expected lxd default images remote to be images.lxd.canonical.com, got %q", lxdRemotes["images"])
+	}
+
+	// Auto-detection from manifest provider: lxd
+	lxdConf := &Config{ConfigFile: "/fleet/lxd.yaml", Provider: "lxd"}
+	autoRemotes, err := EffectiveImageRemotes([]*Config{lxdConf})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if autoRemotes["images"] != "https://images.lxd.canonical.com" {
+		t.Errorf("expected auto-detected lxd images remote to be images.lxd.canonical.com, got %q", autoRemotes["images"])
 	}
 }
 

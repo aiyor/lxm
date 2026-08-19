@@ -8,14 +8,6 @@ import (
 	"strings"
 )
 
-// builtinImageRemotes is the locked default remote map. Entries are overridden
-// by a same-named image_remotes declaration (IMAGE-SPEC §4.1).
-var builtinImageRemotes = map[string]string{
-	"ubuntu":       "https://cloud-images.ubuntu.com/releases",
-	"ubuntu-daily": "https://cloud-images.ubuntu.com/daily",
-	"images":       "https://images.lxd.canonical.com",
-}
-
 // SplitImageRef parses an image reference. It returns (remote, alias, true)
 // for the remote:alias form and ("", image, false) otherwise (a fingerprint
 // or a bare local alias). A reference with more than one ':' is never a valid
@@ -118,22 +110,51 @@ func CanonicalizeImageRemoteURL(name, raw string) (string, error) {
 	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + path, nil
 }
 
-// BuiltinImageRemotes returns the built-in remote registry. It is the
-// effective registry for a fleet with no image_remotes declarations and is
-// used by the reconciler and by tests; it never errors.
+// BuiltinImageRemotesForProvider returns the built-in remote registry for the
+// given provider ("incus" vs "lxd"). Canonical LXD uses images.lxd.canonical.com,
+// while Incus uses images.linuxcontainers.org.
+func BuiltinImageRemotesForProvider(providerType string) map[string]string {
+	if strings.EqualFold(providerType, "lxd") {
+		return map[string]string{
+			"ubuntu":       "https://cloud-images.ubuntu.com/releases",
+			"ubuntu-daily": "https://cloud-images.ubuntu.com/daily",
+			"images":       "https://images.lxd.canonical.com",
+		}
+	}
+	return map[string]string{
+		"ubuntu":       "https://cloud-images.ubuntu.com/releases",
+		"ubuntu-daily": "https://cloud-images.ubuntu.com/daily",
+		"images":       "https://images.linuxcontainers.org",
+	}
+}
+
+// BuiltinImageRemotes returns the built-in remote registry (defaulting to Incus).
 func BuiltinImageRemotes() map[string]string {
-	out, _ := EffectiveImageRemotes(nil)
-	return out
+	return BuiltinImageRemotesForProvider("")
 }
 
 // EffectiveImageRemotes compiles the effective remote registry for a fleet:
 // the built-in remotes as the base layer, overlaid key-wise by every loaded
-// manifest's image_remotes declaration (IMAGE-SPEC §4.1). A declaration
-// overrides a same-named built-in freely; identical (name, canonical URL)
-// duplicates across manifests are deduplicated silently; the same name
-// declared with a different canonical URL across two manifests is a conflict
-// (exit 3) citing both files.
+// manifest's image_remotes declaration (IMAGE-SPEC §4.1).
 func EffectiveImageRemotes(configs []*Config) (map[string]string, error) {
+	return EffectiveImageRemotesForProvider("", configs)
+}
+
+// EffectiveImageRemotesForProvider compiles the effective remote registry for a fleet
+// with provider-specific defaults (e.g. images.lxd.canonical.com for LXD vs
+// images.linuxcontainers.org for Incus).
+func EffectiveImageRemotesForProvider(providerType string, configs []*Config) (map[string]string, error) {
+	if providerType == "" {
+		for _, conf := range configs {
+			if conf != nil && strings.EqualFold(conf.Provider, "lxd") {
+				providerType = "lxd"
+				break
+			}
+		}
+	}
+
+	baseRemotes := BuiltinImageRemotesForProvider(providerType)
+
 	// Deterministic conflict attribution: process manifests in file order.
 	sorted := append([]*Config(nil), configs...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].ConfigFile < sorted[j].ConfigFile })
@@ -165,8 +186,8 @@ func EffectiveImageRemotes(configs []*Config) (map[string]string, error) {
 		}
 	}
 
-	out := make(map[string]string, len(builtinImageRemotes)+len(declared))
-	for name, raw := range builtinImageRemotes {
+	out := make(map[string]string, len(baseRemotes)+len(declared))
+	for name, raw := range baseRemotes {
 		out[name] = raw
 	}
 	for name, canon := range declared {

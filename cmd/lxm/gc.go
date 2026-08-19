@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/spf13/cobra"
 )
 
@@ -38,10 +37,6 @@ func newDiskCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			svc, err := getSvc()
 			if err != nil {
 				return err
-			}
-			storageSvc, ok := svc.(lxd.StorageService)
-			if !ok {
-				return &exitError{code: 4, err: fmt.Errorf("LXD service does not support storage operations")}
 			}
 
 			// 1. Discover manifests to determine referenced volumes.
@@ -73,7 +68,7 @@ func newDiskCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			if poolFilter != "" {
 				pools = []string{poolFilter}
 			} else {
-				allPools, err := storageSvc.GetStoragePoolNames()
+				allPools, err := svc.GetStoragePoolNames(ctx)
 				if err != nil {
 					return &exitError{code: 4, err: fmt.Errorf("listing storage pools: %w", err)}
 				}
@@ -91,7 +86,7 @@ func newDiskCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			var orphans []orphanVol
 
 			for _, pool := range pools {
-				vols, err := storageSvc.GetStoragePoolVolumes(pool)
+				vols, err := svc.GetStoragePoolVolumes(ctx, pool)
 				if err != nil {
 					continue
 				}
@@ -157,7 +152,7 @@ func newDiskCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 
 			deleted := 0
 			for _, o := range orphans {
-				err := storageSvc.DeleteStoragePoolVolume(o.pool, "custom", o.name)
+				err := svc.DeleteStoragePoolVolume(ctx, o.pool, "custom", o.name)
 				if err != nil {
 					fmt.Fprintf(stderr, "Error deleting volume %s/%s: %v\n", o.pool, o.name, err)
 				} else {
@@ -199,10 +194,6 @@ func newVSwitchCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 			if err != nil {
 				return err
 			}
-			netSvc, ok := svc.(lxd.NetworkService)
-			if !ok {
-				return &exitError{code: 4, err: fmt.Errorf("LXD service does not support network operations")}
-			}
 
 			// 1. Discover manifests to determine referenced vswitches.
 			// Safety: Must fail closed if any manifest fails to load.
@@ -224,7 +215,7 @@ func newVSwitchCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 				}
 			}
 
-			acls, err := netSvc.GetNetworkACLs()
+			acls, err := svc.GetNetworkACLs(ctx)
 			if err != nil {
 				return &exitError{code: 4, err: fmt.Errorf("listing network ACLs: %w", err)}
 			}
@@ -280,7 +271,7 @@ func newVSwitchCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 
 			deleted := 0
 			for _, o := range orphans {
-				err := netSvc.DeleteNetworkACL(o.name)
+				err := svc.DeleteNetworkACL(ctx, o.name)
 				if err != nil {
 					fmt.Fprintf(stderr, "Error deleting ACL %s: %v\n", o.name, err)
 				} else {

@@ -10,11 +10,10 @@ import (
 	"time"
 
 	"github.com/aiyor/lxm/internal/fleet"
-	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/plan"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/common"
 	"github.com/aiyor/lxm/internal/recipe"
-	"github.com/canonical/lxd/shared/api"
-	"github.com/canonical/lxd/shared/units"
 )
 
 // ApplyOpts configures execution behavior.
@@ -69,30 +68,21 @@ type ApplyReport struct {
 	Warnings       []string          `json:"warnings"`
 }
 
-// Executor executes a reconciliation Plan against LXD.
+// Executor executes a reconciliation Plan against LXD/Incus.
 type Executor interface {
 	Apply(ctx context.Context, p *plan.Plan, opts ApplyOpts) (*ApplyReport, error)
 }
 
-// Services bundles the instance, network, storage, and image LXD services used
-// by the executor.
-type Services interface {
-	lxd.InstanceService
-	lxd.NetworkService
-	lxd.StorageService
-	lxd.ImageService
-}
+// Services bundles the driver services used by the executor.
+type Services = provider.Driver
 
 type defaultExecutor struct {
-	lxdSvc     lxd.InstanceService
-	netSvc     lxd.NetworkService
-	storageSvc lxd.StorageService
-	imageSvc   lxd.ImageService
+	driver provider.Driver
 }
 
-// NewExecutor creates a new default Executor using the provided services.
-func NewExecutor(svc Services) Executor {
-	return &defaultExecutor{lxdSvc: svc, netSvc: svc, storageSvc: svc, imageSvc: svc}
+// NewExecutor creates a new default Executor using the provided provider Driver.
+func NewExecutor(driver provider.Driver) Executor {
+	return &defaultExecutor{driver: driver}
 }
 
 func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpts) (*ApplyReport, error) {
@@ -142,16 +132,16 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 		for _, op := range dedupImageOps(p.Steps) {
 			if err := e.executeImageOp(ctx, op); err != nil {
 				imageFailed = true
-				_, retryable := e.lxdSvc.ClassifyLXDError(err, "update")
+				_, retryable := common.ClassifyError(err, "update")
 				// Spec §7.4: transient network errors are marked retryable.
 				// A fetch that times out (waitOpContext deadline) is transient
-				// but ClassifyLXDError only marks ETag/412 conflicts, so flag
+				// but ClassifyError only marks ETag/412 conflicts, so flag
 				// the deadline case explicitly.
 				if errors.Is(err, context.DeadlineExceeded) {
 					retryable = true
 				}
 				report.Errors = append(report.Errors, ErrorInfo{
-					Code:      "LXD_ERROR",
+					Code:      "PROVIDER_ERROR",
 					Message:   fmt.Sprintf("fetching image %q from remote %q: %v", op.Alias, op.RemoteURL, err),
 					Retryable: retryable,
 				})
@@ -183,7 +173,7 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 				if err := e.executeVolumeOp(ctx, op); err != nil {
 					storageFailed = true
 					report.Errors = append(report.Errors, ErrorInfo{
-						Code:      "LXD_ERROR",
+						Code:      "PROVIDER_ERROR",
 						Container: step.Container,
 						Message:   fmt.Sprintf("storage volume %q in pool %q: %v", op.Name, op.Pool, err),
 					})
@@ -202,7 +192,7 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 	}
 
 	// Phase 1: pre-instance network steps (ACLs, then vswitches).
-	// A network-step LXD error aborts the apply before any instance step runs.
+	// A network-step error aborts the apply before any instance step runs.
 	preNetSteps, postNetSteps := partitionNetworkSteps(p.NetworkSteps)
 	networkFailed := false
 	for _, nstep := range preNetSteps {
@@ -224,6 +214,16 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 	if networkFailed {
 		report.ExitCode = worstExitCode
 		return report, nil
+	}
+
+	if !opts.DryRun {
+		for _, nstep := range preNetSteps {
+			if nstep.Kind == "create_vswitch" && nstep.Changed {
+				// Allow daemon dnsmasq fork to initialize directory structures on newly created bridges
+				time.Sleep(300 * time.Millisecond)
+				break
+			}
+		}
 	}
 
 	// Phase 2: instance steps (creates, updates, rebuilds, device detachments).
@@ -270,7 +270,7 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 				seenVols[key] = true
 				if err := e.executeVolumeOp(ctx, op); err != nil {
 					report.Errors = append(report.Errors, ErrorInfo{
-						Code:      "LXD_ERROR",
+						Code:      "PROVIDER_ERROR",
 						Container: step.Container,
 						Message:   fmt.Sprintf("deleting storage volume %q in pool %q: %v", op.Name, op.Pool, err),
 					})
@@ -330,9 +330,9 @@ func sortNetworkSteps(steps []plan.NetworkStep) []plan.NetworkStep {
 func (e *defaultExecutor) executeVolumeOp(ctx context.Context, op plan.VolumeOp) error {
 	switch op.Op {
 	case "create":
-		vol, _, err := e.storageSvc.GetStoragePoolVolume(op.Pool, "custom", op.Name)
+		vol, _, err := e.driver.GetStoragePoolVolume(ctx, op.Pool, "custom", op.Name)
 		if err != nil {
-			if code, _ := e.lxdSvc.ClassifyLXDError(err, "lookup"); code == 5 {
+			if code, _ := common.ClassifyError(err, "lookup"); code == 5 {
 				return e.createVolume(ctx, op)
 			}
 			return err
@@ -351,26 +351,24 @@ func (e *defaultExecutor) executeVolumeOp(ctx context.Context, op plan.VolumeOp)
 }
 
 func (e *defaultExecutor) createVolume(ctx context.Context, op plan.VolumeOp) error {
-	req := api.StorageVolumesPost{
+	req := provider.StorageVolumeCreateRequest{
 		Name:        op.Name,
 		Type:        "custom",
 		ContentType: op.ContentType,
-		StorageVolumePut: api.StorageVolumePut{
-			Config: map[string]string{
-				"user.lxm.managed": "true",
-			},
+		Config: map[string]string{
+			"user.lxm.managed": "true",
 		},
 	}
 	if op.Size != "" {
 		req.Config["size"] = op.Size
 	}
-	return e.storageSvc.CreateStoragePoolVolume(op.Pool, req)
+	return e.driver.CreateStoragePoolVolume(ctx, op.Pool, req)
 }
 
 func (e *defaultExecutor) deleteVolume(ctx context.Context, op plan.VolumeOp) error {
-	err := e.storageSvc.DeleteStoragePoolVolume(op.Pool, "custom", op.Name)
+	err := e.driver.DeleteStoragePoolVolume(ctx, op.Pool, "custom", op.Name)
 	if err != nil {
-		if code, _ := e.lxdSvc.ClassifyLXDError(err, "lookup"); code == 5 {
+		if code, _ := common.ClassifyError(err, "lookup"); code == 5 {
 			return nil // idempotent success if already absent
 		}
 		return err
@@ -382,12 +380,12 @@ func (e *defaultExecutor) deleteVolume(ctx context.Context, op plan.VolumeOp) er
 // carry user.lxm.managed: "true" and tracking metadata even in steady-state (no-diff).
 func (e *defaultExecutor) backfillVolumeMarkers(ctx context.Context, step plan.Step) {
 	for _, d := range step.ManagedDisks {
-		vol, etag, err := e.storageSvc.GetStoragePoolVolume(d.Pool, "custom", d.Source)
+		vol, etag, err := e.driver.GetStoragePoolVolume(ctx, d.Pool, "custom", d.Source)
 		if err != nil || vol == nil {
 			continue
 		}
 		if vol.Config == nil || vol.Config["user.lxm.managed"] != "true" {
-			put := api.StorageVolumePut{
+			put := provider.StorageVolumeUpdateRequest{
 				Config:      vol.Config,
 				Description: vol.Description,
 			}
@@ -397,7 +395,7 @@ func (e *defaultExecutor) backfillVolumeMarkers(ctx context.Context, step plan.S
 			put.Config["user.lxm.managed"] = "true"
 			put.Config["user.lxm.instance"] = step.Container
 			put.Config["user.lxm.disk"] = d.Name
-			_ = e.storageSvc.UpdateStoragePoolVolume(d.Pool, "custom", d.Source, put, etag)
+			_ = e.driver.UpdateStoragePoolVolume(ctx, d.Pool, "custom", d.Source, put, etag)
 		}
 	}
 }
@@ -422,28 +420,18 @@ func dedupImageOps(steps []plan.Step) []plan.ImageOp {
 }
 
 // executeImageOp applies one idempotent remote-image fetch (Phase -1,
-// IMAGE-SPEC §9). LXD's "Alias already exists" is a success/no-op: it means
+// IMAGE-SPEC §9). "Alias already exists" is a success/no-op: it means
 // another concurrent apply already fetched and tagged the image (§7.7).
 func (e *defaultExecutor) executeImageOp(ctx context.Context, op plan.ImageOp) error {
-	err := e.imageSvc.CopyRemoteImage(ctx, op.RemoteURL, op.Alias, op.Type, op.LocalAlias)
-	if err != nil && strings.Contains(err.Error(), "Alias already exists") {
+	err := e.driver.CopyRemoteImage(ctx, op.RemoteURL, op.Alias, op.Type, op.LocalAlias)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "alias already exists") {
 		return nil
 	}
 	return err
 }
 
 // refreshImageRecord re-records user.lxm.image on the live instance after a
-// rebuild (the non-fallback recreate path). LXD's rebuild preserves user.*
-// config but resets image.* to the new image (verified in
-// lxd/instance/drivers/driver_common.go rebuildCommon), so without this the
-// recorded reference stays stale and re-plans a perpetual, destructive
-// recreate for every non-OS remote (images:…, ubuntu-daily:…, custom remotes),
-// and can even mask real drift (stale record equals a reverted manifest
-// reference). The PUT is a targeted refresh: it copies the live config
-// (preserving the image.* keys the rebuild just set — an instance PUT is a
-// full-replace, so a bare InstancesPost config would wipe them) and updates
-// only user.lxm.image. The desired reference is taken from the step's create
-// payload, which buildInstancesPost always sets.
+// rebuild (the non-fallback recreate path).
 func (e *defaultExecutor) refreshImageRecord(ctx context.Context, step plan.Step) error {
 	if step.InstancesPost == nil {
 		return nil
@@ -452,32 +440,22 @@ func (e *defaultExecutor) refreshImageRecord(ctx context.Context, step plan.Step
 	if image == "" {
 		return nil
 	}
-	inst, etag, err := e.lxdSvc.GetInstance(step.Container)
+	inst, etag, err := e.driver.GetInstance(ctx, step.Container)
 	if err != nil {
 		return err
 	}
-	devices := inst.Devices
-	if devices == nil {
-		devices = make(map[string]map[string]string)
-	}
-	put := api.InstancePut{
-		Architecture: inst.Architecture,
-		Config:       make(map[string]string, len(inst.Config)+1),
-		Devices:      devices,
-		Profiles:     inst.Profiles,
-		Ephemeral:    inst.Ephemeral,
-	}
-	for k, v := range inst.Config {
-		put.Config[k] = v
+	put := inst.Writable()
+	if put.Config == nil {
+		put.Config = make(map[string]string)
 	}
 	put.Config["user.lxm.image"] = image
-	return e.lxdSvc.UpdateInstanceContext(ctx, step.Container, put, etag)
+	return e.driver.UpdateInstance(ctx, step.Container, put, etag)
 }
 
 // growIfNeeded grows the volume when the desired size exceeds the live size.
 // No-ops when sizes are unparsable or already satisfied.
 func (e *defaultExecutor) growIfNeeded(ctx context.Context, op plan.VolumeOp) error {
-	vol, etag, err := e.storageSvc.GetStoragePoolVolume(op.Pool, "custom", op.Name)
+	vol, etag, err := e.driver.GetStoragePoolVolume(ctx, op.Pool, "custom", op.Name)
 	if err != nil {
 		return err
 	}
@@ -488,52 +466,45 @@ func (e *defaultExecutor) growIfNeeded(ctx context.Context, op plan.VolumeOp) er
 	if liveSize == "" {
 		return nil
 	}
-	liveBytes, err := units.ParseByteSizeString(liveSize)
+	liveBytes, err := common.ParseByteSizeString(liveSize)
 	if err != nil {
 		return fmt.Errorf("parsing live size %q for volume %q: %w", liveSize, op.Name, err)
 	}
-	desiredBytes, err := units.ParseByteSizeString(op.Size)
+	desiredBytes, err := common.ParseByteSizeString(op.Size)
 	if err != nil {
 		return fmt.Errorf("parsing desired size %q for volume %q: %w", op.Size, op.Name, err)
 	}
 	if desiredBytes <= liveBytes {
 		return nil
 	}
-	put := api.StorageVolumePut{Config: make(map[string]string, len(vol.Config)+1)}
+	put := provider.StorageVolumeUpdateRequest{Config: make(map[string]string, len(vol.Config)+1)}
 	for k, v := range vol.Config {
 		put.Config[k] = v
 	}
 	put.Config["size"] = op.Size
-	return e.storageSvc.UpdateStoragePoolVolume(op.Pool, "custom", op.Name, put, etag)
+	return e.driver.UpdateStoragePoolVolume(ctx, op.Pool, "custom", op.Name, put, etag)
 }
 
 // stopBeforeDelete stops the instance so a non-forced delete can proceed.
-// LXD refuses to delete a running instance ("Instance is running"), but also
-// rejects stopping an already-stopped one ("The instance is already stopped"),
-// so only stop when the live state is not Stopped. An instance that is
-// already gone (race between plan and apply) needs no stop; the delete and
-// recreate callers tolerate a not-found delete, keeping the action
-// idempotent like the manager-level DeleteContainer
-// (internal/lxm/container.go).
 func (e *defaultExecutor) stopBeforeDelete(ctx context.Context, name string) error {
-	inst, _, err := e.lxdSvc.GetInstance(name)
+	inst, _, err := e.driver.GetInstance(ctx, name)
 	if err != nil {
-		if code, _ := e.lxdSvc.ClassifyLXDError(err, "lookup"); code == 5 {
+		if code, _ := common.ClassifyError(err, "lookup"); code == 5 {
 			return nil // already gone: nothing to stop
 		}
 		return err
 	}
-	if inst.StatusCode == api.Stopped {
+	if inst.StatusCode == 102 || inst.Status == "Stopped" {
 		return nil
 	}
-	return e.lxdSvc.UpdateInstanceStateContext(ctx, name, "stop", true)
+	return e.driver.UpdateInstanceState(ctx, name, "stop", true)
 }
 
-// isNotFound reports whether err is a not-found LXD error, so delete and
+// isNotFound reports whether err is a not-found error, so delete and
 // recreate steps stay idempotent when a container vanishes between plan and
 // apply.
 func (e *defaultExecutor) isNotFound(err error) bool {
-	code, _ := e.lxdSvc.ClassifyLXDError(err, "lookup")
+	code, _ := common.ClassifyError(err, "lookup")
 	return code == 5
 }
 
@@ -588,13 +559,13 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 
 	// Initial-step ETag Verification (F1)
 	if step.Action != "create" && step.ETag != "" {
-		inst, currentETag, err := e.lxdSvc.GetInstance(step.Container)
+		inst, currentETag, err := e.driver.GetInstance(ctx, step.Container)
 		if err == nil && inst != nil {
 			if currentETag != "" && currentETag != step.ETag {
 				res.OK = false
 				res.Error = "etag mismatch: container modified externally"
 				return res, &ErrorInfo{
-					Code:      "LXD_ERROR",
+					Code:      "PROVIDER_ERROR",
 					Container: step.Container,
 					Message:   "etag mismatch: container modified externally",
 					Retryable: true,
@@ -606,42 +577,59 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 	var opErr error
 	switch step.Action {
 	case "create":
-		req := api.InstancesPost{
+		req := provider.InstanceCreateRequest{
 			Name: step.Container,
 		}
 		if step.InstancesPost != nil {
 			req = *step.InstancesPost
 		}
-		opErr = e.lxdSvc.CreateInstanceContext(ctx, req)
+		for attempt := 0; attempt < 10; attempt++ {
+			opErr = e.driver.CreateInstance(ctx, req)
+			if opErr == nil {
+				break
+			}
+			if strings.Contains(opErr.Error(), "does not exist") || strings.Contains(opErr.Error(), "no such file or directory") {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			break
+		}
 		if opErr == nil && !opts.NoStart && (step.PowerTransition == "start" || step.PowerTransition == "") {
-			opErr = e.lxdSvc.UpdateInstanceStateContext(ctx, step.Container, "start", false)
+			for attempt := 0; attempt < 10; attempt++ {
+				opErr = e.driver.UpdateInstanceState(ctx, step.Container, "start", false)
+				if opErr == nil {
+					break
+				}
+				if strings.Contains(opErr.Error(), "does not exist") || strings.Contains(opErr.Error(), "no such file or directory") {
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+				break
+			}
 		}
 
 	case "update":
 		// Fresh ETag and instance re-fetch immediately before PUT
-		inst, freshETag, err := e.lxdSvc.GetInstance(step.Container)
+		inst, freshETag, err := e.driver.GetInstance(ctx, step.Container)
 		if err != nil {
 			opErr = err
 		} else {
-			put := api.InstancePut{}
+			put := provider.InstanceUpdateRequest{}
 			if step.InstancePut != nil {
 				put = *step.InstancePut
 			}
 
-			// If the instance is currently running and the update involves a stop or restart transition
-			// (e.g. non-live-updatable VM hypervisor keys or desired stopped state), stop the instance
-			// before issuing the PUT so LXD accepts non-live-updatable configuration keys.
-			isLiveRunning := inst != nil && (inst.Status == "Running" || inst.StatusCode == api.Running || inst.StatusCode == 103)
+			isLiveRunning := inst != nil && (inst.Status == "Running" || inst.StatusCode == 103)
 			restartAfter := false
 			if isLiveRunning && (step.PowerTransition == "restart" || step.PowerTransition == "stop") {
-				if err := e.lxdSvc.UpdateInstanceStateContext(ctx, step.Container, "stop", false); err != nil {
+				if err := e.driver.UpdateInstanceState(ctx, step.Container, "stop", false); err != nil {
 					opErr = err
 				} else {
 					if step.PowerTransition == "restart" {
 						restartAfter = true
 					}
 					// Re-fetch ETag after stopping instance
-					_, freshETag, err = e.lxdSvc.GetInstance(step.Container)
+					_, freshETag, err = e.driver.GetInstance(ctx, step.Container)
 					if err != nil {
 						opErr = err
 					}
@@ -649,12 +637,12 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 			}
 
 			if opErr == nil {
-				opErr = e.lxdSvc.UpdateInstanceContext(ctx, step.Container, put, freshETag)
+				opErr = e.driver.UpdateInstance(ctx, step.Container, put, freshETag)
 				if opErr == nil {
 					if restartAfter {
-						opErr = e.lxdSvc.UpdateInstanceStateContext(ctx, step.Container, "start", false)
+						opErr = e.driver.UpdateInstanceState(ctx, step.Container, "start", false)
 					} else if step.PowerTransition != "" && step.PowerTransition != "restart" && step.PowerTransition != "stop" {
-						opErr = e.lxdSvc.UpdateInstanceStateContext(ctx, step.Container, step.PowerTransition, false)
+						opErr = e.driver.UpdateInstanceState(ctx, step.Container, step.PowerTransition, false)
 					}
 				}
 			}
@@ -683,53 +671,43 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 			}
 			if err := e.stopBeforeDelete(ctx, step.Container); err != nil {
 				opErr = err
-			} else if err := e.lxdSvc.DeleteInstanceContext(ctx, step.Container); err != nil && !e.isNotFound(err) {
+			} else if err := e.driver.DeleteInstance(ctx, step.Container); err != nil && !e.isNotFound(err) {
 				opErr = err
 			} else {
-				createReq := api.InstancesPost{Name: step.Container}
+				createReq := provider.InstanceCreateRequest{Name: step.Container}
 				if step.InstancesPost != nil {
 					createReq = *step.InstancesPost
 				}
-				opErr = e.lxdSvc.CreateInstanceContext(ctx, createReq)
+				opErr = e.driver.CreateInstance(ctx, createReq)
 				if opErr == nil && !opts.NoStart && step.PowerTransition == "start" {
-					opErr = e.lxdSvc.UpdateInstanceStateContext(ctx, step.Container, "start", false)
+					opErr = e.driver.UpdateInstanceState(ctx, step.Container, "start", false)
 				}
 			}
 		} else {
-			req := api.InstanceRebuildPost{}
+			req := provider.InstanceRebuildRequest{}
 			if step.RebuildPost != nil {
 				req = *step.RebuildPost
 			}
-			opErr = e.lxdSvc.RebuildInstanceContext(ctx, step.Container, req)
+			opErr = e.driver.RebuildInstance(ctx, step.Container, req)
 			if opErr == nil {
-				// LXD's rebuild preserves user.* config but resets image.* to
-				// the new image, so the recorded user.lxm.image would otherwise
-				// stay stale and re-plan a perpetual recreate for non-OS
-				// remotes (images:…, ubuntu-daily:…, custom remotes) —
-				// IMAGE-SPEC §4.5.
 				opErr = e.refreshImageRecord(ctx, step)
 			}
 		}
 
 	case "delete":
-		// LXD refuses to delete a running instance. Stop it first — only when
-		// the live state is not Stopped, since stopping an already-stopped
-		// instance is itself an error — so `--prune` and `status: absent`
-		// remove running containers too. A container that vanished between
-		// plan and apply is already absent: deleting it is a no-op.
 		if err := e.stopBeforeDelete(ctx, step.Container); err != nil {
 			opErr = err
-		} else if err := e.lxdSvc.DeleteInstanceContext(ctx, step.Container); err != nil && !e.isNotFound(err) {
+		} else if err := e.driver.DeleteInstance(ctx, step.Container); err != nil && !e.isNotFound(err) {
 			opErr = err
 		}
 
 	case "start":
 		if !opts.NoStart {
-			opErr = e.lxdSvc.UpdateInstanceStateContext(ctx, step.Container, "start", false)
+			opErr = e.driver.UpdateInstanceState(ctx, step.Container, "start", false)
 		}
 
 	case "stop":
-		opErr = e.lxdSvc.UpdateInstanceStateContext(ctx, step.Container, "stop", false)
+		opErr = e.driver.UpdateInstanceState(ctx, step.Container, "stop", false)
 	}
 
 	if opErr == nil && (step.Action == "recreate" || step.Action == "delete") {
@@ -746,7 +724,7 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 				Message:   "operation cancelled by user interrupt",
 			}, ""
 		}
-		code, retryable := e.lxdSvc.ClassifyLXDError(opErr, "update")
+		code, retryable := common.ClassifyError(opErr, "update")
 		errCodeStr := exitToErrorCode(code)
 		return res, &ErrorInfo{
 			Code:      errCodeStr,
@@ -756,7 +734,7 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 		}, ""
 	}
 
-	// Post-mutation safety policy: wait and recipes (R1 Fix: skip if step or target power transition is stop or delete)
+	// Post-mutation safety policy: wait and recipes (skip if step or target power transition is stop or delete)
 	var warnMsg string
 	if step.Action != "delete" && step.Action != "stop" && step.PowerTransition != "stop" {
 		waitErrInfo, wMsg := e.checkWaitPolicy(ctx, step, opts)
@@ -780,10 +758,21 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 
 var transientAgentErrors = []string{
 	"LXD VM agent is not currently running",
+	"Incus VM agent is not currently running",
+	"VM agent isn't currently running",
+	"VM agent is not currently running",
+	"agent isn't currently running",
+	"agent is not currently running",
+	"agent not running",
 	"Failed connecting to lxd-agent",
+	"Failed connecting to incus-agent",
 	"The LXD agent is not running on this instance",
+	"The Incus agent is not running on this instance",
+	"The agent is not running on this instance",
 	"LXD agent not running",
+	"Incus agent not running",
 	"Failed to connect to lxd-agent",
+	"Failed to connect to incus-agent",
 	"Failed to connect to instance socket",
 	"websocket: close 1006 (abnormal closure)",
 }
@@ -836,7 +825,7 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 	}
 
 	// 0. VM Agent Handshake Gate (VM instances only)
-	if inst, _, err := e.lxdSvc.GetInstance(step.Container); err == nil && inst != nil && inst.Type == "virtual-machine" && (inst.Status == "Running" || inst.StatusCode == 103) {
+	if inst, _, err := e.driver.GetInstance(ctx, step.Container); err == nil && inst != nil && (inst.Type == provider.InstanceTypeVM || inst.Type == provider.InstanceTypeVirtualMachine || inst.Type == "virtual-machine") && (inst.Status == "Running" || inst.StatusCode == 103) {
 		agentTimeout := 120 * time.Second
 		if step.WaitPolicy != nil && step.WaitPolicy.Agent != "" {
 			if d, err := time.ParseDuration(step.WaitPolicy.Agent); err == nil {
@@ -851,7 +840,7 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 
 		// Immediate initial probe
 		execCtx, cancelExec := context.WithTimeout(agentCtx, 3*time.Second)
-		_, execErr := e.lxdSvc.ExecInstanceContext(execCtx, step.Container, []string{"systemctl", "is-system-running"}, 0, nil)
+		_, execErr := e.driver.ExecInstance(execCtx, step.Container, []string{"systemctl", "is-system-running"}, 0, nil)
 		cancelExec()
 		if execErr == nil {
 			agentReady = true
@@ -876,7 +865,7 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 					break agentLoop
 				case <-ticker.C:
 					execCtx, cancelExec := context.WithTimeout(agentCtx, 3*time.Second)
-					_, execErr := e.lxdSvc.ExecInstanceContext(execCtx, step.Container, []string{"systemctl", "is-system-running"}, 0, nil)
+					_, execErr := e.driver.ExecInstance(execCtx, step.Container, []string{"systemctl", "is-system-running"}, 0, nil)
 					cancelExec()
 
 					if execErr == nil {
@@ -897,16 +886,16 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 				return &ErrorInfo{
 					Code:      "WAIT_TIMEOUT",
 					Container: step.Container,
-					Message:   fmt.Sprintf("lxd-agent wait timed out after %s on %q", agentTimeout, step.Container),
+					Message:   fmt.Sprintf("agent wait timed out after %s on %q", agentTimeout, step.Container),
 				}, ""
 			}
-			return nil, fmt.Sprintf("lxd-agent wait timed out after %s on VM %q (soft wait)", agentTimeout, step.Container)
+			return nil, fmt.Sprintf("agent wait timed out after %s on VM %q (soft wait)", agentTimeout, step.Container)
 		}
 	}
 
 	// Real wait execution: if container is running, check cloud-init status --wait
 	if step.WaitPolicy != nil && step.WaitPolicy.CloudInit != "" {
-		inst, _, err := e.lxdSvc.GetInstance(step.Container)
+		inst, _, err := e.driver.GetInstance(ctx, step.Container)
 		if err != nil || inst == nil || (inst.Status != "Running" && inst.StatusCode != 103) {
 			return nil, ""
 		}
@@ -919,12 +908,12 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 		defer cancel()
 
 		type execOutcome struct {
-			res lxd.ExecResult
+			res provider.ExecResult
 			err error
 		}
 		doneChan := make(chan execOutcome, 1)
 		go func() {
-			res, execErr := e.lxdSvc.ExecInstanceContext(waitCtx, step.Container, []string{"cloud-init", "status", "--wait"}, 0, nil)
+			res, execErr := e.driver.ExecInstance(waitCtx, step.Container, []string{"cloud-init", "status", "--wait"}, 0, nil)
 			doneChan <- execOutcome{res: res, err: execErr}
 		}()
 
@@ -932,7 +921,7 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 		case out := <-doneChan:
 			if out.err != nil {
 				return &ErrorInfo{
-					Code:      "LXD_ERROR",
+					Code:      "PROVIDER_ERROR",
 					Container: step.Container,
 					Message:   fmt.Sprintf("cloud-init wait exec error on %q: %v", step.Container, out.err),
 					Retryable: true,
@@ -974,7 +963,7 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 
 	// Real network wait execution: poll container for IP address assignment or network readiness
 	if step.WaitPolicy != nil && step.WaitPolicy.Network != "" && !strings.HasPrefix(step.WaitPolicy.Network, "timeout") {
-		inst, _, err := e.lxdSvc.GetInstance(step.Container)
+		inst, _, err := e.driver.GetInstance(ctx, step.Container)
 		if err == nil && inst != nil && (inst.Status == "Running" || inst.StatusCode == 103) {
 			netTimeout := 60 * time.Second
 			if d, err := time.ParseDuration(step.WaitPolicy.Network); err == nil {
@@ -993,7 +982,7 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 				case <-netCtx.Done():
 					break netLoop
 				case <-ticker.C:
-					res, execErr := e.lxdSvc.ExecInstanceContext(netCtx, step.Container, []string{"hostname", "-I"}, 0, nil)
+					res, execErr := e.driver.ExecInstance(netCtx, step.Container, []string{"hostname", "-I"}, 0, nil)
 					if execErr == nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) != "" {
 						netReady = true
 						break netLoop
@@ -1032,7 +1021,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 		return nil
 	}
 
-	inst, _, err := e.lxdSvc.GetInstance(step.Container)
+	inst, _, err := e.driver.GetInstance(ctx, step.Container)
 	if err != nil || inst == nil {
 		return &ErrorInfo{
 			Code:      "TARGET_NOT_FOUND",
@@ -1104,9 +1093,9 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 		// Snapshot-before-recipe per recipe (H4)
 		if rMeta.IsSnapshotEnabled() && !snapshotTaken && !opts.DryRun {
 			snapName := fmt.Sprintf("user.lxm.snap.%s-%d", step.Container, time.Now().UnixNano())
-			if snapErr := e.lxdSvc.CreateInstanceSnapshotContext(ctx, step.Container, api.InstanceSnapshotsPost{Name: snapName}); snapErr != nil {
+			if snapErr := e.driver.CreateInstanceSnapshot(ctx, step.Container, snapName, false); snapErr != nil {
 				return &ErrorInfo{
-					Code:      "LXD_ERROR",
+					Code:      "PROVIDER_ERROR",
 					Container: step.Container,
 					Message:   fmt.Sprintf("creating snapshot %q on %q: %v", snapName, step.Container, snapErr),
 				}
@@ -1119,7 +1108,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 			runAs = step.Recipes[i].RunAs
 		}
 
-		execRes, hashVal, execErr := recipe.ExecuteRecipeScriptContext(ctx, e.lxdSvc, step.Container, scriptFile, step.ConfigBaseDir, runAs, rMeta.Env, rMeta.Retries)
+		execRes, hashVal, execErr := recipe.ExecuteRecipeScriptContext(ctx, e.driver, step.Container, scriptFile, step.ConfigBaseDir, runAs, rMeta.Env, rMeta.Retries)
 		if execErr != nil || execRes.ExitCode != 0 {
 			if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) || ctx.Err() != nil {
 				return &ErrorInfo{
@@ -1144,28 +1133,22 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 		}
 
 		// Update metadata hash (H2 safety write check)
-		live, freshETag, getErr := e.lxdSvc.GetInstance(step.Container)
+		live, freshETag, getErr := e.driver.GetInstance(ctx, step.Container)
 		if getErr != nil {
 			return &ErrorInfo{
-				Code:      "LXD_ERROR",
+				Code:      "PROVIDER_ERROR",
 				Container: step.Container,
 				Message:   fmt.Sprintf("fetching container %q to update recipe metadata: %v", step.Container, getErr),
 			}
 		}
-		put := api.InstancePut{
-			Architecture: live.Architecture,
-			Config:       make(map[string]string),
-			Devices:      live.Devices,
-			Profiles:     live.Profiles,
-			Ephemeral:    live.Ephemeral,
-		}
-		for k, v := range live.Config {
-			put.Config[k] = v
+		put := live.Writable()
+		if put.Config == nil {
+			put.Config = make(map[string]string)
 		}
 		put.Config[hashKeys[i]] = hashVal
-		if putErr := e.lxdSvc.UpdateInstance(step.Container, put, freshETag); putErr != nil {
+		if putErr := e.driver.UpdateInstance(ctx, step.Container, put, freshETag); putErr != nil {
 			return &ErrorInfo{
-				Code:      "LXD_ERROR",
+				Code:      "PROVIDER_ERROR",
 				Container: step.Container,
 				Message:   fmt.Sprintf("updating recipe metadata on %q: %v", step.Container, putErr),
 			}
@@ -1203,7 +1186,7 @@ func errorCodeToExit(code string) int {
 		return 2
 	case "CONFIG_ERROR":
 		return 3
-	case "LXD_ERROR":
+	case "PROVIDER_ERROR":
 		return 4
 	case "TARGET_NOT_FOUND":
 		return 5
@@ -1225,7 +1208,7 @@ func exitToErrorCode(code int) string {
 	case 3:
 		return "CONFIG_ERROR"
 	case 4:
-		return "LXD_ERROR"
+		return "PROVIDER_ERROR"
 	case 5:
 		return "TARGET_NOT_FOUND"
 	case 6:

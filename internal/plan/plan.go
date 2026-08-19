@@ -10,12 +10,12 @@ import (
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/common"
 	"github.com/aiyor/lxm/internal/recipe"
-	"github.com/canonical/lxd/shared/api"
-	"github.com/canonical/lxd/shared/units"
 )
 
-// InstanceSnapshot represents a read-only snapshot of a live LXD instance.
+// InstanceSnapshot represents a read-only snapshot of a live instance.
 type InstanceSnapshot struct {
 	Name            string                       `json:"name"`
 	Type            string                       `json:"type"` // "container" | "virtual-machine"
@@ -66,29 +66,29 @@ type Plan struct {
 
 // Step represents a reconciliation step for a single container.
 type Step struct {
-	Container       string                   `json:"container"`
-	Action          string                   `json:"action"` // create | update | recreate | delete | start | stop | noop
-	Changed         bool                     `json:"changed"`
-	Diff            []FieldDiff              `json:"diff,omitempty"`
-	Wait            bool                     `json:"wait,omitempty"`
-	WaitPolicy      *config.WaitConfig       `json:"wait_policy,omitempty"`
-	ConfigBaseDir   string                   `json:"config_base_dir,omitempty"`
-	Recipes         []RecipeStep             `json:"recipes,omitempty"`
-	Snapshot        string                   `json:"snapshot,omitempty"`
-	ETag            string                   `json:"etag,omitempty"`
-	RebuildFallback bool                     `json:"rebuild_fallback,omitempty"`
-	PurgeSnapshots  bool                     `json:"purge_snapshots,omitempty"`
-	PowerTransition string                   `json:"power_transition,omitempty"` // "start" | "stop" | "restart"
-	VolumeOps       []VolumeOp               `json:"volume_ops,omitempty"`
-	ImageOps        []ImageOp                `json:"image_ops,omitempty"`
-	ManagedDisks    []config.DiskConfig      `json:"managed_disks,omitempty"`
-	InstancesPost   *api.InstancesPost       `json:"instances_post,omitempty"`
-	InstancePut     *api.InstancePut         `json:"instance_put,omitempty"`
-	RebuildPost     *api.InstanceRebuildPost `json:"rebuild_post,omitempty"`
+	Container       string                           `json:"container"`
+	Action          string                           `json:"action"` // create | update | recreate | delete | start | stop | noop
+	Changed         bool                             `json:"changed"`
+	Diff            []FieldDiff                      `json:"diff,omitempty"`
+	Wait            bool                             `json:"wait,omitempty"`
+	WaitPolicy      *config.WaitConfig               `json:"wait_policy,omitempty"`
+	ConfigBaseDir   string                           `json:"config_base_dir,omitempty"`
+	Recipes         []RecipeStep                     `json:"recipes,omitempty"`
+	Snapshot        string                           `json:"snapshot,omitempty"`
+	ETag            string                           `json:"etag,omitempty"`
+	RebuildFallback bool                             `json:"rebuild_fallback,omitempty"`
+	PurgeSnapshots  bool                             `json:"purge_snapshots,omitempty"`
+	PowerTransition string                           `json:"power_transition,omitempty"` // "start" | "stop" | "restart"
+	VolumeOps       []VolumeOp                       `json:"volume_ops,omitempty"`
+	ImageOps        []ImageOp                        `json:"image_ops,omitempty"`
+	ManagedDisks    []config.DiskConfig              `json:"managed_disks,omitempty"`
+	InstancesPost   *provider.InstanceCreateRequest  `json:"instances_post,omitempty"`
+	InstancePut     *provider.InstanceUpdateRequest  `json:"instance_put,omitempty"`
+	RebuildPost     *provider.InstanceRebuildRequest `json:"rebuild_post,omitempty"`
 }
 
 // MissingVolumeError reports an external (source-referenced) custom storage
-// volume that does not exist at plan time. Surfaced as exit 4 (LXD_ERROR).
+// volume that does not exist at plan time. Surfaced as exit 4 (PROVIDER_ERROR).
 type MissingVolumeError struct {
 	Instance string
 	Disk     string
@@ -135,7 +135,7 @@ type Reconciler interface {
 	// config.EffectiveImageRemotes); both are passed in so Compute stays a
 	// pure, offline function. Either may be nil/empty for tests and for
 	// non-image flows.
-	Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*api.StorageVolume, imageAliases map[string]bool, imageRemotes map[string]string, hasRebuildExt bool) (*Plan, error)
+	Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume, imageAliases map[string]bool, imageRemotes map[string]string, hasRebuildExt bool) (*Plan, error)
 }
 
 type defaultReconciler struct{}
@@ -145,7 +145,7 @@ func NewReconciler() Reconciler {
 	return &defaultReconciler{}
 }
 
-func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*api.StorageVolume, imageAliases map[string]bool, imageRemotes map[string]string, hasRebuildExt bool) (*Plan, error) {
+func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume, imageAliases map[string]bool, imageRemotes map[string]string, hasRebuildExt bool) (*Plan, error) {
 	if manifest == nil {
 		return nil, fmt.Errorf("manifest cannot be nil")
 	}
@@ -277,7 +277,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 			step.PowerTransition = "stop"
 		}
 
-		step.RebuildPost = &api.InstanceRebuildPost{
+		step.RebuildPost = &provider.InstanceRebuildRequest{
 			Source: resolvedInstanceSource(manifest.Image, manifest.Type),
 		}
 		postPayload, err := buildInstancesPost(manifest)
@@ -392,20 +392,18 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 	return plan, nil
 }
 
-func buildInstancesPost(manifest *config.Config) (*api.InstancesPost, error) {
-	instType := api.InstanceTypeContainer
+func buildInstancesPost(manifest *config.Config) (*provider.InstanceCreateRequest, error) {
+	instType := provider.InstanceTypeContainer
 	if manifest.Type == "virtual-machine" {
-		instType = api.InstanceTypeVM
+		instType = provider.InstanceTypeVM
 	}
 
-	post := &api.InstancesPost{
-		Name:   manifest.Name,
-		Type:   instType,
-		Source: resolvedInstanceSource(manifest.Image, manifest.Type),
-		InstancePut: api.InstancePut{
-			Config:  make(map[string]string),
-			Devices: make(map[string]map[string]string),
-		},
+	post := &provider.InstanceCreateRequest{
+		Name:    manifest.Name,
+		Type:    instType,
+		Source:  resolvedInstanceSource(manifest.Image, manifest.Type),
+		Config:  make(map[string]string),
+		Devices: make(map[string]map[string]string),
 	}
 
 	// 1. Hardware Limits
@@ -498,8 +496,7 @@ func buildInstancesPost(manifest *config.Config) (*api.InstancesPost, error) {
 		props := map[string]string{
 			"type":    "nic",
 			"name":    devName,
-			"parent":  parent,
-			"nictype": "bridged",
+			"network": parent,
 		}
 		if n.IPv4 != "" {
 			props["ipv4.address"] = n.IPv4
@@ -521,15 +518,13 @@ func buildInstancesPost(manifest *config.Config) (*api.InstancesPost, error) {
 	return post, nil
 }
 
-// resolvedInstanceSource maps a manifest image reference to the local LXD
+// resolvedInstanceSource maps a manifest image reference to the local
 // image identity used in create/rebuild payloads (IMAGE-SPEC §5.1). A hex
-// fingerprint goes to Source.Fingerprint (LXD resolves it verbatim); a bare
+// fingerprint goes to Source.Fingerprint (resolves verbatim); a bare
 // alias and a remote:alias go to Source.Alias, the latter as the canonical
-// TYPE-QUALIFIED local alias (config.ImageLocalRef). LXD's ResolveImage uses
-// Source.Fingerprint verbatim but resolves Source.Alias through the alias
-// table, so the two forms must never be conflated.
-func resolvedInstanceSource(image, instanceType string) api.InstanceSource {
-	src := api.InstanceSource{Type: "image"}
+// TYPE-QUALIFIED local alias (config.ImageLocalRef).
+func resolvedInstanceSource(image, instanceType string) provider.InstanceSource {
+	src := provider.InstanceSource{Type: "image"}
 	if isHexFingerprint(image) {
 		src.Fingerprint = image
 	} else {
@@ -584,13 +579,16 @@ func imageFetchEnabled() bool {
 	return v != "0" && !strings.EqualFold(v, "false")
 }
 
-func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.InstancePut, error) {
-	put := &api.InstancePut{
-		Architecture: live.Architecture,
-		Config:       make(map[string]string),
-		Devices:      make(map[string]map[string]string),
-		Profiles:     live.Profiles,
-		Ephemeral:    live.Ephemeral,
+func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*provider.InstanceUpdateRequest, error) {
+	instType := provider.InstanceType(manifest.Type)
+	if instType == "" {
+		instType = provider.InstanceTypeContainer
+	}
+	put := &provider.InstanceUpdateRequest{
+		Type:     instType,
+		Config:   make(map[string]string),
+		Devices:  make(map[string]map[string]string),
+		Profiles: live.Profiles,
 	}
 
 	// 1. Copy live configuration base
@@ -741,8 +739,7 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*api.Ins
 		props := map[string]string{
 			"type":    "nic",
 			"name":    devName,
-			"parent":  parent,
-			"nictype": "bridged",
+			"network": parent,
 		}
 		if n.IPv4 != "" {
 			props["ipv4.address"] = n.IPv4
@@ -810,8 +807,8 @@ func isDiskShrink(oldSizeStr, newSizeStr string) bool {
 	if oldSizeStr == "" || newSizeStr == "" {
 		return false
 	}
-	oldBytes, err1 := units.ParseByteSizeString(oldSizeStr)
-	newBytes, err2 := units.ParseByteSizeString(newSizeStr)
+	oldBytes, err1 := common.ParseByteSizeString(oldSizeStr)
+	newBytes, err2 := common.ParseByteSizeString(newSizeStr)
 	if err1 != nil || err2 != nil {
 		return true
 	}
@@ -849,7 +846,7 @@ func areMountsEqual(manifestMounts, liveMounts []config.Mount) bool {
 	return true
 }
 
-func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[string]map[string]*api.StorageVolume) ([]FieldDiff, bool, []VolumeOp, error) {
+func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume) ([]FieldDiff, bool, []VolumeOp, error) {
 	var diffs []FieldDiff
 	requiresRecreate := false
 	var volumeOps []VolumeOp
@@ -1009,7 +1006,7 @@ func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[s
 // order-insensitively and returns the field diffs plus any storage-volume
 // operations required (create/grow). Errors are config-level (shrink, mode
 // switch) or state-level (missing external volume).
-func diffDisks(manifest *config.Config, live *InstanceSnapshot, volumes map[string]map[string]*api.StorageVolume) ([]FieldDiff, []VolumeOp, error) {
+func diffDisks(manifest *config.Config, live *InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume) ([]FieldDiff, []VolumeOp, error) {
 	var diffs []FieldDiff
 	var ops []VolumeOp
 
@@ -1167,7 +1164,7 @@ func diskContentType(d config.DiskConfig) string {
 // checkExternalVolumes verifies every external (source-referenced) disk has a
 // live custom volume. A missing volume is a plan-time error surfaced as exit 4
 // (STORAGE-SPEC §7.6).
-func checkExternalVolumes(manifest *config.Config, volumes map[string]map[string]*api.StorageVolume) error {
+func checkExternalVolumes(manifest *config.Config, volumes map[string]map[string]*provider.StorageVolume) error {
 	if manifest == nil {
 		return nil
 	}
@@ -1217,8 +1214,8 @@ func diskSizeDiffers(a, b string) bool {
 	if a == "" || b == "" {
 		return a != b
 	}
-	aBytes, errA := units.ParseByteSizeString(a)
-	bBytes, errB := units.ParseByteSizeString(b)
+	aBytes, errA := common.ParseByteSizeString(a)
+	bBytes, errB := common.ParseByteSizeString(b)
 	if errA != nil || errB != nil {
 		return a != b
 	}
@@ -1330,7 +1327,7 @@ func getLiveMounts(live *InstanceSnapshot) config.Mounts {
 // starts with "disk-" (data disks, STORAGE-SPEC §5.1). `size` is read from the
 // storage-volume metadata, never from the device map (LXD forbids `size` on
 // non-root device maps).
-func getLiveDisks(live *InstanceSnapshot, volumes map[string]map[string]*api.StorageVolume) []config.DiskConfig {
+func getLiveDisks(live *InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume) []config.DiskConfig {
 	var disks []config.DiskConfig
 	for devName, devProps := range live.Devices {
 		if devProps["type"] != "disk" || !strings.HasPrefix(devName, "disk-") {
@@ -1359,7 +1356,7 @@ func getLiveDisks(live *InstanceSnapshot, volumes map[string]map[string]*api.Sto
 }
 
 // lookupVolume returns the live custom volume for pool/name, or nil.
-func lookupVolume(volumes map[string]map[string]*api.StorageVolume, pool, name string) *api.StorageVolume {
+func lookupVolume(volumes map[string]map[string]*provider.StorageVolume, pool, name string) *provider.StorageVolume {
 	if volumes == nil {
 		return nil
 	}
@@ -1374,7 +1371,10 @@ func getLiveNetworks(live *InstanceSnapshot) []config.NetworkConfig {
 	for devName, devProps := range live.Devices {
 		if devProps["type"] == "nic" {
 			ip := devProps["ipv4.address"]
-			parent := devProps["parent"]
+			parent := devProps["network"]
+			if parent == "" {
+				parent = devProps["parent"]
+			}
 			nets = append(nets, config.NetworkConfig{
 				Name:   devName,
 				IPv4:   ip,

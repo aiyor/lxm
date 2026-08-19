@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aiyor/lxm/internal/plan"
+	"github.com/aiyor/lxm/internal/provider/common"
 )
 
 // executeNetworkStep performs a single network reconciliation step (ACL or
@@ -45,11 +47,11 @@ func (e *defaultExecutor) executeNetworkStep(ctx context.Context, step plan.Netw
 		if step.ACLPost == nil {
 			return res, &ErrorInfo{Code: "INTERNAL_ERROR", Name: step.Name, Message: fmt.Sprintf("create_acl step %q has no payload", step.Name)}, ""
 		}
-		opErr = e.netSvc.CreateNetworkACL(*step.ACLPost)
+		opErr = e.driver.CreateNetworkACL(ctx, *step.ACLPost)
 	case "update_acl":
 		// Fresh ETag and re-fetch immediately before PUT.
-		if acl, etag, err := e.netSvc.GetNetworkACL(step.Name); err == nil && acl != nil {
-			opErr = e.netSvc.UpdateNetworkACL(step.Name, *step.ACLPut, etag)
+		if acl, etag, err := e.driver.GetNetworkACL(ctx, step.Name); err == nil && acl != nil {
+			opErr = e.driver.UpdateNetworkACL(ctx, step.Name, *step.ACLPut, etag)
 		} else {
 			opErr = err
 		}
@@ -57,26 +59,30 @@ func (e *defaultExecutor) executeNetworkStep(ctx context.Context, step plan.Netw
 		if step.NetPost == nil {
 			return res, &ErrorInfo{Code: "INTERNAL_ERROR", Name: step.Name, Message: fmt.Sprintf("create_vswitch step %q has no payload", step.Name)}, ""
 		}
-		opErr = e.netSvc.CreateNetwork(*step.NetPost)
+		opErr = e.driver.CreateNetwork(ctx, *step.NetPost)
+		if opErr == nil {
+			// Allow kernel bridge interface, udev, and daemon dnsmasq to fully initialize
+			time.Sleep(1 * time.Second)
+		}
 	case "update_vswitch":
-		if net, etag, err := e.netSvc.GetNetwork(step.Name); err == nil && net != nil {
-			opErr = e.netSvc.UpdateNetwork(step.Name, *step.NetPut, etag)
+		if net, etag, err := e.driver.GetNetwork(ctx, step.Name); err == nil && net != nil {
+			opErr = e.driver.UpdateNetwork(ctx, step.Name, *step.NetPut, etag)
 		} else {
 			opErr = err
 		}
 	case "delete_vswitch":
 		// Phase 4: delete bridge first, then associated ACL (order is mandatory)
-		netErr := e.netSvc.DeleteNetwork(step.Name)
+		netErr := e.driver.DeleteNetwork(ctx, step.Name)
 		if netErr != nil {
-			if code, _ := e.lxdSvc.ClassifyLXDError(netErr, "lookup"); code != 5 {
+			if code, _ := common.ClassifyError(netErr, "lookup"); code != 5 {
 				opErr = netErr
 			}
 		}
 		if opErr == nil {
 			aclName := "lxm-" + step.Name
-			aclErr := e.netSvc.DeleteNetworkACL(aclName)
+			aclErr := e.driver.DeleteNetworkACL(ctx, aclName)
 			if aclErr != nil {
-				if code, _ := e.lxdSvc.ClassifyLXDError(aclErr, "lookup"); code != 5 {
+				if code, _ := common.ClassifyError(aclErr, "lookup"); code != 5 {
 					opErr = aclErr
 				}
 			}
@@ -93,7 +99,7 @@ func (e *defaultExecutor) executeNetworkStep(ctx context.Context, step plan.Netw
 				Message: "operation cancelled by user interrupt",
 			}, ""
 		}
-		code, retryable := e.lxdSvc.ClassifyLXDError(opErr, "update")
+		code, retryable := common.ClassifyError(opErr, "update")
 		return res, &ErrorInfo{
 			Code:      exitToErrorCode(code),
 			Name:      step.Name,

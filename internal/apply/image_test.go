@@ -7,9 +7,9 @@ import (
 
 	"github.com/aiyor/lxm/internal/apply"
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/plan"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/fake"
 )
 
 func fetchOp(localAlias string) plan.ImageOp {
@@ -35,8 +35,9 @@ func debianFetchOp() plan.ImageOp {
 }
 
 func TestExecutor_PhaseMinusOne_FetchesBeforeCreate(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	ctx := context.Background()
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Schema: "lxm/plan/v1",
@@ -46,33 +47,34 @@ func TestExecutor_PhaseMinusOne_FetchesBeforeCreate(t *testing.T) {
 				Action:        "create",
 				Changed:       true,
 				ImageOps:      []plan.ImageOp{fetchOp("ubuntu/24.04")},
-				InstancesPost: &api.InstancesPost{Name: "box1"},
+				InstancesPost: &provider.InstanceCreateRequest{Name: "box1"},
 			},
 		},
 	}
 
-	report, err := exec.Apply(context.Background(), p, apply.ApplyOpts{Jobs: 1})
+	report, err := exec.Apply(ctx, p, apply.ApplyOpts{Jobs: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if report.ExitCode != 0 {
 		t.Fatalf("expected exit 0, got %d: %+v", report.ExitCode, report.Errors)
 	}
-	if len(fake.Images.Fetches) != 1 {
-		t.Fatalf("expected exactly 1 fetch, got %d: %+v", len(fake.Images.Fetches), fake.Images.Fetches)
+	if len(driver.Fetches) != 1 {
+		t.Fatalf("expected exactly 1 fetch, got %d: %+v", len(driver.Fetches), driver.Fetches)
 	}
-	f := fake.Images.Fetches[0]
+	f := driver.Fetches[0]
 	if f.RemoteURL != "https://cloud-images.ubuntu.com/releases" || f.Alias != "24.04" || f.LocalAlias != "ubuntu/24.04" || f.Type != "container" {
 		t.Errorf("unexpected fetch record: %+v", f)
 	}
-	if _, ok := fake.Instances["box1"]; !ok {
+	if _, ok := driver.Instances["box1"]; !ok {
 		t.Error("expected instance to be created after the fetch")
 	}
 }
 
 func TestExecutor_PhaseMinusOne_DedupFleet(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	ctx := context.Background()
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Schema: "lxm/plan/v1",
@@ -83,7 +85,7 @@ func TestExecutor_PhaseMinusOne_DedupFleet(t *testing.T) {
 		},
 	}
 
-	report, err := exec.Apply(context.Background(), p, apply.ApplyOpts{Jobs: 5})
+	report, err := exec.Apply(ctx, p, apply.ApplyOpts{Jobs: 5})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,17 +93,18 @@ func TestExecutor_PhaseMinusOne_DedupFleet(t *testing.T) {
 		t.Fatalf("expected exit 0, got %d: %+v", report.ExitCode, report.Errors)
 	}
 	// Identical (RemoteURL, Alias, Type) fetches deduplicate to one.
-	if len(fake.Images.Fetches) != 2 {
-		t.Errorf("expected 2 deduplicated fetches, got %d: %+v", len(fake.Images.Fetches), fake.Images.Fetches)
+	if len(driver.Fetches) != 2 {
+		t.Errorf("expected 2 deduplicated fetches, got %d: %+v", len(driver.Fetches), driver.Fetches)
 	}
 }
 
 func TestExecutor_PhaseMinusOne_FetchFailureAborts(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.CopyRemoteImageFunc = func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error {
+	ctx := context.Background()
+	driver := fake.New()
+	driver.CopyRemoteImageFunc = func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error {
 		return errors.New("failed resolving alias")
 	}
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Schema: "lxm/plan/v1",
@@ -111,27 +114,28 @@ func TestExecutor_PhaseMinusOne_FetchFailureAborts(t *testing.T) {
 				Action:        "create",
 				Changed:       true,
 				ImageOps:      []plan.ImageOp{fetchOp("ubuntu/24.04")},
-				InstancesPost: &api.InstancesPost{Name: "box1"},
+				InstancesPost: &provider.InstanceCreateRequest{Name: "box1"},
 			},
 		},
 	}
 
-	report, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{Jobs: 1})
+	report, _ := exec.Apply(ctx, p, apply.ApplyOpts{Jobs: 1})
 	if report.ExitCode != 4 {
 		t.Fatalf("expected exit 4 on fetch failure, got %d", report.ExitCode)
 	}
-	if len(report.Errors) != 1 || report.Errors[0].Code != "LXD_ERROR" {
-		t.Errorf("expected one LXD_ERROR entry, got %+v", report.Errors)
+	if len(report.Errors) != 1 || report.Errors[0].Code != "PROVIDER_ERROR" {
+		t.Errorf("expected one PROVIDER_ERROR entry, got %+v", report.Errors)
 	}
 	// Phase-abort semantics: the instance step must NOT run after a fetch failure.
-	if _, ok := fake.Instances["box1"]; ok {
+	if _, ok := driver.Instances["box1"]; ok {
 		t.Error("instance must not be created after a fetch failure")
 	}
 }
 
 func TestExecutor_PhaseMinusOne_AliasAlreadyExistsIsSuccess(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	ctx := context.Background()
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 
 	fetchOnly := &plan.Plan{
 		Schema: "lxm/plan/v1",
@@ -139,13 +143,13 @@ func TestExecutor_PhaseMinusOne_AliasAlreadyExistsIsSuccess(t *testing.T) {
 			{Container: "box1", Action: "noop", Changed: false, ImageOps: []plan.ImageOp{fetchOp("ubuntu/24.04")}},
 		},
 	}
-	if _, err := exec.Apply(context.Background(), fetchOnly, apply.ApplyOpts{Jobs: 1}); err != nil {
+	if _, err := exec.Apply(ctx, fetchOnly, apply.ApplyOpts{Jobs: 1}); err != nil {
 		t.Fatalf("first apply failed: %v", err)
 	}
 
 	// A second apply with the same fetch op: the fake (like LXD) rejects the
 	// duplicate alias, which the executor treats as a no-op.
-	report, err := exec.Apply(context.Background(), fetchOnly, apply.ApplyOpts{Jobs: 1})
+	report, err := exec.Apply(ctx, fetchOnly, apply.ApplyOpts{Jobs: 1})
 	if err != nil {
 		t.Fatalf("second apply failed: %v", err)
 	}
@@ -155,8 +159,9 @@ func TestExecutor_PhaseMinusOne_AliasAlreadyExistsIsSuccess(t *testing.T) {
 }
 
 func TestExecutor_PhaseMinusOne_DryRunSkipsFetch(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	ctx := context.Background()
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Schema: "lxm/plan/v1",
@@ -165,15 +170,15 @@ func TestExecutor_PhaseMinusOne_DryRunSkipsFetch(t *testing.T) {
 		},
 	}
 
-	report, err := exec.Apply(context.Background(), p, apply.ApplyOpts{DryRun: true, Jobs: 1})
+	report, err := exec.Apply(ctx, p, apply.ApplyOpts{DryRun: true, Jobs: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if report.ExitCode != 0 {
 		t.Fatalf("expected exit 0, got %d", report.ExitCode)
 	}
-	if len(fake.Images.Fetches) != 0 {
-		t.Errorf("dry-run must not fetch, got %d fetch(es)", len(fake.Images.Fetches))
+	if len(driver.Fetches) != 0 {
+		t.Errorf("dry-run must not fetch, got %d fetch(es)", len(driver.Fetches))
 	}
 }
 
@@ -184,16 +189,17 @@ func TestExecutor_PhaseMinusOne_DryRunSkipsFetch(t *testing.T) {
 // executor must re-record the reference on the live instance so the next plan
 // is a no-op.
 func TestExecutor_Rebuild_RefreshesImageRecord(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box1", InstancePut: api.InstancePut{Config: map[string]string{
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box1", Config: map[string]string{
 		"user.lxm.managed": "true",
 		"user.lxm.user":    "ubuntu",
 		"user.lxm.image":   "images:debian/11",
 		"image.os":         "debian",
 		"image.release":    "bullseye",
-	}}})
+	}})
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	// Plan a recreate from images:debian/11 → images:debian/12 (non-fallback
 	// rebuild). The step carries both the rebuild source and the create payload
@@ -229,7 +235,7 @@ func TestExecutor_Rebuild_RefreshesImageRecord(t *testing.T) {
 		t.Fatalf("expected rebuild source images/debian/12, got %+v", step.RebuildPost)
 	}
 
-	report, err := exec.Apply(context.Background(), p, apply.ApplyOpts{Jobs: 1})
+	report, err := exec.Apply(ctx, p, apply.ApplyOpts{Jobs: 1})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -238,7 +244,7 @@ func TestExecutor_Rebuild_RefreshesImageRecord(t *testing.T) {
 	}
 
 	// The live record must be refreshed to the new reference.
-	inst, _, err := fake.GetInstance("box1")
+	inst, _, err := driver.GetInstance(ctx, "box1")
 	if err != nil {
 		t.Fatalf("GetInstance: %v", err)
 	}
@@ -264,14 +270,15 @@ func TestExecutor_Rebuild_RefreshesImageRecord(t *testing.T) {
 
 // TestExecutor_PhaseMinusOne_DeadlineRetryable covers L1: a fetch that times
 // out (waitOpContext deadline) is a transient network error and must be marked
-// retryable per spec §7.4, even though ClassifyLXDError only marks ETag/412
+// retryable per spec §7.4, even though ClassifyError only marks ETag/412
 // conflicts.
 func TestExecutor_PhaseMinusOne_DeadlineRetryable(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.CopyRemoteImageFunc = func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error {
+	ctx := context.Background()
+	driver := fake.New()
+	driver.CopyRemoteImageFunc = func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error {
 		return context.DeadlineExceeded
 	}
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Schema: "lxm/plan/v1",
@@ -279,7 +286,7 @@ func TestExecutor_PhaseMinusOne_DeadlineRetryable(t *testing.T) {
 			{Container: "box1", Action: "create", Changed: true, ImageOps: []plan.ImageOp{fetchOp("ubuntu/24.04")}},
 		},
 	}
-	report, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{Jobs: 1})
+	report, _ := exec.Apply(ctx, p, apply.ApplyOpts{Jobs: 1})
 	if report.ExitCode != 4 {
 		t.Fatalf("expected exit 4, got %d", report.ExitCode)
 	}

@@ -11,9 +11,9 @@ import (
 
 	"github.com/aiyor/lxm/internal/apply"
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/plan"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/fake"
 )
 
 func TestMain(m *testing.M) {
@@ -29,8 +29,9 @@ func TestMain(m *testing.M) {
 }
 
 func TestExecutor_DryRun(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	ctx := context.Background()
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Schema: "lxm/plan/v1",
@@ -39,7 +40,7 @@ func TestExecutor_DryRun(t *testing.T) {
 		},
 	}
 
-	report, err := exec.Apply(context.Background(), p, apply.ApplyOpts{DryRun: true})
+	report, err := exec.Apply(ctx, p, apply.ApplyOpts{DryRun: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,17 +48,18 @@ func TestExecutor_DryRun(t *testing.T) {
 	if report.ExitCode != 0 {
 		t.Errorf("expected exit code 0, got %d", report.ExitCode)
 	}
-	if len(fake.Instances) != 0 {
+	if len(driver.Instances) != 0 {
 		t.Errorf("expected 0 instances created in dry-run mode")
 	}
 }
 
 func TestExecutor_SingleFilePrune_Fails(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	ctx := context.Background()
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{Schema: "lxm/plan/v1"}
-	report, err := exec.Apply(context.Background(), p, apply.ApplyOpts{
+	report, err := exec.Apply(ctx, p, apply.ApplyOpts{
 		IsSingleFile: true,
 		Prune:        true,
 	})
@@ -70,13 +72,14 @@ func TestExecutor_SingleFilePrune_Fails(t *testing.T) {
 }
 
 func TestExecutor_ETagMismatch_Fails(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
 	})
-	fake.ETags["box1"] = "etag-new"
+	driver.ETags["box1"] = "etag-new"
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Schema: "lxm/plan/v1",
@@ -85,7 +88,7 @@ func TestExecutor_ETagMismatch_Fails(t *testing.T) {
 		},
 	}
 
-	report, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	report, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if report.ExitCode != 4 {
 		t.Errorf("expected exit code 4 for ETag mismatch, got %d", report.ExitCode)
 	}
@@ -94,23 +97,17 @@ func TestExecutor_ETagMismatch_Fails(t *testing.T) {
 	}
 }
 
-// TestExecutor_RealLXD412PUT_Retryable covers UG5 B1: when the LXD daemon
-// answers an update PUT with its real 412 message ("ETag does not match:
-// <old> vs <new>. The configuration has been modified since this change
-// began. ..."), the executor must classify the error retryable so
-// re-plan/re-apply pipelines can detect the drift. Regression for the
-// classifier string heuristic that only matched the synthetic "etag
-// mismatch" text.
 func TestExecutor_RealLXD412PUT_Retryable(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
 	})
-	fake.UpdateInstanceFunc = func(name string, put api.InstancePut, etag string) error {
+	driver.UpdateInstanceFunc = func(name string, put provider.InstanceUpdateRequest, etag string) error {
 		return fmt.Errorf("ETag does not match: stale-etag vs fresh-etag. The configuration has been modified since this change began. Please retrieve the updated configuration before proceeding.")
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Schema: "lxm/plan/v1",
@@ -119,7 +116,7 @@ func TestExecutor_RealLXD412PUT_Retryable(t *testing.T) {
 		},
 	}
 
-	report, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	report, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if report.ExitCode != 4 {
 		t.Errorf("expected exit code 4 for LXD 412, got %d", report.ExitCode)
 	}
@@ -132,12 +129,13 @@ func TestExecutor_RealLXD412PUT_Retryable(t *testing.T) {
 }
 
 func TestExecutor_RebuildSnapshotGate(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
 	})
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Schema: "lxm/plan/v1",
@@ -147,25 +145,26 @@ func TestExecutor_RebuildSnapshotGate(t *testing.T) {
 	}
 
 	// Without --force gate -> fails
-	report, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{Force: false})
+	report, _ := exec.Apply(ctx, p, apply.ApplyOpts{Force: false})
 	if report.ExitCode != 3 {
 		t.Errorf("expected exit code 3 (CONFIG_ERROR) when rebuilding snapshot-bearing instance without --force, got %d", report.ExitCode)
 	}
 
 	// With --force gate -> passes
-	report, _ = exec.Apply(context.Background(), p, apply.ApplyOpts{Force: true})
+	report, _ = exec.Apply(ctx, p, apply.ApplyOpts{Force: true})
 	if report.ExitCode != 0 {
 		t.Errorf("expected exit code 0 with --force gate, got %d", report.ExitCode)
 	}
 }
 
 func TestExecutor_RecreateFallbackGate(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
 	})
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Schema: "lxm/plan/v1",
@@ -175,28 +174,29 @@ func TestExecutor_RecreateFallbackGate(t *testing.T) {
 	}
 
 	// Without --force -> fails
-	report, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{Force: false})
+	report, _ := exec.Apply(ctx, p, apply.ApplyOpts{Force: false})
 	if report.ExitCode != 3 {
 		t.Errorf("expected exit code 3 (CONFIG_ERROR) for rebuild fallback without --force, got %d", report.ExitCode)
 	}
 
 	// With --force -> passes
-	report, _ = exec.Apply(context.Background(), p, apply.ApplyOpts{Force: true})
+	report, _ = exec.Apply(ctx, p, apply.ApplyOpts{Force: true})
 	if report.ExitCode != 0 {
 		t.Errorf("expected exit code 0 for rebuild fallback with --force, got %d", report.ExitCode)
 	}
 }
 
 func TestExecutor_Actions_CreateUpdateDeleteStartStop(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	ctx := context.Background()
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 
 	// Create
 	pCreate := &plan.Plan{
 		Steps: []plan.Step{{Container: "box1", Action: "create", Changed: true}},
 	}
-	rep, _ := exec.Apply(context.Background(), pCreate, apply.ApplyOpts{})
-	if rep.ExitCode != 0 || len(fake.Instances) != 1 {
+	rep, _ := exec.Apply(ctx, pCreate, apply.ApplyOpts{})
+	if rep.ExitCode != 0 || len(driver.Instances) != 1 {
 		t.Fatalf("Create step failed")
 	}
 
@@ -204,7 +204,7 @@ func TestExecutor_Actions_CreateUpdateDeleteStartStop(t *testing.T) {
 	pUpdate := &plan.Plan{
 		Steps: []plan.Step{{Container: "box1", Action: "update", Changed: true}},
 	}
-	rep, _ = exec.Apply(context.Background(), pUpdate, apply.ApplyOpts{})
+	rep, _ = exec.Apply(ctx, pUpdate, apply.ApplyOpts{})
 	if rep.ExitCode != 0 {
 		t.Fatalf("Update step failed")
 	}
@@ -213,8 +213,8 @@ func TestExecutor_Actions_CreateUpdateDeleteStartStop(t *testing.T) {
 	pStart := &plan.Plan{
 		Steps: []plan.Step{{Container: "box1", Action: "start", Changed: true}},
 	}
-	rep, _ = exec.Apply(context.Background(), pStart, apply.ApplyOpts{})
-	if rep.ExitCode != 0 || fake.Instances["box1"].Status != "Running" {
+	rep, _ = exec.Apply(ctx, pStart, apply.ApplyOpts{})
+	if rep.ExitCode != 0 || driver.Instances["box1"].Status != "Running" {
 		t.Fatalf("Start step failed")
 	}
 
@@ -222,8 +222,8 @@ func TestExecutor_Actions_CreateUpdateDeleteStartStop(t *testing.T) {
 	pStop := &plan.Plan{
 		Steps: []plan.Step{{Container: "box1", Action: "stop", Changed: true}},
 	}
-	rep, _ = exec.Apply(context.Background(), pStop, apply.ApplyOpts{})
-	if rep.ExitCode != 0 || fake.Instances["box1"].Status != "Stopped" {
+	rep, _ = exec.Apply(ctx, pStop, apply.ApplyOpts{})
+	if rep.ExitCode != 0 || driver.Instances["box1"].Status != "Stopped" {
 		t.Fatalf("Stop step failed")
 	}
 
@@ -231,78 +231,79 @@ func TestExecutor_Actions_CreateUpdateDeleteStartStop(t *testing.T) {
 	pDelete := &plan.Plan{
 		Steps: []plan.Step{{Container: "box1", Action: "delete", Changed: true}},
 	}
-	rep, _ = exec.Apply(context.Background(), pDelete, apply.ApplyOpts{})
-	if rep.ExitCode != 0 || len(fake.Instances) != 0 {
+	rep, _ = exec.Apply(ctx, pDelete, apply.ApplyOpts{})
+	if rep.ExitCode != 0 || len(driver.Instances) != 0 {
 		t.Fatalf("Delete step failed")
 	}
 }
 
 func TestExecutor_DeleteRunningContainer_StopsFirst(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box-running"})
-	if err := fake.UpdateInstanceState("box-running", "start", false); err != nil {
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-running"})
+	if err := driver.UpdateInstanceState(ctx, "box-running", "start", false); err != nil {
 		t.Fatalf("start failed: %v", err)
 	}
-	if fake.Instances["box-running"].Status != "Running" {
+	if driver.Instances["box-running"].Status != "Running" {
 		t.Fatalf("expected box-running to be Running")
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
-	// Deleting a running container must stop it first — real LXD refuses a
-	// non-forced delete of a running instance ("Instance is running").
+	// Deleting a running container must stop it first — real LXD/Incus refuses a
+	// non-forced delete of a running instance.
 	pDelete := &plan.Plan{
 		Steps: []plan.Step{{Container: "box-running", Action: "delete", Changed: true}},
 	}
-	rep, _ := exec.Apply(context.Background(), pDelete, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, pDelete, apply.ApplyOpts{})
 	if rep.ExitCode != 0 {
 		t.Fatalf("delete of running container failed (expected stop-then-delete), exit code %d", rep.ExitCode)
 	}
-	if len(fake.Instances) != 0 {
-		t.Errorf("expected container to be deleted, got %d instance(s)", len(fake.Instances))
+	if len(driver.Instances) != 0 {
+		t.Errorf("expected container to be deleted, got %d instance(s)", len(driver.Instances))
 	}
 }
 
 func TestExecutor_DeleteStoppedContainer_SkipsStop(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box-stopped"})
-	if fake.Instances["box-stopped"].StatusCode != api.Stopped {
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-stopped"})
+	if driver.Instances["box-stopped"].StatusCode != 102 {
 		t.Fatalf("expected box-stopped to be Stopped by default")
 	}
 
 	// Spy: a stop attempt on an already-stopped instance must not happen.
-	// Real LXD rejects it ("The instance is already stopped"), which would
-	// break `status: absent` / `--prune` for stopped containers.
 	stopCalled := false
-	fake.UpdateInstanceStateFunc = func(name, action string, force bool) error {
+	driver.UpdateInstanceStateFunc = func(name, action string, force bool) error {
 		stopCalled = true
 		return nil
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	pDelete := &plan.Plan{
 		Steps: []plan.Step{{Container: "box-stopped", Action: "delete", Changed: true}},
 	}
-	rep, _ := exec.Apply(context.Background(), pDelete, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, pDelete, apply.ApplyOpts{})
 	if rep.ExitCode != 0 {
 		t.Fatalf("delete of stopped container failed, exit code %d: %s", rep.ExitCode, rep.Results[0].Error)
 	}
 	if stopCalled {
 		t.Errorf("expected no stop call for an already-stopped container")
 	}
-	if len(fake.Instances) != 0 {
-		t.Errorf("expected container to be deleted, got %d instance(s)", len(fake.Instances))
+	if len(driver.Instances) != 0 {
+		t.Errorf("expected container to be deleted, got %d instance(s)", len(driver.Instances))
 	}
 }
 
 func TestExecutor_RecreateFallback_StoppedContainer(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box-recreate"})
-	if fake.Instances["box-recreate"].StatusCode != api.Stopped {
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-recreate"})
+	if driver.Instances["box-recreate"].StatusCode != 102 {
 		t.Fatalf("expected box-recreate to be Stopped by default")
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{{
 			Container:       "box-recreate",
@@ -311,38 +312,35 @@ func TestExecutor_RecreateFallback_StoppedContainer(t *testing.T) {
 			RebuildFallback: true,
 		}},
 	}
-	// Recreate of a stopped container must not attempt a stop (LXD rejects
-	// stopping an already-stopped instance).
-	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{Force: true})
+	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{Force: true})
 	if rep.ExitCode != 0 {
 		t.Fatalf("recreate fallback of stopped container failed, exit code %d: %s", rep.ExitCode, rep.Results[0].Error)
 	}
-	if _, ok := fake.Instances["box-recreate"]; !ok {
+	if _, ok := driver.Instances["box-recreate"]; !ok {
 		t.Errorf("expected recreated container to exist after fallback")
 	}
 }
 
 func TestExecutor_RecreateFallback_RunningContainer(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box-recreate-running"})
-	if err := fake.UpdateInstanceState("box-recreate-running", "start", false); err != nil {
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-recreate-running"})
+	if err := driver.UpdateInstanceState(ctx, "box-recreate-running", "start", false); err != nil {
 		t.Fatalf("start failed: %v", err)
 	}
 
 	stopCalls := 0
-	fake.UpdateInstanceStateFunc = func(name, action string, force bool) error {
+	driver.UpdateInstanceStateFunc = func(name, action string, force bool) error {
 		if action == "stop" {
 			stopCalls++
-			// Mirror the fake's default stop transition so the subsequent
-			// delete sees a stopped instance.
-			inst := fake.Instances[name]
+			inst := driver.Instances[name]
 			inst.Status = "Stopped"
-			inst.StatusCode = api.Stopped
+			inst.StatusCode = 102
 		}
 		return nil
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{{
 			Container:       "box-recreate-running",
@@ -351,93 +349,93 @@ func TestExecutor_RecreateFallback_RunningContainer(t *testing.T) {
 			RebuildFallback: true,
 		}},
 	}
-	// A running container must be stopped exactly once before the
-	// delete+create fallback (real LXD refuses a non-forced delete of a
-	// running instance).
-	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{Force: true})
+	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{Force: true})
 	if rep.ExitCode != 0 {
 		t.Fatalf("recreate fallback of running container failed, exit code %d: %s", rep.ExitCode, rep.Results[0].Error)
 	}
 	if stopCalls != 1 {
 		t.Errorf("expected exactly 1 stop call for a running container, got %d", stopCalls)
 	}
-	if _, ok := fake.Instances["box-recreate-running"]; !ok {
+	if _, ok := driver.Instances["box-recreate-running"]; !ok {
 		t.Errorf("expected recreated container to exist after fallback")
 	}
 }
 
 func TestExecutor_DeleteMissingContainer_IsNoop(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	ctx := context.Background()
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 	pDelete := &plan.Plan{
 		Steps: []plan.Step{{Container: "never-existed", Action: "delete", Changed: true}},
 	}
-	// A container that vanished between plan and apply is already absent:
-	// the delete step must not fail on "not found" (idempotent delete).
-	rep, _ := exec.Apply(context.Background(), pDelete, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, pDelete, apply.ApplyOpts{})
 	if rep.ExitCode != 0 {
 		t.Fatalf("delete of missing container should be a no-op, exit code %d", rep.ExitCode)
 	}
 }
 
 func TestExecutor_ErrorPrecedence(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.CreateInstanceFunc = func(req api.InstancesPost) error {
+	ctx := context.Background()
+	driver := fake.New()
+	driver.CreateInstanceFunc = func(req provider.InstanceCreateRequest) error {
 		return errors.New("lxd api failure")
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Steps: []plan.Step{{Container: "box1", Action: "create"}},
 	}
-	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 4 {
-		t.Errorf("expected exit code 4 (LXD_ERROR) on LXD operation error, got %d", rep.ExitCode)
+		t.Errorf("expected exit code 4 (PROVIDER_ERROR) on LXD operation error, got %d", rep.ExitCode)
 	}
 }
 
 func TestExecutor_CreateStartsContainer_Idempotent(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	ctx := context.Background()
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 
 	pCreate := &plan.Plan{
 		Steps: []plan.Step{{Container: "box1", Action: "create", Changed: true, PowerTransition: "start"}},
 	}
 
-	rep, err := exec.Apply(context.Background(), pCreate, apply.ApplyOpts{})
+	rep, err := exec.Apply(ctx, pCreate, apply.ApplyOpts{})
 	if err != nil || rep.ExitCode != 0 {
 		t.Fatalf("Create step failed: %v", err)
 	}
 
-	if fake.Instances["box1"].Status != "Running" {
-		t.Errorf("expected container box1 to be Running after create with PowerTransition=start, got %s", fake.Instances["box1"].Status)
+	if driver.Instances["box1"].Status != "Running" {
+		t.Errorf("expected container box1 to be Running after create with PowerTransition=start, got %s", driver.Instances["box1"].Status)
 	}
 }
 
 func TestExecutor_CreateStoppedContainer_RemainsStopped_Idempotent(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	ctx := context.Background()
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 
 	pCreate := &plan.Plan{
 		Steps: []plan.Step{{Container: "box2", Action: "create", Changed: true, PowerTransition: "stop"}},
 	}
 
-	rep, err := exec.Apply(context.Background(), pCreate, apply.ApplyOpts{})
+	rep, err := exec.Apply(ctx, pCreate, apply.ApplyOpts{})
 	if err != nil || rep.ExitCode != 0 {
 		t.Fatalf("Create step failed: %v", err)
 	}
 
-	if fake.Instances["box2"].Status != "Stopped" {
-		t.Errorf("expected container box2 to be Stopped after create with PowerTransition=stop, got %s", fake.Instances["box2"].Status)
+	if driver.Instances["box2"].Status != "Stopped" {
+		t.Errorf("expected container box2 to be Stopped after create with PowerTransition=stop, got %s", driver.Instances["box2"].Status)
 	}
 }
 
 func TestExecutor_RecreateFallback_StoppedContainer_RemainsStopped(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box3"})
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box3"})
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	pRecreate := &plan.Plan{
 		Steps: []plan.Step{
@@ -445,21 +443,22 @@ func TestExecutor_RecreateFallback_StoppedContainer_RemainsStopped(t *testing.T)
 		},
 	}
 
-	rep, err := exec.Apply(context.Background(), pRecreate, apply.ApplyOpts{Force: true})
+	rep, err := exec.Apply(ctx, pRecreate, apply.ApplyOpts{Force: true})
 	if err != nil || rep.ExitCode != 0 {
 		t.Fatalf("Recreate fallback step failed: %v", err)
 	}
 
-	if fake.Instances["box3"].Status != "Stopped" {
-		t.Errorf("expected container box3 to be Stopped after recreate fallback with PowerTransition=stop, got %s", fake.Instances["box3"].Status)
+	if driver.Instances["box3"].Status != "Stopped" {
+		t.Errorf("expected container box3 to be Stopped after recreate fallback with PowerTransition=stop, got %s", driver.Instances["box3"].Status)
 	}
 }
 
 func TestExecutor_RebuildNative_Passes(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "box4"})
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box4"})
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	pRecreate := &plan.Plan{
 		Steps: []plan.Step{
@@ -467,27 +466,26 @@ func TestExecutor_RebuildNative_Passes(t *testing.T) {
 		},
 	}
 
-	rep, err := exec.Apply(context.Background(), pRecreate, apply.ApplyOpts{})
+	rep, err := exec.Apply(ctx, pRecreate, apply.ApplyOpts{})
 	if err != nil || rep.ExitCode != 0 {
 		t.Fatalf("Native rebuild step failed: %v", err)
 	}
 }
 
 func TestReconcilerToExecutor_Integration_PowerTransitions(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box5",
-		InstancePut: api.InstancePut{
-			Config: map[string]string{
-				"user.lxm.user": "ubuntu",
-			},
+		Config: map[string]string{
+			"user.lxm.user": "ubuntu",
 		},
 	})
-	fake.Instances["box5"].Status = "Running"
-	fake.Instances["box5"].StatusCode = api.Running
+	driver.Instances["box5"].Status = "Running"
+	driver.Instances["box5"].StatusCode = 103
 
 	rec := plan.NewReconciler()
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	conf := &config.Config{
 		Name:  "box5",
@@ -515,20 +513,21 @@ func TestReconcilerToExecutor_Integration_PowerTransitions(t *testing.T) {
 		t.Fatalf("expected PowerTransition 'stop', got %q", p.Steps[0].PowerTransition)
 	}
 
-	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil || rep.ExitCode != 0 {
 		t.Fatalf("Apply error: %v", err)
 	}
 
-	if fake.Instances["box5"].Status != "Stopped" {
-		t.Errorf("expected container box5 to be Stopped after update with state: stopped, got %s", fake.Instances["box5"].Status)
+	if driver.Instances["box5"].Status != "Stopped" {
+		t.Errorf("expected container box5 to be Stopped after update with state: stopped, got %s", driver.Instances["box5"].Status)
 	}
 }
 
 func TestExecutor_WaitPolicyTimeout(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "waitbox"})
-	exec := apply.NewExecutor(fake)
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "waitbox"})
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Steps: []plan.Step{
@@ -544,24 +543,26 @@ func TestExecutor_WaitPolicyTimeout(t *testing.T) {
 		},
 	}
 
-	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 7 {
 		t.Errorf("expected exit code 7 (WAIT_TIMEOUT), got %d", rep.ExitCode)
 	}
 }
 
 func TestExecutor_RecipeExecutionAndSnapshot(t *testing.T) {
+	ctx := context.Background()
 	tmpDir := t.TempDir()
 	shFile := "setup.sh"
 	if err := writeTestScript(tmpDir, shFile, "#!/bin/bash\necho hello"); err != nil {
 		t.Fatalf("writing script: %v", err)
 	}
 
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "recipebox"})
-	fake.Instances["recipebox"].Status = "Running"
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "recipebox"})
+	driver.Instances["recipebox"].Status = "Running"
+	driver.Instances["recipebox"].StatusCode = 103
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Steps: []plan.Step{
@@ -577,29 +578,29 @@ func TestExecutor_RecipeExecutionAndSnapshot(t *testing.T) {
 		},
 	}
 
-	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil || rep.ExitCode != 0 {
 		t.Fatalf("recipe execution failed: %v", err)
 	}
 
 	// Verify snapshot-before-recipe created
-	snaps, err := fake.GetInstanceSnapshots("recipebox")
+	snaps, err := driver.GetInstanceSnapshots(ctx, "recipebox")
 	if err != nil || len(snaps) == 0 {
 		t.Errorf("expected snapshot created before recipe execution, got %d snaps", len(snaps))
 	}
 
 	// Verify recipe hash metadata key set
-	inst, _, _ := fake.GetInstance("recipebox")
+	inst, _, _ := driver.GetInstance(ctx, "recipebox")
 	if inst.Config["user.lxm.recipe.setup_sh.hash"] == "" {
 		t.Errorf("expected path-qualified recipe hash key stored in instance metadata")
 	}
 }
 
 func TestExecutor_ContextCancellation(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "cancelbox"})
+	driver := fake.New()
+	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "cancelbox"})
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
@@ -632,17 +633,17 @@ func TestExecutor_DryRun_NoRecipesExecuted(t *testing.T) {
 		t.Fatalf("writing setup.sh: %v", err)
 	}
 
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "drybox"})
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "drybox"})
 
 	execCount := 0
-	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
 		execCount++
-		return lxd.ExecResult{ExitCode: 0, Stdout: "ok"}, nil
+		return provider.ExecResult{ExitCode: 0, Stdout: "ok"}, nil
 	}
 
-	exec := apply.NewExecutor(fake)
-	ctx := context.Background()
+	exec := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Steps: []plan.Step{
@@ -669,15 +670,15 @@ func TestExecutor_DryRun_NoRecipesExecuted(t *testing.T) {
 		t.Errorf("expected ZERO script executions under --dry-run, got %d", execCount)
 	}
 
-	snaps, _ := fake.GetInstanceSnapshots("drybox")
+	snaps, _ := driver.GetInstanceSnapshots(ctx, "drybox")
 	if len(snaps) > 0 {
 		t.Errorf("expected ZERO snapshots created under --dry-run, got %d", len(snaps))
 	}
 }
 
 func TestExecutor_NilPlan(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 	_, err := exec.Apply(context.Background(), nil, apply.ApplyOpts{})
 	if err == nil {
 		t.Errorf("expected error when applying nil plan")
@@ -685,8 +686,8 @@ func TestExecutor_NilPlan(t *testing.T) {
 }
 
 func TestExecutor_SingleFilePruneRestriction(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	exec := apply.NewExecutor(fake)
+	driver := fake.New()
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{Steps: []plan.Step{}}
 	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{IsSingleFile: true, Prune: true})
 	if err == nil || rep.ExitCode != 2 {
@@ -695,16 +696,17 @@ func TestExecutor_SingleFilePruneRestriction(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_StopStepNonWaiting(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "stopbox"})
-	fake.Instances["stopbox"].Status = "Running"
-	fake.Instances["stopbox"].StatusCode = api.Running
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "stopbox"})
+	driver.Instances["stopbox"].Status = "Running"
+	driver.Instances["stopbox"].StatusCode = 103
 
-	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
-		return lxd.ExecResult{ExitCode: 1, Stdout: "", Stderr: "container is stopped"}, nil
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+		return provider.ExecResult{ExitCode: 1, Stdout: "", Stderr: "container is stopped"}, nil
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
@@ -718,7 +720,7 @@ func TestExecutor_WaitPolicy_StopStepNonWaiting(t *testing.T) {
 		},
 	}
 
-	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil {
 		t.Fatalf("unexpected apply error: %v", err)
 	}
@@ -728,16 +730,17 @@ func TestExecutor_WaitPolicy_StopStepNonWaiting(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_NonCloudInitImage(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "alpinebox"})
-	fake.Instances["alpinebox"].Status = "Running"
-	fake.Instances["alpinebox"].StatusCode = api.Running
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "alpinebox"})
+	driver.Instances["alpinebox"].Status = "Running"
+	driver.Instances["alpinebox"].StatusCode = 103
 
-	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
-		return lxd.ExecResult{ExitCode: 127, Stdout: "", Stderr: "cloud-init: command not found"}, nil
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+		return provider.ExecResult{ExitCode: 127, Stdout: "", Stderr: "cloud-init: command not found"}, nil
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
@@ -751,7 +754,7 @@ func TestExecutor_WaitPolicy_NonCloudInitImage(t *testing.T) {
 		},
 	}
 
-	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil {
 		t.Fatalf("unexpected apply error: %v", err)
 	}
@@ -764,12 +767,13 @@ func TestExecutor_WaitPolicy_NonCloudInitImage(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_SoftWaitWarning(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "softbox"})
-	fake.Instances["softbox"].Status = "Running"
-	fake.Instances["softbox"].StatusCode = api.Running
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "softbox"})
+	driver.Instances["softbox"].Status = "Running"
+	driver.Instances["softbox"].StatusCode = 103
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
@@ -783,7 +787,7 @@ func TestExecutor_WaitPolicy_SoftWaitWarning(t *testing.T) {
 		},
 	}
 
-	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil {
 		t.Fatalf("unexpected apply error: %v", err)
 	}
@@ -796,18 +800,19 @@ func TestExecutor_WaitPolicy_SoftWaitWarning(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_ContextCancelledMidWait(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "cancelbox"})
-	fake.Instances["cancelbox"].Status = "Running"
-	fake.Instances["cancelbox"].StatusCode = api.Running
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "cancelbox"})
+	driver.Instances["cancelbox"].Status = "Running"
+	driver.Instances["cancelbox"].StatusCode = 103
 
 	blockChan := make(chan struct{})
-	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
 		<-blockChan
-		return lxd.ExecResult{ExitCode: 0}, nil
+		return provider.ExecResult{ExitCode: 0}, nil
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
@@ -822,30 +827,31 @@ func TestExecutor_WaitPolicy_ContextCancelledMidWait(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	cCtx, cancel := context.WithCancel(ctx)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
 		close(blockChan)
 	}()
 
-	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
+	rep, _ := exec.Apply(cCtx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 1 {
 		t.Errorf("expected exit code 1 (INTERNAL_ERROR) when cancelled mid-wait, got %d", rep.ExitCode)
 	}
 }
 
 func TestExecutor_WaitPolicy_TransportError(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "transportbox"})
-	fake.Instances["transportbox"].Status = "Running"
-	fake.Instances["transportbox"].StatusCode = api.Running
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "transportbox"})
+	driver.Instances["transportbox"].Status = "Running"
+	driver.Instances["transportbox"].StatusCode = 103
 
-	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
-		return lxd.ExecResult{}, fmt.Errorf("websocket transport error")
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+		return provider.ExecResult{}, fmt.Errorf("websocket transport error")
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
@@ -860,23 +866,24 @@ func TestExecutor_WaitPolicy_TransportError(t *testing.T) {
 		},
 	}
 
-	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 4 {
-		t.Errorf("expected exit code 4 (LXD_ERROR) for transport error, got %d", rep.ExitCode)
+		t.Errorf("expected exit code 4 (PROVIDER_ERROR) for transport error, got %d", rep.ExitCode)
 	}
 }
 
 func TestExecutor_WaitPolicy_NetworkSuccess(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "netbox"})
-	fake.Instances["netbox"].Status = "Running"
-	fake.Instances["netbox"].StatusCode = api.Running
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "netbox"})
+	driver.Instances["netbox"].Status = "Running"
+	driver.Instances["netbox"].StatusCode = 103
 
-	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
-		return lxd.ExecResult{ExitCode: 0, Stdout: "10.0.0.15\n"}, nil
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+		return provider.ExecResult{ExitCode: 0, Stdout: "10.0.0.15\n"}, nil
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
@@ -890,23 +897,24 @@ func TestExecutor_WaitPolicy_NetworkSuccess(t *testing.T) {
 		},
 	}
 
-	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 0 {
 		t.Errorf("expected exit code 0 on network readiness success, got %d", rep.ExitCode)
 	}
 }
 
 func TestExecutor_WaitPolicy_NetworkTimeout(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "netfailbox"})
-	fake.Instances["netfailbox"].Status = "Running"
-	fake.Instances["netfailbox"].StatusCode = api.Running
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "netfailbox"})
+	driver.Instances["netfailbox"].Status = "Running"
+	driver.Instances["netfailbox"].StatusCode = 103
 
-	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
-		return lxd.ExecResult{ExitCode: 1, Stdout: ""}, nil
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+		return provider.ExecResult{ExitCode: 1, Stdout: ""}, nil
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
@@ -920,23 +928,24 @@ func TestExecutor_WaitPolicy_NetworkTimeout(t *testing.T) {
 		},
 	}
 
-	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 7 {
 		t.Errorf("expected exit code 7 (WAIT_TIMEOUT) on network wait timeout, got %d", rep.ExitCode)
 	}
 }
 
 func TestExecutor_WaitPolicy_NonHostnameImage(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "nohostnamebox"})
-	fake.Instances["nohostnamebox"].Status = "Running"
-	fake.Instances["nohostnamebox"].StatusCode = api.Running
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "nohostnamebox"})
+	driver.Instances["nohostnamebox"].Status = "Running"
+	driver.Instances["nohostnamebox"].StatusCode = 103
 
-	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
-		return lxd.ExecResult{ExitCode: 127, Stderr: "executable file not found"}, nil
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+		return provider.ExecResult{ExitCode: 127, Stderr: "executable file not found"}, nil
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
@@ -950,7 +959,7 @@ func TestExecutor_WaitPolicy_NonHostnameImage(t *testing.T) {
 		},
 	}
 
-	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 0 {
 		t.Errorf("expected exit code 0 when hostname binary is missing, got %d", rep.ExitCode)
 	}
@@ -960,16 +969,17 @@ func TestExecutor_WaitPolicy_NonHostnameImage(t *testing.T) {
 }
 
 func TestExecutor_InterruptDuringOperation_ReturnsInternalError(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "opcancelbox"})
-	fake.Instances["opcancelbox"].Status = "Running"
-	fake.Instances["opcancelbox"].StatusCode = api.Running
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "opcancelbox"})
+	driver.Instances["opcancelbox"].Status = "Running"
+	driver.Instances["opcancelbox"].StatusCode = 103
 
-	fake.UpdateInstanceFunc = func(name string, put api.InstancePut, etag string) error {
+	driver.UpdateInstanceFunc = func(name string, put provider.InstanceUpdateRequest, etag string) error {
 		return context.Canceled
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
@@ -980,23 +990,24 @@ func TestExecutor_InterruptDuringOperation_ReturnsInternalError(t *testing.T) {
 		},
 	}
 
-	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 1 {
 		t.Errorf("expected exit code 1 (INTERNAL_ERROR) on operation cancellation, got %d", rep.ExitCode)
 	}
 }
 
 func TestExecutor_InterruptDuringRecipeScript_ReturnsInternalError(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{Name: "recipecancelbox"})
-	fake.Instances["recipecancelbox"].Status = "Running"
-	fake.Instances["recipecancelbox"].StatusCode = api.Running
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "recipecancelbox"})
+	driver.Instances["recipecancelbox"].Status = "Running"
+	driver.Instances["recipecancelbox"].StatusCode = 103
 
-	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
-		return lxd.ExecResult{ExitCode: 1}, context.Canceled
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+		return provider.ExecResult{ExitCode: 1}, context.Canceled
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
@@ -1007,7 +1018,7 @@ func TestExecutor_InterruptDuringRecipeScript_ReturnsInternalError(t *testing.T)
 		},
 	}
 
-	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 1 {
 		t.Errorf("expected exit code 1 (INTERNAL_ERROR) on recipe execution cancellation, got %d", rep.ExitCode)
 	}
@@ -1044,24 +1055,25 @@ func TestIsTransientAgentError(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_VMAgentHandshake(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	ctx := context.Background()
+	driver := fake.New()
 
 	attempts := 0
-	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
 		attempts++
 		if attempts <= 2 {
-			return lxd.ExecResult{ExitCode: -1}, fmt.Errorf("LXD VM agent is not currently running")
+			return provider.ExecResult{ExitCode: -1}, fmt.Errorf("LXD VM agent is not currently running")
 		}
-		return lxd.ExecResult{ExitCode: 0, Stdout: "running\n"}, nil
+		return provider.ExecResult{ExitCode: 0, Stdout: "running\n"}, nil
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
 				Container:     "test-vm",
 				Action:        "create",
-				InstancesPost: &api.InstancesPost{Name: "test-vm", Type: "virtual-machine"},
+				InstancesPost: &provider.InstanceCreateRequest{Name: "test-vm", Type: "virtual-machine"},
 				Wait:          true,
 				WaitPolicy: &config.WaitConfig{
 					Agent:    "5s",
@@ -1072,7 +1084,7 @@ func TestExecutor_WaitPolicy_VMAgentHandshake(t *testing.T) {
 		},
 	}
 
-	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil || rep.ExitCode != 0 {
 		t.Fatalf("expected VM agent handshake success, got exit code %d, error: %v", rep.ExitCode, err)
 	}
@@ -1082,19 +1094,20 @@ func TestExecutor_WaitPolicy_VMAgentHandshake(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_VMAgentTimeout(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
+	ctx := context.Background()
+	driver := fake.New()
 
-	fake.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
-		return lxd.ExecResult{ExitCode: -1}, fmt.Errorf("LXD VM agent is not currently running")
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+		return provider.ExecResult{ExitCode: -1}, fmt.Errorf("LXD VM agent is not currently running")
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{
 		Steps: []plan.Step{
 			{
 				Container:     "timeout-vm",
 				Action:        "create",
-				InstancesPost: &api.InstancesPost{Name: "timeout-vm", Type: "virtual-machine"},
+				InstancesPost: &provider.InstanceCreateRequest{Name: "timeout-vm", Type: "virtual-machine"},
 				Wait:          true,
 				WaitPolicy: &config.WaitConfig{
 					Agent:    "50ms",
@@ -1105,25 +1118,26 @@ func TestExecutor_WaitPolicy_VMAgentTimeout(t *testing.T) {
 		},
 	}
 
-	rep, _ := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if rep.ExitCode != 7 {
 		t.Errorf("expected exit code 7 (WAIT_TIMEOUT) on VM agent timeout, got %d", rep.ExitCode)
 	}
 }
 
 func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopBeforePUT(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "running-vm",
 		Type: "virtual-machine",
 	})
-	fake.Instances["running-vm"].Status = "Running"
-	fake.Instances["running-vm"].StatusCode = api.Running
-	fake.Instances["running-vm"].Config = map[string]string{
+	driver.Instances["running-vm"].Status = "Running"
+	driver.Instances["running-vm"].StatusCode = 103
+	driver.Instances["running-vm"].Config = map[string]string{
 		"boot.mode": "uefi-secureboot",
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	// Step updating raw.qemu and hugepages with PowerTransition = "restart"
 	p := &plan.Plan{
@@ -1133,7 +1147,7 @@ func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopBeforePUT(t *testing.T) 
 				Action:          "update",
 				Changed:         true,
 				PowerTransition: "restart",
-				InstancePut: &api.InstancePut{
+				InstancePut: &provider.InstanceUpdateRequest{
 					Config: map[string]string{
 						"boot.mode":               "uefi-secureboot",
 						"limits.memory.hugepages": "true",
@@ -1144,12 +1158,12 @@ func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopBeforePUT(t *testing.T) 
 		},
 	}
 
-	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil || rep.ExitCode != 0 {
 		t.Fatalf("expected successful update via stop->PUT->start, got exit code %d, err: %v", rep.ExitCode, err)
 	}
 
-	inst, _, err := fake.GetInstance("running-vm")
+	inst, _, err := driver.GetInstance(ctx, "running-vm")
 	if err != nil {
 		t.Fatalf("failed to get instance: %v", err)
 	}
@@ -1165,18 +1179,19 @@ func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopBeforePUT(t *testing.T) 
 }
 
 func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopPowerTransition(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	_ = fake.CreateInstance(api.InstancesPost{
+	ctx := context.Background()
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "running-vm-stop",
 		Type: "virtual-machine",
 	})
-	fake.Instances["running-vm-stop"].Status = "Running"
-	fake.Instances["running-vm-stop"].StatusCode = api.Running
-	fake.Instances["running-vm-stop"].Config = map[string]string{
+	driver.Instances["running-vm-stop"].Status = "Running"
+	driver.Instances["running-vm-stop"].StatusCode = 103
+	driver.Instances["running-vm-stop"].Config = map[string]string{
 		"boot.mode": "uefi-secureboot",
 	}
 
-	exec := apply.NewExecutor(fake)
+	exec := apply.NewExecutor(driver)
 
 	// Step updating raw.qemu and hugepages with PowerTransition = "stop" (desired state: stopped)
 	p := &plan.Plan{
@@ -1186,7 +1201,7 @@ func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopPowerTransition(t *testi
 				Action:          "update",
 				Changed:         true,
 				PowerTransition: "stop",
-				InstancePut: &api.InstancePut{
+				InstancePut: &provider.InstanceUpdateRequest{
 					Config: map[string]string{
 						"boot.mode":               "uefi-secureboot",
 						"limits.memory.hugepages": "true",
@@ -1197,12 +1212,12 @@ func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopPowerTransition(t *testi
 		},
 	}
 
-	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{})
+	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil || rep.ExitCode != 0 {
 		t.Fatalf("expected successful update via stop->PUT, got exit code %d, err: %v", rep.ExitCode, err)
 	}
 
-	inst, _, err := fake.GetInstance("running-vm-stop")
+	inst, _, err := driver.GetInstance(ctx, "running-vm-stop")
 	if err != nil {
 		t.Fatalf("failed to get instance: %v", err)
 	}

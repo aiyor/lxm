@@ -7,22 +7,22 @@ import (
 	"strings"
 
 	"github.com/aiyor/lxm/internal/network"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
 )
 
-// NetworkStep is a reconciliation step for a LXD network or network ACL.
+// NetworkStep is a reconciliation step for a LXD/Incus network or network ACL.
 // Executed before instance steps, in order: ACL steps, then vswitch steps
 // (§7.4, driven by C8).
 type NetworkStep struct {
-	Kind      string               `json:"kind"` // create_acl | update_acl | create_vswitch | update_vswitch
-	Name      string               `json:"name"`
-	Changed   bool                 `json:"changed"`
-	Diff      []FieldDiff          `json:"diff,omitempty"`
-	Tightened bool                 `json:"tightened,omitempty"` // update_acl narrows/removes allows (conntrack warning)
-	ACLPost   *api.NetworkACLsPost `json:"acl_post,omitempty"`
-	ACLPut    *api.NetworkACLPut   `json:"acl_put,omitempty"`
-	NetPost   *api.NetworksPost    `json:"network_post,omitempty"`
-	NetPut    *api.NetworkPut      `json:"network_put,omitempty"`
+	Kind      string                            `json:"kind"` // create_acl | update_acl | create_vswitch | update_vswitch | delete_vswitch
+	Name      string                            `json:"name"`
+	Changed   bool                              `json:"changed"`
+	Diff      []FieldDiff                       `json:"diff,omitempty"`
+	Tightened bool                              `json:"tightened,omitempty"` // update_acl narrows/removes allows (conntrack warning)
+	ACLPost   *provider.NetworkACLCreateRequest `json:"acl_post,omitempty"`
+	ACLPut    *provider.NetworkACLUpdateRequest `json:"acl_put,omitempty"`
+	NetPost   *provider.NetworkCreateRequest    `json:"network_post,omitempty"`
+	NetPut    *provider.NetworkUpdateRequest    `json:"network_put,omitempty"`
 }
 
 // NetworkPlan is the fleet-scoped reconciliation plan for vswitches and ACLs.
@@ -31,10 +31,10 @@ type NetworkPlan struct {
 	Warnings []string
 }
 
-// NetworkLiveState snapshots the live LXD networks and ACLs at plan time.
+// NetworkLiveState snapshots the live networks and ACLs at plan time.
 type NetworkLiveState struct {
-	Networks map[string]*api.Network
-	ACLs     map[string]*api.NetworkACL
+	Networks map[string]*provider.Network
+	ACLs     map[string]*provider.NetworkACL
 }
 
 // NetworkReconciler computes the fleet-scoped network reconciliation plan.
@@ -53,13 +53,13 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 		return nil, fmt.Errorf("fleet cannot be nil")
 	}
 	if live == nil {
-		live = &NetworkLiveState{Networks: map[string]*api.Network{}, ACLs: map[string]*api.NetworkACL{}}
+		live = &NetworkLiveState{Networks: map[string]*provider.Network{}, ACLs: map[string]*provider.NetworkACL{}}
 	}
 	if live.Networks == nil {
-		live.Networks = map[string]*api.Network{}
+		live.Networks = map[string]*provider.Network{}
 	}
 	if live.ACLs == nil {
-		live.ACLs = map[string]*api.NetworkACL{}
+		live.ACLs = map[string]*provider.NetworkACL{}
 	}
 
 	np := &NetworkPlan{Steps: []NetworkStep{}, Warnings: []string{}}
@@ -73,7 +73,7 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 	// 1. ACL reconciliation (must precede vswitch steps: C8).
 	for _, acl := range compiled {
 		ingress, egress := network.ACLToAPIRules(acl)
-		desired := &api.NetworkACLPut{
+		desired := &provider.NetworkACLUpdateRequest{
 			Description: acl.Description,
 			Ingress:     ingress,
 			Egress:      egress,
@@ -86,9 +86,12 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 				Kind:    "create_acl",
 				Name:    acl.Name,
 				Changed: true,
-				ACLPost: &api.NetworkACLsPost{
-					NetworkACLPost: api.NetworkACLPost{Name: acl.Name},
-					NetworkACLPut:  *desired,
+				ACLPost: &provider.NetworkACLCreateRequest{
+					Name:        acl.Name,
+					Description: acl.Description,
+					Ingress:     ingress,
+					Egress:      egress,
+					Config:      map[string]string{"user.lxm.managed": "true"},
 				},
 			})
 			continue
@@ -189,7 +192,7 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 						Kind:    "update_acl",
 						Name:    aclName,
 						Changed: true,
-						ACLPut: &api.NetworkACLPut{
+						ACLPut: &provider.NetworkACLUpdateRequest{
 							Description: annotated,
 							Ingress:     liveACL.Ingress,
 							Egress:      liveACL.Egress,
@@ -224,7 +227,7 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 
 // allowsRemoved reports whether an ACL update removes or narrows an allow rule
 // relative to the live ACL (D3 — the §7.6 tightening signal).
-func allowsRemoved(live *api.NetworkACL, desired *api.NetworkACLPut) bool {
+func allowsRemoved(live *provider.NetworkACL, desired *provider.NetworkACLUpdateRequest) bool {
 	liveKeys := make(map[string]bool)
 	for _, r := range live.Ingress {
 		if r.Action == "allow" {
@@ -249,59 +252,100 @@ func allowsRemoved(live *api.NetworkACL, desired *api.NetworkACLPut) bool {
 	return len(liveKeys) > 0
 }
 
-func allowRuleKey(dir string, r api.NetworkACLRule) string {
+func allowRuleKey(dir string, r provider.NetworkACLRule) string {
 	return dir + "\x00" + r.Source + "\x00" + r.Destination
 }
 
 // buildNetworksPost constructs the create payload for a vswitch.
-func buildNetworksPost(vs *network.VSwitch) *api.NetworksPost {
-	cfg := map[string]string{
-		"bridge.driver":    vs.EffectiveDriver(),
-		"ipv4.address":     vs.IPv4,
-		"ipv4.nat":         strconv.FormatBool(vs.EffectiveNAT()),
-		"ipv4.dhcp":        "true",
-		"ipv6.address":     "none",
-		"dns.domain":       "lxd",
-		"user.lxm.managed": "true",
+func buildNetworksPost(vs *network.VSwitch) *provider.NetworkCreateRequest {
+	netType := vs.EffectiveType()
+	cfg := make(map[string]string)
+	for k, v := range vs.Config {
+		cfg[k] = v
 	}
+
 	description := ""
+	if vs.Group != "" {
+		description = fmt.Sprintf("lxm managed vswitch (group %s)", vs.Group)
+	}
+
+	if netType == "ovn" {
+		if vs.EffectiveParent() != "" {
+			cfg["network"] = vs.EffectiveParent()
+		}
+		if vs.IPv4 != "" {
+			cfg["ipv4.address"] = vs.IPv4
+		}
+		if vs.IPv6 != "" {
+			cfg["ipv6.address"] = vs.IPv6
+		} else {
+			cfg["ipv6.address"] = "none"
+		}
+		cfg["ipv4.nat"] = strconv.FormatBool(vs.EffectiveNAT())
+		cfg["dns.domain"] = "lxd"
+		cfg["user.lxm.managed"] = "true"
+		if vs.Group != "" {
+			cfg["security.acls"] = network.ACLName(vs.Name)
+			cfg["security.acls.default.ingress.action"] = "reject"
+			cfg["security.acls.default.egress.action"] = "reject"
+		}
+		return &provider.NetworkCreateRequest{
+			Name:        vs.Name,
+			Type:        "ovn",
+			Description: description,
+			Config:      cfg,
+		}
+	}
+
+	cfg["bridge.driver"] = vs.EffectiveDriver()
+	cfg["ipv4.address"] = vs.IPv4
+	cfg["ipv4.nat"] = strconv.FormatBool(vs.EffectiveNAT())
+	cfg["ipv4.dhcp"] = "true"
+	cfg["ipv6.address"] = "none"
+	cfg["dns.domain"] = "lxd"
+	cfg["user.lxm.managed"] = "true"
+
 	if vs.Group != "" {
 		cfg["security.acls"] = network.ACLName(vs.Name)
 		cfg["security.acls.default.ingress.action"] = "reject"
 		cfg["security.acls.default.egress.action"] = "reject"
-		description = fmt.Sprintf("lxm managed vswitch (group %s)", vs.Group)
 	}
-	return &api.NetworksPost{
-		Name: vs.Name,
-		Type: "bridge",
-		NetworkPut: api.NetworkPut{
-			Config:      cfg,
-			Description: description,
-		},
+	return &provider.NetworkCreateRequest{
+		Name:        vs.Name,
+		Type:        "bridge",
+		Description: description,
+		Config:      cfg,
 	}
 }
 
 // checkImmutableDrift returns a plan error when a live vswitch's immutable
 // keys (ipv4.address, driver) drift from the desired spec (§7.3).
-func checkImmutableDrift(vs *network.VSwitch, live *api.Network) error {
+func checkImmutableDrift(vs *network.VSwitch, live *provider.Network) error {
+	if live.Type != "" && vs.EffectiveType() != "" && live.Type != vs.EffectiveType() {
+		return fmt.Errorf("vswitch %q: type change %q -> %q is immutable after create", vs.Name, live.Type, vs.EffectiveType())
+	}
+
 	liveAddr := live.Config["ipv4.address"]
 	if liveAddr != "" && liveAddr != vs.IPv4 {
 		return fmt.Errorf("vswitch %q: subnet change %q -> %q requires migrating instances to a new vswitch name (in-place renumbering is out of scope)", vs.Name, liveAddr, vs.IPv4)
 	}
-	liveDriver := live.Config["bridge.driver"]
-	if liveDriver == "" {
-		liveDriver = "native"
-	}
-	desiredDriver := vs.EffectiveDriver()
-	if liveDriver != desiredDriver {
-		return fmt.Errorf("vswitch %q: bridge.driver change %q -> %q is immutable after create (migrate to a new vswitch name)", vs.Name, liveDriver, desiredDriver)
+
+	if vs.EffectiveType() == "bridge" || vs.EffectiveType() == "" {
+		liveDriver := live.Config["bridge.driver"]
+		if liveDriver == "" {
+			liveDriver = "native"
+		}
+		desiredDriver := vs.EffectiveDriver()
+		if liveDriver != desiredDriver {
+			return fmt.Errorf("vswitch %q: bridge.driver change %q -> %q is immutable after create (migrate to a new vswitch name)", vs.Name, liveDriver, desiredDriver)
+		}
 	}
 	return nil
 }
 
 // aclReferenced reports whether the network's security.acls references the
 // given ACL name.
-func aclReferenced(live *api.Network, name string) bool {
+func aclReferenced(live *provider.Network, name string) bool {
 	for _, n := range splitACLs(live.Config["security.acls"]) {
 		if n == name {
 			return true
@@ -311,7 +355,7 @@ func aclReferenced(live *api.Network, name string) bool {
 }
 
 // foreignACLs returns the network's security.acls entries other than name.
-func foreignACLs(live *api.Network, name string) []string {
+func foreignACLs(live *provider.Network, name string) []string {
 	var out []string
 	for _, n := range splitACLs(live.Config["security.acls"]) {
 		if n != name {
@@ -335,7 +379,7 @@ func splitACLs(s string) []string {
 
 // buildNetworkUpdate diffs the mutable keys of a live vswitch against the
 // desired spec. Returns nil when no drift exists.
-func buildNetworkUpdate(vs *network.VSwitch, live *api.Network) (*api.NetworkPut, []FieldDiff) {
+func buildNetworkUpdate(vs *network.VSwitch, live *provider.Network) (*provider.NetworkUpdateRequest, []FieldDiff) {
 	desired := desiredNetworkConfig(vs, live)
 	diff := diffNetworkConfig(live.Config, desired)
 
@@ -354,7 +398,7 @@ func buildNetworkUpdate(vs *network.VSwitch, live *api.Network) (*api.NetworkPut
 	if len(diff) == 0 {
 		return nil, nil
 	}
-	put := &api.NetworkPut{
+	put := &provider.NetworkUpdateRequest{
 		Config:      desired,
 		Description: desiredDesc,
 	}
@@ -372,15 +416,17 @@ func vswitchDescription(vs *network.VSwitch) string {
 // desiredNetworkConfig computes the full desired config for an existing
 // vswitch: live mutable values preserved, lxm-managed keys reconciled,
 // foreign ACLs preserved verbatim.
-func desiredNetworkConfig(vs *network.VSwitch, live *api.Network) map[string]string {
+func desiredNetworkConfig(vs *network.VSwitch, live *provider.Network) map[string]string {
 	out := make(map[string]string)
 	for k, v := range live.Config {
 		out[k] = v
 	}
-	out["bridge.driver"] = vs.EffectiveDriver()
+	if vs.EffectiveType() == "bridge" || vs.EffectiveType() == "" {
+		out["bridge.driver"] = vs.EffectiveDriver()
+		out["ipv4.dhcp"] = "true"
+	}
 	out["ipv4.address"] = vs.IPv4
 	out["ipv4.nat"] = strconv.FormatBool(vs.EffectiveNAT())
-	out["ipv4.dhcp"] = "true"
 	out["ipv6.address"] = "none"
 	out["dns.domain"] = "lxd"
 	out["user.lxm.managed"] = "true"
@@ -466,7 +512,7 @@ func sameACLSet(a, b string) bool {
 }
 
 // aclRulesEqual reports whether a live ACL matches the desired put payload.
-func aclRulesEqual(live *api.NetworkACL, desired *api.NetworkACLPut) bool {
+func aclRulesEqual(live *provider.NetworkACL, desired *provider.NetworkACLUpdateRequest) bool {
 	return network.RulesEqual(live.Ingress, desired.Ingress) &&
 		network.RulesEqual(live.Egress, desired.Egress)
 }

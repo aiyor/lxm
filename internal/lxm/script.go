@@ -2,6 +2,7 @@ package lxm
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
-	lxd_client "github.com/canonical/lxd/client"
 )
 
 func (m *Manager) ExecuteRecipes(conf *config.Config, configBaseDir string) error {
@@ -47,6 +47,7 @@ func (m *Manager) ExecuteScriptOnDemand(containerName string, scriptPath string,
 }
 
 func (m *Manager) executeScript(containerName string, scriptPath string, runAs string, configBaseDir string, track bool, customEnv map[string]string) error {
+	ctx := context.Background()
 	resolvedPath := scriptPath
 	if !filepath.IsAbs(resolvedPath) && configBaseDir != "" {
 		resolvedPath = filepath.Join(configBaseDir, resolvedPath)
@@ -67,7 +68,7 @@ func (m *Manager) executeScript(containerName string, scriptPath string, runAs s
 		scriptHash = hex.EncodeToString(h.Sum(nil))
 
 		configKey = fmt.Sprintf("user.lxm.recipe.%s.hash", scriptName)
-		instance, _, err := m.client.GetInstance(containerName)
+		instance, _, err := m.client.GetInstance(ctx, containerName)
 		if err == nil {
 			currentHash := instance.Config[configKey]
 			if currentHash == scriptHash && !m.force {
@@ -92,21 +93,16 @@ func (m *Manager) executeScript(containerName string, scriptPath string, runAs s
 	}
 
 	// Resolve the target user's profile inside the container.
-	uenv, err := m.client.ResolveUserEnv(containerName, runAs)
+	uenv, err := m.client.ResolveUserEnv(ctx, containerName, runAs)
 	if err != nil {
 		return fmt.Errorf("resolving user %q environment: %w", runAs, err)
 	}
 
-	err = m.client.CreateInstanceFile(containerName, remotePath, lxd_client.InstanceFileArgs{
-		Content: bytes.NewReader(scriptData),
-		UID:     0,
-		GID:     0,
-		Mode:    0755,
-	})
+	err = m.client.CreateInstanceFile(ctx, containerName, remotePath, bytes.NewReader(scriptData), 0755, 0, 0)
 	if err != nil {
 		return fmt.Errorf("uploading script %q: %w", scriptName, err)
 	}
-	defer func() { _ = m.client.DeleteInstanceFile(containerName, remotePath) }()
+	defer func() { _ = m.client.DeleteInstanceFile(ctx, containerName, remotePath) }()
 
 	env := uenv.DefaultEnv()
 	if env == nil {
@@ -138,7 +134,7 @@ func (m *Manager) executeScript(containerName string, scriptPath string, runAs s
 	cmdStr := fmt.Sprintf("exec %s %s", interpreterCmd, remotePath)
 	cmd := []string{"/bin/bash", "-l", "-c", cmdStr}
 
-	res, err := m.client.ExecInstance(containerName, cmd, uenv.UID, env)
+	res, err := m.client.ExecInstance(ctx, containerName, cmd, uenv.UID, env)
 	exitCode, output := res.ExitCode, res.Combined()
 	if m.debug && output != "" {
 		m.logger.Debug("Command output", "script", scriptName, "output", output)
@@ -150,20 +146,20 @@ func (m *Manager) executeScript(containerName string, scriptPath string, runAs s
 		return fmt.Errorf("script %q exited with code %d:\n%s", scriptName, exitCode, output)
 	}
 
-	m.logger.Info("Script completed", "name", containerName, "script", scriptName, "run_as", runAs)
-
 	if track {
-		instance, etag, err := m.client.GetInstance(containerName)
-		if err == nil {
-			if instance.Config == nil {
-				instance.Config = make(map[string]string)
-			}
-			instance.Config[configKey] = scriptHash
-			if err := m.client.UpdateInstance(containerName, instance.Writable(), etag); err != nil {
-				m.logger.Warn("Failed to update recipe hash in LXD config", "error", err)
-			}
+		instance, etag, err := m.client.GetInstance(ctx, containerName)
+		if err != nil {
+			return fmt.Errorf("getting container %q for hash update: %w", containerName, err)
+		}
+		if instance.Config == nil {
+			instance.Config = make(map[string]string)
+		}
+		instance.Config[configKey] = scriptHash
+		if err := m.client.UpdateInstance(ctx, containerName, instance.Writable(), etag); err != nil {
+			return fmt.Errorf("updating script hash for %q: %w", scriptName, err)
 		}
 	}
 
+	m.logger.Info("Script executed successfully", "name", containerName, "script", scriptName)
 	return nil
 }

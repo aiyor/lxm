@@ -1,6 +1,6 @@
-# lxm — Declarative LXD Fleet Manager
+# lxm — Declarative LXD & Incus Fleet Manager
 
-`lxm` is a Go CLI tool for declarative, reproducible fleet management of LXD containers and hardware-virtualized Virtual Machines (VMs). Define your fleet's desired state in YAML manifests, preview pure deterministic diffs with `lxm plan`, and apply mutations safely with `lxm apply`.
+`lxm` is a Go CLI tool for declarative, reproducible fleet management of **LXD** and **Incus** containers and hardware-virtualized Virtual Machines (VMs) — across local sockets, remote HTTPS endpoints (mTLS), clusters, and projects. Define your fleet's desired state in YAML manifests, preview pure deterministic diffs with `lxm plan`, and apply mutations safely with `lxm apply`.
 
 **[User Guide](docs/index.md)** | **[Quick Installation](docs/getting-started/installation.md)** | **[Quick Start](docs/getting-started/quickstart.md)**
 
@@ -9,6 +9,8 @@
 ## Key Features
 
 * **Plan-First Architecture**: Every infrastructure mutation is preceded by a pure, deterministic diff preview (`lxm plan`).
+* **Dual-Provider Engine (LXD + Incus)**: One declarative interface drives both Canonical LXD (5.x/6.x) and Incus (6.x/7.x) through a unified `provider.Driver` abstraction — the core is provider-agnostic and carries no LXD/Incus SDK types.
+* **Remote & Cluster Management**: Manage fleets over local UNIX sockets or remote HTTPS endpoints with mTLS client certificates and trust-token enrollment, with explicit cluster member targeting (`--target <node>`), project scoping (`--project <name>`), and named remotes (`~/.config/lxm/remotes.yaml`, `lxm remote`).
 * **Containers & Virtual Machines**: Unified management for lightweight LXC system containers and hardware-virtualized QEMU/KVM virtual machines (`type: container` / `type: vm`).
 * **Managed Virtual Switches & Network Segmentation**: Declare `vswitches:` (LXD managed bridges) and a group-based `network_policy:` — compiled deterministically into LXD network ACLs for isolated, mutually-communicating, and one-way networks.
 * **Declarative & Idempotent**: State reconciliation automatically handles instance creation, hardware limits (CPU, memory, disk), VM hypervisor settings, device mounting, network configuration, and image rebuilds.
@@ -33,9 +35,28 @@
 ## Requirements
 
 * Linux (Ubuntu 22.04+ recommended; Linux kernel 5.12+ for idmapped mounts)
-* LXD 5.0+ LTS
-* Host user in the `lxd` system group
+* LXD 5.0+ LTS and/or Incus 6.x/7.x (either is sufficient; `lxm` auto-detects the local daemon)
+* Host user in the `lxd` (LXD) or `incus-admin` (Incus) system group
 * Go 1.26+ to build from source
+
+---
+
+## Providers & Remotes
+
+`lxm` resolves the target backend through `remote.ResolveDriver` in `internal/provider/remote`:
+
+* **Provider auto-detection**: For the local daemon, `lxm` probes the Incus socket (`$INCUS_SOCKET` → `/run/incus/unix.socket` → `/var/lib/incus/unix.socket`) and then the LXD socket (`$LXD_SOCKET` → snap → `/var/lib/lxd/unix.socket`). Override with the `LXM_PROVIDER` environment variable or `--provider incus|lxd|auto`.
+* **Named remotes** (`~/.config/lxm/remotes.yaml`): `local` (default) plus any endpoints added via `lxm remote add <name> <address> --token <token>`. Remote HTTPS endpoints use a client mTLS certificate pair (`~/.config/lxm/client.crt`/`client.key`) pinned against a discovered server certificate (TOFU), stored per-remote in the config.
+* **Global targeting flags**: `--provider`, `--remote <name>`, `--target <node>` (cluster member), and `--project <name>` (multi-tenant). Manifests may also declare `provider:`, `remote:`, `target:`, and `project:` fields.
+
+```bash
+# Add and enroll a remote Incus/LXD cluster endpoint over mTLS with a trust token
+lxm remote add lab-cluster https://10.171.13.50:8443 --token <trust-token> --provider incus
+
+# Target it for all subsequent operations
+lxm --remote lab-cluster list
+lxm --remote lab-cluster --project staging --target node-02 apply config/dev.yaml
+```
 
 ---
 
@@ -130,7 +151,7 @@ wait:
 # Preview the deterministic reconciliation plan for a manifest
 lxm plan config/dev.yaml
 
-# Apply mutations to LXD
+# Apply mutations to the provider daemon (LXD/Incus)
 lxm apply config/dev.yaml
 
 # Verify live fleet inventory
@@ -158,7 +179,7 @@ lxm shell dev-station
 
 ## Commands Reference
 
-The `lxm` CLI binary registers 16 subcommands:
+The `lxm` CLI binary registers the following subcommands:
 
 | Command | Usage | Description |
 | :--- | :--- | :--- |
@@ -166,11 +187,13 @@ The `lxm` CLI binary registers 16 subcommands:
 | `compile` | `lxm compile <target> [--in-place]` | Compile and migrate v1 manifests to `v2` schema. |
 | `completion`| `lxm completion <bash\|zsh\|fish\|powershell>` | Generate shell completion scripts. |
 | `diff` | `lxm diff <config-file> <container>` | Preview plan for a single container against a config file. |
-| `doctor` | `lxm doctor [dir] [--skip-remote]` | Audit host environment, LXD daemon, and fleet health. |
+| `disk` | `lxm disk gc [file\|dir]` | Garbage-collect managed storage volumes. |
+| `doctor` | `lxm doctor [dir] [--skip-remote]` | Audit host environment, provider (LXD/Incus) daemon, and fleet health. |
 | `include` | `lxm include <config_dir> <include_file>` | Add an include directive to all configs (stub). |
 | `init` | `lxm init [path] [--force]` | Initialize `_base.yaml` and `config/dev.yaml` structure. |
 | `list` | `lxm list [--name N] [--format]` | List fleet containers, IPs, groups, and status. |
 | `plan` | `lxm plan <file\|dir> [flags]` | Preview deterministic reconciliation plan. |
+| `remote` | `lxm remote <add\|list\|remove\|set-default\|set-project>` | Manage remote endpoints, mTLS trust, and project targeting. |
 | `rollback`| `lxm rollback <container> <snap>` | Roll back a container to a named snapshot. |
 | `run` | `lxm run <target> <script-path>` | Run a local script across a container or fleet directory. |
 | `script` | `lxm script <container> <path> [user]`| Execute a local script inside a container. |
@@ -178,6 +201,7 @@ The `lxm` CLI binary registers 16 subcommands:
 | `snapshot`| `lxm snapshot <action> <container>` | Manage snapshots (create, delete, list, gc). |
 | `ssh` | `lxm ssh <container> [cmd]` | Connect via OpenSSH with managed host keys. |
 | `status` | `lxm status <container>` | Display detailed container status and recipe history. |
+| `vswitch`| `lxm vswitch gc [file\|dir]` | Garbage-collect managed virtual switches. |
 
 ---
 
@@ -189,7 +213,7 @@ The `lxm` CLI binary registers 16 subcommands:
 * **`1` (`INTERNAL_ERROR`)**: Runtime panic or unhandled error.
 * **`2` (`USAGE_ERROR`)**: CLI flag parse error or TTY carve-out violation.
 * **`3` (`CONFIG_ERROR`)**: Manifest syntax, CUE validation, or unbound variable error.
-* **`4` (`LXD_ERROR`)**: LXD API, socket, or ETag concurrency error.
+* **`4` (`PROVIDER_ERROR`)**: Provider (LXD/Incus) daemon connection failure, API error, TLS handshake failure, or ETag concurrency conflict.
 * **`5` (`TARGET_NOT_FOUND`)**: Target container, snapshot, or selector match not found.
 * **`6` (`EXEC_FAILED`)**: Recipe execution error.
 * **`7` (`WAIT_TIMEOUT`)**: Cloud-init or network wait deadline exceeded.

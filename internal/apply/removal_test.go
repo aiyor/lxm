@@ -6,16 +6,18 @@ import (
 
 	"github.com/aiyor/lxm/internal/apply"
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
 	"github.com/aiyor/lxm/internal/plan"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/fake"
 )
 
 func TestApply_VolumeDelete_Phase3_Success(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.Instances["vm1"] = &api.Instance{
-		Name:   "vm1",
-		Status: "Stopped",
+	ctx := context.Background()
+	driver := fake.New()
+	driver.Instances["vm1"] = &provider.Instance{
+		Name:       "vm1",
+		Status:     "Stopped",
+		StatusCode: 102,
 		Devices: map[string]map[string]string{
 			"root":         {"type": "disk", "pool": "default", "path": "/"},
 			"disk-scratch": {"type": "disk", "pool": "default", "path": "/mnt/scratch", "source": "vm1-scratch"},
@@ -25,18 +27,12 @@ func TestApply_VolumeDelete_Phase3_Success(t *testing.T) {
 			"disk-scratch": {"type": "disk", "pool": "default", "path": "/mnt/scratch", "source": "vm1-scratch"},
 		},
 	}
-	fake.ETags["vm1"] = "etag-1"
+	driver.ETags["vm1"] = "etag-1"
 
 	// Add volume to storage store
-	fake.Vols.Volumes["default/vm1-scratch"] = &api.StorageVolume{
-		Name:        "vm1-scratch",
-		Pool:        "default",
-		Type:        "custom",
-		ContentType: "filesystem",
-		Config:      map[string]string{"user.lxm.managed": "true"},
-	}
+	driver.AddVolume("default", "vm1-scratch", "filesystem", map[string]string{"user.lxm.managed": "true"})
 
-	engine := apply.NewExecutor(fake)
+	engine := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Steps: []plan.Step{
@@ -45,7 +41,7 @@ func TestApply_VolumeDelete_Phase3_Success(t *testing.T) {
 				Action:    "update",
 				Changed:   true,
 				ETag:      "etag-1",
-				InstancePut: &api.InstancePut{
+				InstancePut: &provider.InstanceUpdateRequest{
 					Devices: map[string]map[string]string{
 						"root": {"type": "disk", "pool": "default", "path": "/"},
 					},
@@ -62,7 +58,7 @@ func TestApply_VolumeDelete_Phase3_Success(t *testing.T) {
 		},
 	}
 
-	report, err := engine.Apply(context.Background(), p, apply.ApplyOpts{})
+	report, err := engine.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}
@@ -71,25 +67,27 @@ func TestApply_VolumeDelete_Phase3_Success(t *testing.T) {
 	}
 
 	// Verify volume was deleted in Phase 3
-	if _, exists := fake.Vols.Volumes["default/vm1-scratch"]; exists {
+	if _, exists := driver.Volumes["default"]["vm1-scratch"]; exists {
 		t.Errorf("expected storage volume default/vm1-scratch to be deleted, but it still exists")
 	}
 
 	// Verify device was detached in Phase 2
-	if _, exists := fake.Instances["vm1"].Devices["disk-scratch"]; exists {
+	if _, exists := driver.Instances["vm1"].Devices["disk-scratch"]; exists {
 		t.Errorf("expected device disk-scratch detached from vm1, but it still exists")
 	}
 }
 
 func TestApply_VolumeDelete_IdempotentNotFound(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.Instances["vm1"] = &api.Instance{
-		Name:   "vm1",
-		Status: "Stopped",
+	ctx := context.Background()
+	driver := fake.New()
+	driver.Instances["vm1"] = &provider.Instance{
+		Name:       "vm1",
+		Status:     "Stopped",
+		StatusCode: 102,
 	}
-	fake.ETags["vm1"] = "etag-1"
+	driver.ETags["vm1"] = "etag-1"
 
-	engine := apply.NewExecutor(fake)
+	engine := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		Steps: []plan.Step{
@@ -98,7 +96,7 @@ func TestApply_VolumeDelete_IdempotentNotFound(t *testing.T) {
 				Action:    "update",
 				Changed:   true,
 				ETag:      "etag-1",
-				InstancePut: &api.InstancePut{
+				InstancePut: &provider.InstanceUpdateRequest{
 					Devices: map[string]map[string]string{
 						"root": {"type": "disk", "pool": "default", "path": "/"},
 					},
@@ -115,7 +113,7 @@ func TestApply_VolumeDelete_IdempotentNotFound(t *testing.T) {
 		},
 	}
 
-	report, err := engine.Apply(context.Background(), p, apply.ApplyOpts{})
+	report, err := engine.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}
@@ -125,31 +123,32 @@ func TestApply_VolumeDelete_IdempotentNotFound(t *testing.T) {
 }
 
 func TestApply_VSwitchDelete_Phase4_OrderBridgeBeforeACL(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.Nets.Networks["legacybr0"] = &api.Network{
+	ctx := context.Background()
+	driver := fake.New()
+	driver.Networks["legacybr0"] = &provider.Network{
 		Name:    "legacybr0",
 		Type:    "bridge",
 		Managed: true,
 		Config:  map[string]string{"user.lxm.managed": "true"},
 	}
-	fake.Nets.ACLs["lxm-legacybr0"] = &api.NetworkACL{
+	driver.NetworkACLs["lxm-legacybr0"] = &provider.NetworkACL{
 		Name:   "lxm-legacybr0",
 		Config: map[string]string{"user.lxm.managed": "true"},
 	}
 
 	var callOrder []string
-	fake.DeleteNetworkFunc = func(name string) error {
+	driver.DeleteNetworkFunc = func(name string) error {
 		callOrder = append(callOrder, "DeleteNetwork:"+name)
-		delete(fake.Nets.Networks, name)
+		delete(driver.Networks, name)
 		return nil
 	}
-	fake.DeleteNetworkACLFunc = func(name string) error {
+	driver.DeleteNetworkACLFunc = func(name string) error {
 		callOrder = append(callOrder, "DeleteNetworkACL:"+name)
-		delete(fake.Nets.ACLs, name)
+		delete(driver.NetworkACLs, name)
 		return nil
 	}
 
-	engine := apply.NewExecutor(fake)
+	engine := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		NetworkSteps: []plan.NetworkStep{
@@ -161,7 +160,7 @@ func TestApply_VSwitchDelete_Phase4_OrderBridgeBeforeACL(t *testing.T) {
 		},
 	}
 
-	report, err := engine.Apply(context.Background(), p, apply.ApplyOpts{})
+	report, err := engine.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}
@@ -181,15 +180,13 @@ func TestApply_VSwitchDelete_Phase4_OrderBridgeBeforeACL(t *testing.T) {
 }
 
 func TestApply_DryRun_SkipsDeletions(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.Vols.Volumes["default/vm1-scratch"] = &api.StorageVolume{
-		Name: "vm1-scratch",
-		Pool: "default",
-	}
-	fake.Nets.Networks["legacybr0"] = &api.Network{Name: "legacybr0"}
-	fake.Nets.ACLs["lxm-legacybr0"] = &api.NetworkACL{Name: "lxm-legacybr0"}
+	ctx := context.Background()
+	driver := fake.New()
+	driver.AddVolume("default", "vm1-scratch", "filesystem", nil)
+	driver.Networks["legacybr0"] = &provider.Network{Name: "legacybr0"}
+	driver.NetworkACLs["lxm-legacybr0"] = &provider.NetworkACL{Name: "lxm-legacybr0"}
 
-	engine := apply.NewExecutor(fake)
+	engine := apply.NewExecutor(driver)
 
 	p := &plan.Plan{
 		NetworkSteps: []plan.NetworkStep{
@@ -215,7 +212,7 @@ func TestApply_DryRun_SkipsDeletions(t *testing.T) {
 		},
 	}
 
-	report, err := engine.Apply(context.Background(), p, apply.ApplyOpts{DryRun: true})
+	report, err := engine.Apply(ctx, p, apply.ApplyOpts{DryRun: true})
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}
@@ -224,39 +221,35 @@ func TestApply_DryRun_SkipsDeletions(t *testing.T) {
 	}
 
 	// Verify nothing was deleted
-	if _, exists := fake.Vols.Volumes["default/vm1-scratch"]; !exists {
+	if _, exists := driver.Volumes["default"]["vm1-scratch"]; !exists {
 		t.Errorf("dry-run must not delete storage volume")
 	}
-	if _, exists := fake.Nets.Networks["legacybr0"]; !exists {
+	if _, exists := driver.Networks["legacybr0"]; !exists {
 		t.Errorf("dry-run must not delete network bridge")
 	}
-	if _, exists := fake.Nets.ACLs["lxm-legacybr0"]; !exists {
+	if _, exists := driver.NetworkACLs["lxm-legacybr0"]; !exists {
 		t.Errorf("dry-run must not delete network ACL")
 	}
 }
 
 func TestApply_SteadyStateVolume_BackfillsMarker(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.Instances["vm1"] = &api.Instance{
-		Name:   "vm1",
-		Status: "Running",
+	ctx := context.Background()
+	driver := fake.New()
+	driver.Instances["vm1"] = &provider.Instance{
+		Name:       "vm1",
+		Status:     "Running",
+		StatusCode: 103,
 		Devices: map[string]map[string]string{
 			"root":      {"type": "disk", "pool": "default", "path": "/"},
 			"disk-data": {"type": "disk", "pool": "default", "path": "/var/lib/data", "source": "vm1-data"},
 		},
 	}
-	fake.ETags["vm1"] = "etag-1"
+	driver.ETags["vm1"] = "etag-1"
 
 	// Pre-existing legacy volume without user.lxm.managed marker
-	fake.Vols.Volumes["default/vm1-data"] = &api.StorageVolume{
-		Name:        "vm1-data",
-		Pool:        "default",
-		Type:        "custom",
-		ContentType: "filesystem",
-		Config:      map[string]string{"size": "50GiB"}, // missing user.lxm.managed
-	}
+	driver.AddVolume("default", "vm1-data", "filesystem", map[string]string{"size": "50GiB"})
 
-	engine := apply.NewExecutor(fake)
+	engine := apply.NewExecutor(driver)
 
 	// Steady-state step: real noop with no InstancePut or InstancesPost payload
 	p := &plan.Plan{
@@ -277,7 +270,7 @@ func TestApply_SteadyStateVolume_BackfillsMarker(t *testing.T) {
 		},
 	}
 
-	report, err := engine.Apply(context.Background(), p, apply.ApplyOpts{})
+	report, err := engine.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}
@@ -286,7 +279,7 @@ func TestApply_SteadyStateVolume_BackfillsMarker(t *testing.T) {
 	}
 
 	// Verify volume received user.lxm.managed: "true" and tracking metadata
-	vol := fake.Vols.Volumes["default/vm1-data"]
+	vol := driver.Volumes["default"]["vm1-data"]
 	if vol == nil {
 		t.Fatal("expected volume to exist")
 	}
@@ -299,27 +292,23 @@ func TestApply_SteadyStateVolume_BackfillsMarker(t *testing.T) {
 }
 
 func TestApply_ExternalVolume_NotBackfilledAsManaged(t *testing.T) {
-	fake := lxd.NewFakeInstanceServer()
-	fake.Instances["vm1"] = &api.Instance{
-		Name:   "vm1",
-		Status: "Running",
+	ctx := context.Background()
+	driver := fake.New()
+	driver.Instances["vm1"] = &provider.Instance{
+		Name:       "vm1",
+		Status:     "Running",
+		StatusCode: 103,
 		Devices: map[string]map[string]string{
 			"root":         {"type": "disk", "pool": "default", "path": "/"},
 			"disk-scratch": {"type": "disk", "pool": "default", "path": "/mnt/scratch", "source": "vm1-scratch"},
 		},
 	}
-	fake.ETags["vm1"] = "etag-1"
+	driver.ETags["vm1"] = "etag-1"
 
 	// Pre-existing external volume without user.lxm.managed marker
-	fake.Vols.Volumes["default/vm1-scratch"] = &api.StorageVolume{
-		Name:        "vm1-scratch",
-		Pool:        "default",
-		Type:        "custom",
-		ContentType: "filesystem",
-		Config:      map[string]string{}, // unmanaged external
-	}
+	driver.AddVolume("default", "vm1-scratch", "filesystem", map[string]string{})
 
-	engine := apply.NewExecutor(fake)
+	engine := apply.NewExecutor(driver)
 
 	// An instance with no ManagedDisks (e.g. disk declared as external source)
 	p := &plan.Plan{
@@ -333,7 +322,7 @@ func TestApply_ExternalVolume_NotBackfilledAsManaged(t *testing.T) {
 		},
 	}
 
-	report, err := engine.Apply(context.Background(), p, apply.ApplyOpts{})
+	report, err := engine.Apply(ctx, p, apply.ApplyOpts{})
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}
@@ -342,7 +331,7 @@ func TestApply_ExternalVolume_NotBackfilledAsManaged(t *testing.T) {
 	}
 
 	// Verify external volume was NOT tagged as managed
-	vol := fake.Vols.Volumes["default/vm1-scratch"]
+	vol := driver.Volumes["default"]["vm1-scratch"]
 	if vol == nil {
 		t.Fatal("expected volume to exist")
 	}

@@ -3,80 +3,76 @@ package lxm
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/lxd"
-	lxd_client "github.com/canonical/lxd/client"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/provider/common"
+	"github.com/aiyor/lxm/internal/provider/fake"
 )
 
-type mockLXDClient struct {
-	getInstanceFunc         func(name string) (*api.Instance, string, error)
-	createInstanceFunc      func(req api.InstancesPost) error
-	updateInstanceFunc      func(name string, put api.InstancePut, etag string) error
-	deleteInstanceFunc      func(name string) error
-	updateInstanceStateFunc func(name string, action string, force bool) error
-	resolveUIDFunc          func(name string, username string) (uint32, error)
-	resolveUserEnvFunc      func(name string, username string) (*lxd.UserEnv, error)
-	execInstanceFunc        func(name string, cmd []string, uid uint32, env map[string]string) (int, string, error)
-	interactiveExecFunc     func(name string, cmd []string, uid uint32, env map[string]string) error
-	createInstanceFileFunc  func(name string, path string, args lxd_client.InstanceFileArgs) error
-	deleteInstanceFileFunc  func(name string, path string) error
-	getIPFunc               func(name string) (string, error)
+type mockDriver struct {
+	*fake.FakeDriver
+	getInstanceFunc         func(ctx context.Context, name string) (*provider.Instance, string, error)
+	createInstanceFunc      func(ctx context.Context, req provider.InstanceCreateRequest) error
+	updateInstanceFunc      func(ctx context.Context, name string, req provider.InstanceUpdateRequest, etag string) error
+	deleteInstanceFunc      func(ctx context.Context, name string) error
+	updateInstanceStateFunc func(ctx context.Context, name string, action string, force bool) error
+	resolveUIDFunc          func(ctx context.Context, name string, username string) (uint32, error)
+	resolveUserEnvFunc      func(ctx context.Context, name string, username string) (*provider.UserEnv, error)
+	execInstanceFunc        func(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) (int, string, error)
+	interactiveExecFunc     func(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) error
+	createInstanceFileFunc  func(ctx context.Context, name string, path string, content io.Reader, mode int, uid, gid int64) error
+	deleteInstanceFileFunc  func(ctx context.Context, name string, path string) error
+	getIPFunc               func(ctx context.Context, name string) (string, error)
 }
 
-func (m *mockLXDClient) GetInstance(name string) (*api.Instance, string, error) {
+func newMockDriver() *mockDriver {
+	return &mockDriver{
+		FakeDriver: fake.New(),
+	}
+}
+
+func (m *mockDriver) GetInstance(ctx context.Context, name string) (*provider.Instance, string, error) {
 	if m.getInstanceFunc != nil {
-		return m.getInstanceFunc(name)
+		return m.getInstanceFunc(ctx, name)
 	}
 	return nil, "", errors.New("not found")
 }
 
-func (m *mockLXDClient) ListInstances() ([]api.InstanceFull, error) {
-	return nil, nil
-}
-
-func (m *mockLXDClient) CreateInstance(req api.InstancesPost) error {
+func (m *mockDriver) CreateInstance(ctx context.Context, req provider.InstanceCreateRequest) error {
 	if m.createInstanceFunc != nil {
-		return m.createInstanceFunc(req)
+		return m.createInstanceFunc(ctx, req)
 	}
 	return nil
 }
 
-func (m *mockLXDClient) UpdateInstance(name string, put api.InstancePut, etag string) error {
+func (m *mockDriver) UpdateInstance(ctx context.Context, name string, req provider.InstanceUpdateRequest, etag string) error {
 	if m.updateInstanceFunc != nil {
-		return m.updateInstanceFunc(name, put, etag)
+		return m.updateInstanceFunc(ctx, name, req, etag)
 	}
 	return nil
 }
 
-func (m *mockLXDClient) DeleteInstance(name string) error {
+func (m *mockDriver) DeleteInstance(ctx context.Context, name string) error {
 	if m.deleteInstanceFunc != nil {
-		return m.deleteInstanceFunc(name)
+		return m.deleteInstanceFunc(ctx, name)
 	}
 	return nil
 }
 
-func (m *mockLXDClient) UpdateInstanceState(name string, action string, force bool) error {
+func (m *mockDriver) UpdateInstanceState(ctx context.Context, name string, action string, force bool) error {
 	if m.updateInstanceStateFunc != nil {
-		return m.updateInstanceStateFunc(name, action, force)
+		return m.updateInstanceStateFunc(ctx, name, action, force)
 	}
 	return nil
 }
 
-func (m *mockLXDClient) RebuildInstance(name string, req api.InstanceRebuildPost) error {
-	return nil
-}
-
-func (m *mockLXDClient) HasExtension(name string) bool {
-	return true
-}
-
-func (m *mockLXDClient) ClassifyLXDError(err error, intent string) (int, bool) {
+func (m *mockDriver) ClassifyError(err error, intent string) (int, bool) {
 	if err == nil {
 		return 0, false
 	}
@@ -89,109 +85,57 @@ func (m *mockLXDClient) ClassifyLXDError(err error, intent string) (int, bool) {
 	return 4, false
 }
 
-func (m *mockLXDClient) ResolveUID(_ string, _ string) (uint32, error) {
+func (m *mockDriver) ResolveUID(ctx context.Context, name string, username string) (uint32, error) {
 	if m.resolveUIDFunc != nil {
-		return m.resolveUIDFunc("", "")
+		return m.resolveUIDFunc(ctx, name, username)
 	}
 	return 0, nil
 }
 
-func (m *mockLXDClient) ResolveUserEnv(_ string, username string) (*lxd.UserEnv, error) {
+func (m *mockDriver) ResolveUserEnv(ctx context.Context, name string, username string) (*provider.UserEnv, error) {
 	if m.resolveUserEnvFunc != nil {
-		return m.resolveUserEnvFunc("", username)
+		return m.resolveUserEnvFunc(ctx, name, username)
 	}
-	return &lxd.UserEnv{UID: 1000, GID: 1000, Home: "/home/" + username, Shell: "/bin/bash", User: username}, nil
+	return &provider.UserEnv{UID: 1000, GID: 1000, Home: "/home/" + username, Shell: "/bin/bash", User: username}, nil
 }
 
-func (m *mockLXDClient) ExecInstance(name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
+func (m *mockDriver) ExecInstance(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
 	if m.execInstanceFunc != nil {
-		code, out, err := m.execInstanceFunc(name, cmd, uid, env)
-		return lxd.ExecResult{ExitCode: code, Stdout: out}, err
+		code, out, err := m.execInstanceFunc(ctx, name, cmd, uid, env)
+		return provider.ExecResult{ExitCode: code, Stdout: out}, err
 	}
-	return lxd.ExecResult{ExitCode: 0, Stdout: ""}, nil
+	return provider.ExecResult{ExitCode: 0, Stdout: ""}, nil
 }
 
-func (m *mockLXDClient) InteractiveExecInstance(name string, cmd []string, uid uint32, env map[string]string) error {
+func (m *mockDriver) InteractiveExecInstance(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) error {
 	if m.interactiveExecFunc != nil {
-		return m.interactiveExecFunc(name, cmd, uid, env)
+		return m.interactiveExecFunc(ctx, name, cmd, uid, env)
 	}
 	return nil
 }
 
-func (m *mockLXDClient) CreateInstanceFile(name string, path string, args lxd_client.InstanceFileArgs) error {
+func (m *mockDriver) CreateInstanceFile(ctx context.Context, name string, path string, content io.Reader, mode int, uid, gid int64) error {
 	if m.createInstanceFileFunc != nil {
-		return m.createInstanceFileFunc(name, path, args)
+		return m.createInstanceFileFunc(ctx, name, path, content, mode, uid, gid)
 	}
 	return nil
 }
 
-func (m *mockLXDClient) DeleteInstanceFile(name string, path string) error {
+func (m *mockDriver) DeleteInstanceFile(ctx context.Context, name string, path string) error {
 	if m.deleteInstanceFileFunc != nil {
-		return m.deleteInstanceFileFunc(name, path)
+		return m.deleteInstanceFileFunc(ctx, name, path)
 	}
 	return nil
 }
 
-func (m *mockLXDClient) GetIP(name string) (string, error) {
+func (m *mockDriver) GetIP(ctx context.Context, name string) (string, error) {
 	if m.getIPFunc != nil {
-		return m.getIPFunc(name)
+		return m.getIPFunc(ctx, name)
 	}
 	return "10.0.0.1", nil
 }
 
-func (m *mockLXDClient) CreateInstanceContext(ctx context.Context, req api.InstancesPost) error {
-	return m.CreateInstance(req)
-}
-
-func (m *mockLXDClient) UpdateInstanceContext(ctx context.Context, name string, put api.InstancePut, etag string) error {
-	return m.UpdateInstance(name, put, etag)
-}
-
-func (m *mockLXDClient) DeleteInstanceContext(ctx context.Context, name string) error {
-	return m.DeleteInstance(name)
-}
-
-func (m *mockLXDClient) UpdateInstanceStateContext(ctx context.Context, name string, action string, force bool) error {
-	return m.UpdateInstanceState(name, action, force)
-}
-
-func (m *mockLXDClient) RebuildInstanceContext(ctx context.Context, name string, req api.InstanceRebuildPost) error {
-	return m.RebuildInstance(name, req)
-}
-
-func (m *mockLXDClient) ExecInstanceContext(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) (lxd.ExecResult, error) {
-	return m.ExecInstance(name, cmd, uid, env)
-}
-
-func (m *mockLXDClient) CreateInstanceSnapshot(name string, req api.InstanceSnapshotsPost) error {
-	return nil
-}
-
-func (m *mockLXDClient) CreateInstanceSnapshotContext(ctx context.Context, name string, req api.InstanceSnapshotsPost) error {
-	return nil
-}
-
-func (m *mockLXDClient) DeleteInstanceSnapshot(name string, snapshotName string) error {
-	return nil
-}
-
-func (m *mockLXDClient) DeleteInstanceSnapshotContext(ctx context.Context, name string, snapshotName string) error {
-	return nil
-}
-
-func (m *mockLXDClient) GetInstanceSnapshots(name string) ([]api.InstanceSnapshot, error) {
-	return nil, nil
-}
-
-func (m *mockLXDClient) RestoreInstanceSnapshot(name string, snapshotName string) error {
-	return nil
-}
-
-func (m *mockLXDClient) RestoreInstanceSnapshotContext(ctx context.Context, name string, snapshotName string) error {
-	return nil
-}
-
-func newTestManager(mock *mockLXDClient) *Manager {
+func newTestManager(mock *mockDriver) *Manager {
 	return NewManager(
 		mock,
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})),
@@ -202,22 +146,21 @@ func newTestManager(mock *mockLXDClient) *Manager {
 func TestApplyConfig_Absent_DeletesContainer(t *testing.T) {
 	deleted := false
 	stopped := false
-	mock := &mockLXDClient{
-		getInstanceFunc: func(name string) (*api.Instance, string, error) {
-			return &api.Instance{
-				StatusCode: api.Running,
-			}, "etag", nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			if action == "stop" {
-				stopped = true
-			}
-			return nil
-		},
-		deleteInstanceFunc: func(name string) error {
-			deleted = true
-			return nil
-		},
+	mock := newMockDriver()
+	mock.getInstanceFunc = func(ctx context.Context, name string) (*provider.Instance, string, error) {
+		return &provider.Instance{
+			StatusCode: 103,
+		}, "etag", nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		if action == "stop" {
+			stopped = true
+		}
+		return nil
+	}
+	mock.deleteInstanceFunc = func(ctx context.Context, name string) error {
+		deleted = true
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -236,26 +179,25 @@ func TestApplyConfig_Absent_DeletesContainer(t *testing.T) {
 func TestApplyConfig_NotFound_CreatesContainer(t *testing.T) {
 	created := false
 	started := false
-	mock := &mockLXDClient{
-		getInstanceFunc: func(name string) (*api.Instance, string, error) {
-			return nil, "", errors.New("not found")
-		},
-		createInstanceFunc: func(req api.InstancesPost) error {
-			created = true
-			if req.Name != "test" {
-				t.Errorf("expected name 'test', got %q", req.Name)
-			}
-			if req.Source.Alias != "ubuntu:22.04" {
-				t.Errorf("expected alias 'ubuntu:22.04', got %q", req.Source.Alias)
-			}
-			return nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			if action == "start" {
-				started = true
-			}
-			return nil
-		},
+	mock := newMockDriver()
+	mock.getInstanceFunc = func(ctx context.Context, name string) (*provider.Instance, string, error) {
+		return nil, "", errors.New("not found")
+	}
+	mock.createInstanceFunc = func(ctx context.Context, req provider.InstanceCreateRequest) error {
+		created = true
+		if req.Name != "test" {
+			t.Errorf("expected name 'test', got %q", req.Name)
+		}
+		if req.Source.Alias != "ubuntu:22.04" {
+			t.Errorf("expected alias 'ubuntu:22.04', got %q", req.Source.Alias)
+		}
+		return nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		if action == "start" {
+			started = true
+		}
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -275,17 +217,16 @@ func TestApplyConfig_Exists_NoChanges(t *testing.T) {
 	updated := false
 	conf := &config.Config{Name: "test", Status: "present", Image: "ubuntu:22.04", User: "ubuntu"}
 	userData, _ := conf.ResolveCloudInit("")
-	mock := &mockLXDClient{
-		getInstanceFunc: func(name string) (*api.Instance, string, error) {
-			return &api.Instance{
-				Config:  map[string]string{"user.lxm.user": "ubuntu", "user.lxm.managed": "true", "user.user-data": userData},
-				Devices: map[string]map[string]string{},
-			}, "etag", nil
-		},
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			return nil
-		},
+	mock := newMockDriver()
+	mock.getInstanceFunc = func(ctx context.Context, name string) (*provider.Instance, string, error) {
+		return &provider.Instance{
+			Config:  map[string]string{"user.lxm.user": "ubuntu", "user.lxm.managed": "true", "user.user-data": userData},
+			Devices: map[string]map[string]string{},
+		}, "etag", nil
+	}
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		return nil
 	}
 	m := newTestManager(mock)
 	if err := m.ApplyConfig(conf, ""); err != nil {
@@ -298,20 +239,19 @@ func TestApplyConfig_Exists_NoChanges(t *testing.T) {
 
 func TestApplyConfig_Exists_NeedsUpdate(t *testing.T) {
 	updated := false
-	mock := &mockLXDClient{
-		getInstanceFunc: func(name string) (*api.Instance, string, error) {
-			return &api.Instance{
-				Config:  map[string]string{},
-				Devices: map[string]map[string]string{},
-			}, "etag", nil
-		},
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			if put.Config["user.lxm.user"] != "ubuntu" {
-				t.Error("expected user.lxm.user to be set in update")
-			}
-			return nil
-		},
+	mock := newMockDriver()
+	mock.getInstanceFunc = func(ctx context.Context, name string) (*provider.Instance, string, error) {
+		return &provider.Instance{
+			Config:  map[string]string{},
+			Devices: map[string]map[string]string{},
+		}, "etag", nil
+	}
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		if put.Config["user.lxm.user"] != "ubuntu" {
+			t.Error("expected user.lxm.user to be set in update")
+		}
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -325,10 +265,9 @@ func TestApplyConfig_Exists_NeedsUpdate(t *testing.T) {
 }
 
 func TestDeleteContainer_NotExists(t *testing.T) {
-	mock := &mockLXDClient{
-		getInstanceFunc: func(name string) (*api.Instance, string, error) {
-			return nil, "", errors.New("not found")
-		},
+	mock := newMockDriver()
+	mock.getInstanceFunc = func(ctx context.Context, name string) (*provider.Instance, string, error) {
+		return nil, "", errors.New("not found")
 	}
 	m := newTestManager(mock)
 
@@ -340,20 +279,19 @@ func TestDeleteContainer_NotExists(t *testing.T) {
 func TestDeleteContainer_Running(t *testing.T) {
 	stopped := false
 	deleted := false
-	mock := &mockLXDClient{
-		getInstanceFunc: func(name string) (*api.Instance, string, error) {
-			return &api.Instance{StatusCode: api.Running}, "etag", nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			if action == "stop" {
-				stopped = true
-			}
-			return nil
-		},
-		deleteInstanceFunc: func(name string) error {
-			deleted = true
-			return nil
-		},
+	mock := newMockDriver()
+	mock.getInstanceFunc = func(ctx context.Context, name string) (*provider.Instance, string, error) {
+		return &provider.Instance{StatusCode: 103}, "etag", nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		if action == "stop" {
+			stopped = true
+		}
+		return nil
+	}
+	mock.deleteInstanceFunc = func(ctx context.Context, name string) error {
+		deleted = true
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -371,18 +309,17 @@ func TestDeleteContainer_Running(t *testing.T) {
 func TestDeleteContainer_Stopped(t *testing.T) {
 	stopped := false
 	deleted := false
-	mock := &mockLXDClient{
-		getInstanceFunc: func(name string) (*api.Instance, string, error) {
-			return &api.Instance{StatusCode: api.Stopped}, "etag", nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			stopped = true
-			return nil
-		},
-		deleteInstanceFunc: func(name string) error {
-			deleted = true
-			return nil
-		},
+	mock := newMockDriver()
+	mock.getInstanceFunc = func(ctx context.Context, name string) (*provider.Instance, string, error) {
+		return &provider.Instance{StatusCode: 102}, "etag", nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		stopped = true
+		return nil
+	}
+	mock.deleteInstanceFunc = func(ctx context.Context, name string) error {
+		deleted = true
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -398,15 +335,14 @@ func TestDeleteContainer_Stopped(t *testing.T) {
 }
 
 func TestCreateContainer_ImageAlias(t *testing.T) {
-	var capturedReq api.InstancesPost
-	mock := &mockLXDClient{
-		createInstanceFunc: func(req api.InstancesPost) error {
-			capturedReq = req
-			return nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			return nil
-		},
+	var capturedReq provider.InstanceCreateRequest
+	mock := newMockDriver()
+	mock.createInstanceFunc = func(ctx context.Context, req provider.InstanceCreateRequest) error {
+		capturedReq = req
+		return nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -423,15 +359,14 @@ func TestCreateContainer_ImageAlias(t *testing.T) {
 }
 
 func TestCreateContainer_ImageFingerprint(t *testing.T) {
-	var capturedReq api.InstancesPost
-	mock := &mockLXDClient{
-		createInstanceFunc: func(req api.InstancesPost) error {
-			capturedReq = req
-			return nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			return nil
-		},
+	var capturedReq provider.InstanceCreateRequest
+	mock := newMockDriver()
+	mock.createInstanceFunc = func(ctx context.Context, req provider.InstanceCreateRequest) error {
+		capturedReq = req
+		return nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -449,15 +384,14 @@ func TestCreateContainer_ImageFingerprint(t *testing.T) {
 
 func TestCreateContainer_WithMounts(t *testing.T) {
 	dir := t.TempDir()
-	var capturedReq api.InstancesPost
-	mock := &mockLXDClient{
-		createInstanceFunc: func(req api.InstancesPost) error {
-			capturedReq = req
-			return nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			return nil
-		},
+	var capturedReq provider.InstanceCreateRequest
+	mock := newMockDriver()
+	mock.createInstanceFunc = func(ctx context.Context, req provider.InstanceCreateRequest) error {
+		capturedReq = req
+		return nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -474,7 +408,7 @@ func TestCreateContainer_WithMounts(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	devName := lxd.DeviceName("/mnt/data")
+	devName := common.DeviceName("/mnt/data")
 	dev, ok := capturedReq.Devices[devName]
 	if !ok {
 		t.Fatalf("expected device %q", devName)
@@ -495,7 +429,7 @@ func TestCreateContainer_WithMounts(t *testing.T) {
 		t.Error("expected recursive property to not be set for non-recursive mount")
 	}
 
-	recDevName := lxd.DeviceName("/mnt/recursive")
+	recDevName := common.DeviceName("/mnt/recursive")
 	recDev, ok := capturedReq.Devices[recDevName]
 	if !ok {
 		t.Fatalf("expected device %q", recDevName)
@@ -518,15 +452,14 @@ func TestCreateContainer_WithMounts(t *testing.T) {
 }
 
 func TestCreateContainer_WithNetwork(t *testing.T) {
-	var capturedReq api.InstancesPost
-	mock := &mockLXDClient{
-		createInstanceFunc: func(req api.InstancesPost) error {
-			capturedReq = req
-			return nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			return nil
-		},
+	var capturedReq provider.InstanceCreateRequest
+	mock := newMockDriver()
+	mock.createInstanceFunc = func(ctx context.Context, req provider.InstanceCreateRequest) error {
+		capturedReq = req
+		return nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -561,15 +494,14 @@ func TestCreateContainer_WithNetwork(t *testing.T) {
 func TestCreateContainer_DryRun(t *testing.T) {
 	created := false
 	started := false
-	mock := &mockLXDClient{
-		createInstanceFunc: func(req api.InstancesPost) error {
-			created = true
-			return nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			started = true
-			return nil
-		},
+	mock := newMockDriver()
+	mock.createInstanceFunc = func(ctx context.Context, req provider.InstanceCreateRequest) error {
+		created = true
+		return nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		started = true
+		return nil
 	}
 	m := NewManager(
 		mock,
@@ -590,15 +522,14 @@ func TestCreateContainer_DryRun(t *testing.T) {
 }
 
 func TestCreateContainer_CloudInitAndUser(t *testing.T) {
-	var capturedReq api.InstancesPost
-	mock := &mockLXDClient{
-		createInstanceFunc: func(req api.InstancesPost) error {
-			capturedReq = req
-			return nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			return nil
-		},
+	var capturedReq provider.InstanceCreateRequest
+	mock := newMockDriver()
+	mock.createInstanceFunc = func(ctx context.Context, req provider.InstanceCreateRequest) error {
+		capturedReq = req
+		return nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -623,18 +554,17 @@ func TestCreateContainer_CloudInitAndUser(t *testing.T) {
 func TestUpdateContainer_AddMount(t *testing.T) {
 	dir := t.TempDir()
 	updated := false
-	var capturedPut api.InstancePut
+	var capturedPut provider.InstanceUpdateRequest
 
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config:  map[string]string{"user.lxm.user": "ubuntu"},
 		Devices: map[string]map[string]string{},
 	}
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			capturedPut = put
-			return nil
-		},
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		capturedPut = put
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -655,7 +585,7 @@ func TestUpdateContainer_AddMount(t *testing.T) {
 		t.Error("expected update to be called")
 	}
 
-	devName := lxd.DeviceName("/mnt/data")
+	devName := common.DeviceName("/mnt/data")
 	dev, ok := capturedPut.Devices[devName]
 	if !ok {
 		t.Fatalf("expected device %q", devName)
@@ -668,9 +598,9 @@ func TestUpdateContainer_AddMount(t *testing.T) {
 func TestUpdateContainer_ModifyMountRecursive(t *testing.T) {
 	dir := t.TempDir()
 	updated := false
-	var capturedPut api.InstancePut
+	var capturedPut provider.InstanceUpdateRequest
 
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config: map[string]string{"user.lxm.user": "ubuntu"},
 		Devices: map[string]map[string]string{
 			"mount--mnt-data": {
@@ -681,12 +611,11 @@ func TestUpdateContainer_ModifyMountRecursive(t *testing.T) {
 			},
 		},
 	}
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			capturedPut = put
-			return nil
-		},
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		capturedPut = put
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -739,20 +668,19 @@ func TestUpdateContainer_ModifyMountRecursive(t *testing.T) {
 
 func TestUpdateContainer_RemoveOrphanedMount(t *testing.T) {
 	updated := false
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config: map[string]string{"user.lxm.user": "ubuntu"},
 		Devices: map[string]map[string]string{
 			"mount-old": {"type": "disk", "source": "/old", "path": "/old", "shift": "true"},
 		},
 	}
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			if _, exists := put.Devices["mount-old"]; exists {
-				t.Error("orphaned mount should have been removed")
-			}
-			return nil
-		},
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		if _, exists := put.Devices["mount-old"]; exists {
+			t.Error("orphaned mount should have been removed")
+		}
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -771,18 +699,17 @@ func TestUpdateContainer_RemoveOrphanedMount(t *testing.T) {
 
 func TestUpdateContainer_AddNetwork(t *testing.T) {
 	updated := false
-	var capturedPut api.InstancePut
+	var capturedPut provider.InstanceUpdateRequest
 
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config:  map[string]string{"user.lxm.user": "ubuntu"},
 		Devices: map[string]map[string]string{},
 	}
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			capturedPut = put
-			return nil
-		},
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		capturedPut = put
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -814,20 +741,19 @@ func TestUpdateContainer_AddNetwork(t *testing.T) {
 
 func TestUpdateContainer_RemoveOrphanedNetwork(t *testing.T) {
 	updated := false
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config: map[string]string{"user.lxm.user": "ubuntu"},
 		Devices: map[string]map[string]string{
 			"eth0": {"type": "nic", "parent": "lxdbr0", "user.lxm.managed": "true"},
 		},
 	}
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			if _, exists := put.Devices["eth0"]; exists {
-				t.Error("orphaned managed network should have been removed")
-			}
-			return nil
-		},
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		if _, exists := put.Devices["eth0"]; exists {
+			t.Error("orphaned managed network should have been removed")
+		}
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -846,18 +772,17 @@ func TestUpdateContainer_RemoveOrphanedNetwork(t *testing.T) {
 
 func TestUpdateContainer_CloudInitChange(t *testing.T) {
 	updated := false
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config:  map[string]string{"user.user-data": "old-data", "user.lxm.user": "ubuntu"},
 		Devices: map[string]map[string]string{},
 	}
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			if put.Config["user.user-data"] == "old-data" {
-				t.Error("expected cloud-init data to be updated")
-			}
-			return nil
-		},
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		if put.Config["user.user-data"] == "old-data" {
+			t.Error("expected cloud-init data to be updated")
+		}
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -881,15 +806,14 @@ func TestUpdateContainer_CloudInitChange(t *testing.T) {
 
 func TestUpdateContainer_DryRun(t *testing.T) {
 	updated := false
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config:  map[string]string{},
 		Devices: map[string]map[string]string{},
 	}
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			return nil
-		},
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		return nil
 	}
 	m := NewManager(
 		mock,
@@ -912,12 +836,11 @@ func TestUpdateContainer_DryRun(t *testing.T) {
 
 func TestUpdateContainer_NilConfigAndDevices(t *testing.T) {
 	updated := false
-	instance := &api.Instance{}
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			return nil
-		},
+	instance := &provider.Instance{}
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -934,18 +857,15 @@ func TestUpdateContainer_NilConfigAndDevices(t *testing.T) {
 	}
 }
 
-// LXD metadata tests
-
 func TestCreateContainer_SetsManagedFlag(t *testing.T) {
-	var capturedReq api.InstancesPost
-	mock := &mockLXDClient{
-		createInstanceFunc: func(req api.InstancesPost) error {
-			capturedReq = req
-			return nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			return nil
-		},
+	var capturedReq provider.InstanceCreateRequest
+	mock := newMockDriver()
+	mock.createInstanceFunc = func(ctx context.Context, req provider.InstanceCreateRequest) error {
+		capturedReq = req
+		return nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -959,15 +879,14 @@ func TestCreateContainer_SetsManagedFlag(t *testing.T) {
 }
 
 func TestCreateContainer_SetsGroups(t *testing.T) {
-	var capturedReq api.InstancesPost
-	mock := &mockLXDClient{
-		createInstanceFunc: func(req api.InstancesPost) error {
-			capturedReq = req
-			return nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			return nil
-		},
+	var capturedReq provider.InstanceCreateRequest
+	mock := newMockDriver()
+	mock.createInstanceFunc = func(ctx context.Context, req provider.InstanceCreateRequest) error {
+		capturedReq = req
+		return nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -986,15 +905,14 @@ func TestCreateContainer_SetsGroups(t *testing.T) {
 }
 
 func TestCreateContainer_NoGroups_NoGroupsKey(t *testing.T) {
-	var capturedReq api.InstancesPost
-	mock := &mockLXDClient{
-		createInstanceFunc: func(req api.InstancesPost) error {
-			capturedReq = req
-			return nil
-		},
-		updateInstanceStateFunc: func(name string, action string, force bool) error {
-			return nil
-		},
+	var capturedReq provider.InstanceCreateRequest
+	mock := newMockDriver()
+	mock.createInstanceFunc = func(ctx context.Context, req provider.InstanceCreateRequest) error {
+		capturedReq = req
+		return nil
+	}
+	mock.updateInstanceStateFunc = func(ctx context.Context, name string, action string, force bool) error {
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -1009,17 +927,16 @@ func TestCreateContainer_NoGroups_NoGroupsKey(t *testing.T) {
 
 func TestUpdateContainer_BackfillsManagedFlag(t *testing.T) {
 	updated := false
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config:  map[string]string{"user.lxm.user": "ubuntu"},
 		Devices: map[string]map[string]string{},
 	}
-	var capturedPut api.InstancePut
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			capturedPut = put
-			return nil
-		},
+	var capturedPut provider.InstanceUpdateRequest
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		capturedPut = put
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -1041,17 +958,16 @@ func TestUpdateContainer_BackfillsManagedFlag(t *testing.T) {
 
 func TestUpdateContainer_SyncsGroups_Add(t *testing.T) {
 	updated := false
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config:  map[string]string{"user.lxm.user": "ubuntu", "user.lxm.managed": "true"},
 		Devices: map[string]map[string]string{},
 	}
-	var capturedPut api.InstancePut
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			capturedPut = put
-			return nil
-		},
+	var capturedPut provider.InstanceUpdateRequest
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		capturedPut = put
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -1078,17 +994,16 @@ func TestUpdateContainer_SyncsGroups_Add(t *testing.T) {
 
 func TestUpdateContainer_SyncsGroups_Update(t *testing.T) {
 	updated := false
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config:  map[string]string{"user.lxm.user": "ubuntu", "user.lxm.managed": "true", "user.lxm.groups": "dev"},
 		Devices: map[string]map[string]string{},
 	}
-	var capturedPut api.InstancePut
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			capturedPut = put
-			return nil
-		},
+	var capturedPut provider.InstanceUpdateRequest
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		capturedPut = put
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -1115,17 +1030,16 @@ func TestUpdateContainer_SyncsGroups_Update(t *testing.T) {
 
 func TestUpdateContainer_SyncsGroups_Delete(t *testing.T) {
 	updated := false
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config:  map[string]string{"user.lxm.user": "ubuntu", "user.lxm.managed": "true", "user.lxm.groups": "dev"},
 		Devices: map[string]map[string]string{},
 	}
-	var capturedPut api.InstancePut
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			capturedPut = put
-			return nil
-		},
+	var capturedPut provider.InstanceUpdateRequest
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		capturedPut = put
+		return nil
 	}
 	m := newTestManager(mock)
 
@@ -1154,15 +1068,14 @@ func TestUpdateContainer_SyncsGroups_Idempotent(t *testing.T) {
 		Groups: []string{"dev", "gpu"},
 	}
 	cloudData, _ := conf.ResolveCloudInit("")
-	instance := &api.Instance{
+	instance := &provider.Instance{
 		Config:  map[string]string{"user.lxm.user": "ubuntu", "user.lxm.managed": "true", "user.lxm.groups": "dev,gpu", "user.user-data": cloudData},
 		Devices: map[string]map[string]string{},
 	}
-	mock := &mockLXDClient{
-		updateInstanceFunc: func(name string, put api.InstancePut, etag string) error {
-			updated = true
-			return nil
-		},
+	mock := newMockDriver()
+	mock.updateInstanceFunc = func(ctx context.Context, name string, put provider.InstanceUpdateRequest, etag string) error {
+		updated = true
+		return nil
 	}
 	m := newTestManager(mock)
 	changed, err := m.UpdateContainer(instance, "etag", conf, "")
@@ -1179,20 +1092,19 @@ func TestUpdateContainer_SyncsGroups_Idempotent(t *testing.T) {
 
 func TestManager_Shell(t *testing.T) {
 	interactiveCalled := false
-	mock := &mockLXDClient{
-		getInstanceFunc: func(name string) (*api.Instance, string, error) {
-			return &api.Instance{
-				Name:       "shellbox",
-				StatusCode: api.Running,
-				Config: map[string]string{
-					"user.lxm.user": "ubuntu",
-				},
-			}, "etag", nil
-		},
-		interactiveExecFunc: func(name string, cmd []string, uid uint32, env map[string]string) error {
-			interactiveCalled = true
-			return nil
-		},
+	mock := newMockDriver()
+	mock.getInstanceFunc = func(ctx context.Context, name string) (*provider.Instance, string, error) {
+		return &provider.Instance{
+			Name:       "shellbox",
+			StatusCode: 103,
+			Config: map[string]string{
+				"user.lxm.user": "ubuntu",
+			},
+		}, "etag", nil
+	}
+	mock.interactiveExecFunc = func(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) error {
+		interactiveCalled = true
+		return nil
 	}
 	t.Setenv("PATH", "")
 	mgr := newTestManager(mock)

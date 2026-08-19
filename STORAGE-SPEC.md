@@ -274,7 +274,7 @@ volumes, in any code path. Orphaned-volume cleanup is a future `lxm disk gc` con
 
 ### 7.6 External volume existence check
 `lxm plan` probes external volumes via the storage API; a missing volume is a plan-time error,
-exit 4 (`LXD_ERROR`):
+exit 4 (`PROVIDER_ERROR`):
 `external volume "<pool>/<source>" referenced by disk "<name>" of instance "<name>" does not exist`.
 A same-name volume with the **wrong content type** (e.g. a block volume adopted as filesystem) is
 detected at apply time (`VolumeOps` create-or-adopt, exit 4) rather than plan time — the content
@@ -335,7 +335,7 @@ type StorageService interface {
   the owning step — no envelope change.
 * Exit codes: manifest/policy violations ⇒ 3 (`CONFIG_ERROR`); missing external volume / missing
   disk extensions (`custom_block_volumes`, `disk_io_bus`, `disk_io_bus_virtio_blk`) / API errors ⇒ 4
-  (`LXD_ERROR`). No new codes.
+  (`PROVIDER_ERROR`). No new codes.
 
 ---
 

@@ -7,7 +7,7 @@ import (
 	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/network"
 	"github.com/aiyor/lxm/internal/plan"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
 )
 
 func TestPlan_DiskStatusAbsent_EmitsDeleteVolumeOp(t *testing.T) {
@@ -35,7 +35,7 @@ func TestPlan_DiskStatusAbsent_EmitsDeleteVolumeOp(t *testing.T) {
 		},
 	}
 
-	volumes := map[string]map[string]*api.StorageVolume{
+	volumes := map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"vm1-scratch": {
 				Name:        "vm1-scratch",
@@ -102,7 +102,7 @@ func TestPlan_DiskStatusAbsent_ExternalDisk_DetachesOnly(t *testing.T) {
 		},
 	}
 
-	volumes := map[string]map[string]*api.StorageVolume{
+	volumes := map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"external-vol-1": {Name: "external-vol-1", Pool: "default", Type: "custom", ContentType: "filesystem"},
 		},
@@ -151,7 +151,7 @@ func TestPlan_DiskAttachFalse_DetachesWithoutDeleting(t *testing.T) {
 		},
 	}
 
-	volumes := map[string]map[string]*api.StorageVolume{
+	volumes := map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"vm1-data": {
 				Name:        "vm1-data",
@@ -207,14 +207,14 @@ func TestPlan_VSwitchStatusAbsent_EmitsDeleteStep(t *testing.T) {
 	}
 
 	live := &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"legacybr0": {
 				Name:    "legacybr0",
 				Managed: true,
 				Config:  map[string]string{"user.lxm.managed": "true"},
 			},
 		},
-		ACLs: map[string]*api.NetworkACL{
+		ACLs: map[string]*provider.NetworkACL{
 			"lxm-legacybr0": {
 				Name:   "lxm-legacybr0",
 				Config: map[string]string{"user.lxm.managed": "true"},
@@ -302,7 +302,7 @@ func TestPlan_DiskStatusAbsent_ExternalVolumeWithDerivedName_NotDeleted(t *testi
 		},
 	}
 
-	volumes := map[string]map[string]*api.StorageVolume{
+	volumes := map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"vm1-scratch": {
 				Name:        "vm1-scratch",
@@ -363,7 +363,7 @@ func TestPlan_DiskStatusAbsent_UnmarkedManagedVolume_EmitsWarning(t *testing.T) 
 		},
 	}
 
-	volumes := map[string]map[string]*api.StorageVolume{
+	volumes := map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"vm1-scratch": {
 				Name:        "vm1-scratch",
@@ -421,7 +421,7 @@ func TestPlan_VSwitchStatusAbsent_LiveNetworkInUse_FailsPlan(t *testing.T) {
 	}
 
 	live := &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"legacybr0": {
 				Name:    "legacybr0",
 				Managed: true,
@@ -469,7 +469,7 @@ func TestPlan_DiskAttach_Reattach_VM_HotplugNoRestart(t *testing.T) {
 		},
 	}
 
-	volumes := map[string]map[string]*api.StorageVolume{
+	volumes := map[string]map[string]*provider.StorageVolume{
 		"default": {
 			"vm1-data": {
 				Name:        "vm1-data",

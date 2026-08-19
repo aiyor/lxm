@@ -25,6 +25,25 @@ import (
 // Simplestreams image remote name (the remote part of image: remote:alias)
 #ImageRemoteName: =~"^[a-zA-Z0-9_\\.\\-]+$"
 
+// Provider type: Incus, LXD, or auto-detection
+#ProviderType: "incus" | "lxd" | "auto"
+
+// Remote name charset
+#RemoteName: =~"^[a-zA-Z0-9_\\.\\-]+$"
+#RemoteNameInvalid: !~"^[a-zA-Z0-9_\\.\\-]+$"
+
+// Project and Target charsets
+#ProjectName: =~"^[a-zA-Z0-9_\\.\\-]+$"
+#ClusterTarget: =~"^[a-zA-Z0-9_\\.\\-]+$"
+
+#RemoteObjAuthoring: close({
+	address:   string
+	provider?: #ProviderType
+	project?:  #ProjectName
+	insecure?: bool
+	protocol?: "https" | "unix"
+})
+
 // #ImageRemoteNameInvalid rejects keys that do not fully match #ImageRemoteName.
 // It is needed because a map carrying only a positive key-pattern constraint is
 // NOT enforced when the struct is wrapped in close() (a CUE quirk); pairing the
@@ -195,6 +214,15 @@ import (
 	status?: "present" | "absent" | *"present"
 	state?:  "running" | "stopped" // explicit power state; overrides status-derived default (F2)
 
+	provider?: #ProviderType
+	remote?:   #RemoteName
+	target?:   #ClusterTarget
+	project?:  #ProjectName
+	remotes?: {
+		[#RemoteName]: #RemoteObjAuthoring
+		[#RemoteNameInvalid]: _|_
+	}
+
 	limits?: #LimitsAuthoring
 	vm?:     #VMConfigAuthoring
 
@@ -288,6 +316,15 @@ import (
 	user:   string & strings.MinRunes(1)
 	status: "present" | "absent"
 	state?: "running" | "stopped" // Go normalizer default "running"; state with status: absent is a Go ValidatePostMerge error (F2)
+
+	provider?: #ProviderType
+	remote?:   #RemoteName
+	target?:   #ClusterTarget
+	project?:  #ProjectName
+	remotes?: {
+		[#RemoteName]: #RemoteObjAuthoring
+		[#RemoteNameInvalid]: _|_
+	}
 
 	limits?: #LimitsResolved
 	vm?:     #VMConfigResolved

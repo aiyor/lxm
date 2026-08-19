@@ -60,7 +60,7 @@ func TestExitCodeToErrorCode_Catalog(t *testing.T) {
 		{1, "INTERNAL_ERROR"},
 		{2, "USAGE_ERROR"},
 		{3, "CONFIG_ERROR"},
-		{4, "LXD_ERROR"},
+		{4, "PROVIDER_ERROR"},
 		{5, "TARGET_NOT_FOUND"},
 		{6, "EXEC_FAILED"},
 		{7, "WAIT_TIMEOUT"},

@@ -15,6 +15,19 @@ type VSwitch struct {
 	File   string     // manifest file that declared it (conflict attribution)
 }
 
+// EffectiveType returns the vswitch type (default "bridge").
+func (v *VSwitch) EffectiveType() string {
+	if v.Type == "" {
+		return "bridge"
+	}
+	return v.Type
+}
+
+// EffectiveParent returns the uplink parent network for OVN (or empty for bridge).
+func (v *VSwitch) EffectiveParent() string {
+	return v.Parent
+}
+
 // EffectiveDriver returns the bridge.driver value (default "native").
 func (v *VSwitch) EffectiveDriver() string {
 	if v.Driver == "" {

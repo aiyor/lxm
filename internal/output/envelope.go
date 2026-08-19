@@ -83,7 +83,7 @@ func ExitCodeToErrorCode(code int) string {
 	case 3:
 		return "CONFIG_ERROR"
 	case 4:
-		return "LXD_ERROR"
+		return "PROVIDER_ERROR"
 	case 5:
 		return "TARGET_NOT_FOUND"
 	case 6:

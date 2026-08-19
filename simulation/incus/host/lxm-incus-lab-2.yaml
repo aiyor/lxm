@@ -1,0 +1,24 @@
+schema: lxm/config/v2
+name: lxm-incus-lab-2
+type: virtual-machine
+status: present
+image: ubuntu:24.04
+user: ubuntu
+vm:
+  boot_mode: uefi-nosecureboot
+limits:
+  cpu: 2
+  memory: 4GiB
+  disk: 20GiB
+wait:
+  agent: 5m
+  cloud_init: 10m
+networks:
+  - name: eth0
+    parent: lxdbr0
+    ipv4: 10.171.13.51
+mounts:
+  - source: /mnt/devel/tools/lxm
+    path: /opt/lxm-src
+    readonly: true
+# Note: recipes omitted here; join script is executed dynamically by 'make cluster-2node'

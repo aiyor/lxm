@@ -13,7 +13,7 @@ func (m *Manager) Shell(containerName string, user string) error {
 
 func (m *Manager) ShellContext(ctx context.Context, containerName string, user string) error {
 	if user == "" {
-		instance, _, err := m.client.GetInstance(containerName)
+		instance, _, err := m.client.GetInstance(ctx, containerName)
 		if err != nil {
 			return fmt.Errorf("failed to get container info for %q: %w", containerName, err)
 		}
@@ -27,10 +27,9 @@ func (m *Manager) ShellContext(ctx context.Context, containerName string, user s
 
 	m.logger.Info("Opening interactive shell", "name", containerName, "user", user)
 
-	// Bulletproof way: if the official 'lxc' CLI is available, delegate to it.
-	// It has the most robust terminal emulation and signal handling.
+	// If the official CLI is available, we can delegate or use driver InteractiveExecInstance
 	if lxcPath, err := exec.LookPath("lxc"); err == nil {
-		m.logger.Debug("Delegating to native lxc for optimal TUI experience")
+		m.logger.Debug("Delegating to native CLI for optimal TUI experience")
 		cmd := exec.CommandContext(ctx, lxcPath, "exec", containerName, "--", "su", "-l", user)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
@@ -38,7 +37,7 @@ func (m *Manager) ShellContext(ctx context.Context, containerName string, user s
 		return cmd.Run()
 	}
 
-	uenv, err := m.client.ResolveUserEnv(containerName, user)
+	uenv, err := m.client.ResolveUserEnv(ctx, containerName, user)
 	if err != nil {
 		return fmt.Errorf("resolving user %q environment: %w", user, err)
 	}
@@ -46,5 +45,5 @@ func (m *Manager) ShellContext(ctx context.Context, containerName string, user s
 	env := uenv.DefaultEnv()
 
 	cmd := []string{uenv.Shell, "-l"}
-	return m.client.InteractiveExecInstance(containerName, cmd, uenv.UID, env)
+	return m.client.InteractiveExecInstance(ctx, containerName, cmd, uenv.UID, env)
 }

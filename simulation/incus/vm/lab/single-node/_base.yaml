@@ -1,0 +1,21 @@
+schema: lxm/config/v2
+base: true
+provider: incus
+image: images:debian/12/cloud
+user: debian
+wait:
+  agent: 1m
+
+vswitches:
+  - name: incus-vmbr0
+    ipv4: 10.30.0.1/24
+    group: vms
+  - name: incus-cbr0
+    ipv4: 10.40.0.1/24
+    group: containers
+
+network_policy:
+  allow:
+    - from: containers
+      to: vms
+      direction: egress

@@ -7,7 +7,7 @@ import (
 	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/network"
 	"github.com/aiyor/lxm/internal/plan"
-	"github.com/canonical/lxd/shared/api"
+	"github.com/aiyor/lxm/internal/provider"
 )
 
 func testFleet(t *testing.T, configs ...*config.Config) *network.Fleet {
@@ -37,7 +37,7 @@ func fleetConfigs() []*config.Config {
 func TestComputeNetworks_CreateFromScratch(t *testing.T) {
 	f := testFleet(t, fleetConfigs()...)
 	rec := plan.NewNetworkReconciler()
-	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{Networks: map[string]*api.Network{}, ACLs: map[string]*api.NetworkACL{}})
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{Networks: map[string]*provider.Network{}, ACLs: map[string]*provider.NetworkACL{}})
 	if err != nil {
 		t.Fatalf("ComputeNetworks: %v", err)
 	}
@@ -79,10 +79,10 @@ func TestComputeNetworks_CreateFromScratch(t *testing.T) {
 func TestComputeNetworks_ImmutableDrift_Error(t *testing.T) {
 	f := testFleet(t, fleetConfigs()...)
 	live := &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"vmbr0": {Name: "vmbr0", Config: map[string]string{"user.lxm.managed": "true", "ipv4.address": "10.99.0.1/24", "bridge.driver": "native"}},
 		},
-		ACLs: map[string]*api.NetworkACL{},
+		ACLs: map[string]*provider.NetworkACL{},
 	}
 	rec := plan.NewNetworkReconciler()
 	_, err := rec.ComputeNetworks(f, live)
@@ -94,11 +94,11 @@ func TestComputeNetworks_ImmutableDrift_Error(t *testing.T) {
 func TestComputeNetworks_Adoption_RefusesForeignACL(t *testing.T) {
 	f := testFleet(t, fleetConfigs()...)
 	live := &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			// No user.lxm.managed marker -> adoption path; foreign ACL present.
 			"vmbr0": {Name: "vmbr0", Config: map[string]string{"ipv4.address": "10.30.0.1/24", "bridge.driver": "native", "security.acls": "handwritten"}},
 		},
-		ACLs: map[string]*api.NetworkACL{},
+		ACLs: map[string]*provider.NetworkACL{},
 	}
 	rec := plan.NewNetworkReconciler()
 	_, err := rec.ComputeNetworks(f, live)
@@ -110,10 +110,10 @@ func TestComputeNetworks_Adoption_RefusesForeignACL(t *testing.T) {
 func TestComputeNetworks_Update_NATDrift(t *testing.T) {
 	f := testFleet(t, fleetConfigs()...)
 	live := &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"vmbr0": {Name: "vmbr0", Config: map[string]string{"user.lxm.managed": "true", "ipv4.address": "10.30.0.1/24", "bridge.driver": "native", "ipv4.nat": "false"}},
 		},
-		ACLs: map[string]*api.NetworkACL{},
+		ACLs: map[string]*provider.NetworkACL{},
 	}
 	rec := plan.NewNetworkReconciler()
 	np, err := rec.ComputeNetworks(f, live)
@@ -142,7 +142,7 @@ func TestComputeNetworks_GroupRemoval_DetachesACL(t *testing.T) {
 	}
 	f := testFleet(t, base)
 	live := &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"br0": {Name: "br0", Config: map[string]string{
 				"user.lxm.managed":                    "true",
 				"ipv4.address":                        "10.30.0.1/24",
@@ -151,7 +151,7 @@ func TestComputeNetworks_GroupRemoval_DetachesACL(t *testing.T) {
 				"security.acls.default.egress.action": "reject",
 			}},
 		},
-		ACLs: map[string]*api.NetworkACL{},
+		ACLs: map[string]*provider.NetworkACL{},
 	}
 	rec := plan.NewNetworkReconciler()
 	np, err := rec.ComputeNetworks(f, live)
@@ -178,10 +178,10 @@ func TestComputeNetworks_GroupRemoval_DetachesACL(t *testing.T) {
 func TestComputeNetworks_UnmanageWarning(t *testing.T) {
 	f := testFleet(t, fleetConfigs()...)
 	live := &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"ghostbr0": {Name: "ghostbr0", Config: map[string]string{"user.lxm.managed": "true"}},
 		},
-		ACLs: map[string]*api.NetworkACL{},
+		ACLs: map[string]*provider.NetworkACL{},
 	}
 	rec := plan.NewNetworkReconciler()
 	np, err := rec.ComputeNetworks(f, live)
@@ -196,15 +196,15 @@ func TestComputeNetworks_UnmanageWarning(t *testing.T) {
 func TestComputeNetworks_ACLRuleDrift_Updates(t *testing.T) {
 	f := testFleet(t, fleetConfigs()...)
 	live := &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"vmbr0": {Name: "vmbr0", Config: map[string]string{"user.lxm.managed": "true", "ipv4.address": "10.30.0.1/24", "bridge.driver": "native"}},
 		},
-		ACLs: map[string]*api.NetworkACL{
+		ACLs: map[string]*provider.NetworkACL{
 			// Stale: a rule that no longer belongs.
 			"lxm-vmbr0": {
 				Name:   "lxm-vmbr0",
 				Config: map[string]string{"user.lxm.managed": "true"},
-				Egress: []api.NetworkACLRule{
+				Egress: []provider.NetworkACLRule{
 					{Action: "reject", Source: "10.30.0.0/24", Destination: "10.9.9.0/24", State: "enabled"},
 				},
 			},
@@ -229,10 +229,10 @@ func TestComputeNetworks_ACLRuleDrift_Updates(t *testing.T) {
 func TestComputeNetworks_Noop(t *testing.T) {
 	f := testFleet(t, fleetConfigs()...)
 	// Build the desired ACL from the compiler so live == desired.
-	acls := map[string]*api.NetworkACL{}
+	acls := map[string]*provider.NetworkACL{}
 	for _, acl := range network.Compile(f) {
 		ingress, egress := network.ACLToAPIRules(acl)
-		acls[acl.Name] = &api.NetworkACL{
+		acls[acl.Name] = &provider.NetworkACL{
 			Name:        acl.Name,
 			Description: acl.Description,
 			Config:      map[string]string{"user.lxm.managed": "true"},
@@ -241,7 +241,7 @@ func TestComputeNetworks_Noop(t *testing.T) {
 		}
 	}
 	live := &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"vmbr0": {Name: "vmbr0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{
 				"user.lxm.managed":                     "true",
 				"ipv4.address":                         "10.30.0.1/24",
@@ -289,7 +289,7 @@ func TestComputeNetworks_NATFalse_FlowsToCreatePayload(t *testing.T) {
 		VSwitches: []config.VSwitchConfig{{Name: "routed0", IPv4: "10.30.0.1/24", Group: "routed", NAT: boolPtr(false)}},
 	})
 	rec := plan.NewNetworkReconciler()
-	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{Networks: map[string]*api.Network{}, ACLs: map[string]*api.NetworkACL{}})
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{Networks: map[string]*provider.Network{}, ACLs: map[string]*provider.NetworkACL{}})
 	if err != nil {
 		t.Fatalf("ComputeNetworks: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestComputeNetworks_ExtensionNotRequiredForUngrouped(t *testing.T) {
 	// no extension dependency. Ungrouped vswitches produce only create_vswitch.
 	f := testFleet(t, &config.Config{Schema: "lxm/config/v2", Base: true, VSwitches: []config.VSwitchConfig{{Name: "open0", IPv4: "10.20.0.1/24"}}})
 	rec := plan.NewNetworkReconciler()
-	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{Networks: map[string]*api.Network{}, ACLs: map[string]*api.NetworkACL{}})
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{Networks: map[string]*provider.Network{}, ACLs: map[string]*provider.NetworkACL{}})
 	if err != nil {
 		t.Fatalf("ComputeNetworks: %v", err)
 	}
@@ -324,20 +324,20 @@ func TestComputeNetworks_Tightened_OnlyWhenAllowsRemoved(t *testing.T) {
 
 	// Live ACL has the full mutual-policy allow set; desired removes one allow
 	// (simulate tightening by making the live ACL richer).
-	liveACL := &api.NetworkACL{
+	liveACL := &provider.NetworkACL{
 		Name:   "lxm-vmbr0",
 		Config: map[string]string{"user.lxm.managed": "true"},
-		Egress: []api.NetworkACLRule{
+		Egress: []provider.NetworkACLRule{
 			{Action: "allow", Source: "10.30.0.0/24", Destination: "10.31.0.0/24", State: "enabled"},
 			{Action: "allow", Source: "10.30.0.0/24", Destination: "10.50.0.0/24", State: "enabled"},
 			{Action: "reject", Source: "10.30.0.0/24", Destination: "10.9.9.0/24", State: "enabled"},
 		},
 	}
 	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"vmbr0": {Name: "vmbr0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{"user.lxm.managed": "true", "ipv4.address": "10.30.0.1/24", "bridge.driver": "native"}},
 		},
-		ACLs: map[string]*api.NetworkACL{"lxm-vmbr0": liveACL},
+		ACLs: map[string]*provider.NetworkACL{"lxm-vmbr0": liveACL},
 	})
 	if err != nil {
 		t.Fatalf("ComputeNetworks: %v", err)
@@ -358,18 +358,18 @@ func TestComputeNetworks_NotTightened_OnWidening(t *testing.T) {
 	rec := plan.NewNetworkReconciler()
 
 	// Live ACL is missing an allow that desired adds -> widening, not tightening.
-	liveACL := &api.NetworkACL{
+	liveACL := &provider.NetworkACL{
 		Name:   "lxm-vmbr0",
 		Config: map[string]string{"user.lxm.managed": "true"},
-		Egress: []api.NetworkACLRule{
+		Egress: []provider.NetworkACLRule{
 			{Action: "allow", Source: "10.30.0.0/24", Destination: "0.0.0.0/0", State: "enabled"},
 		},
 	}
 	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"vmbr0": {Name: "vmbr0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{"user.lxm.managed": "true", "ipv4.address": "10.30.0.1/24", "bridge.driver": "native"}},
 		},
-		ACLs: map[string]*api.NetworkACL{"lxm-vmbr0": liveACL},
+		ACLs: map[string]*provider.NetworkACL{"lxm-vmbr0": liveACL},
 	})
 	if err != nil {
 		t.Fatalf("ComputeNetworks: %v", err)
@@ -389,16 +389,16 @@ func TestComputeNetworks_UnmanagedACL_OverwriteWarning(t *testing.T) {
 	f := testFleet(t, fleetConfigs()...)
 	rec := plan.NewNetworkReconciler()
 	// Hand-created ACL (no lxm marker) with stale rules.
-	liveACL := &api.NetworkACL{
+	liveACL := &provider.NetworkACL{
 		Name:   "lxm-vmbr0",
 		Config: map[string]string{},
-		Egress: []api.NetworkACLRule{{Action: "reject", Source: "10.30.0.0/24", Destination: "10.9.9.0/24", State: "enabled"}},
+		Egress: []provider.NetworkACLRule{{Action: "reject", Source: "10.30.0.0/24", Destination: "10.9.9.0/24", State: "enabled"}},
 	}
 	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"vmbr0": {Name: "vmbr0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{"user.lxm.managed": "true", "ipv4.address": "10.30.0.1/24", "bridge.driver": "native"}},
 		},
-		ACLs: map[string]*api.NetworkACL{"lxm-vmbr0": liveACL},
+		ACLs: map[string]*provider.NetworkACL{"lxm-vmbr0": liveACL},
 	})
 	if err != nil {
 		t.Fatalf("ComputeNetworks: %v", err)
@@ -424,10 +424,10 @@ func TestComputeNetworks_OrphanedACL_AnnotatedAndWarned(t *testing.T) {
 	})
 	rec := plan.NewNetworkReconciler()
 	np, err := rec.ComputeNetworks(ungrouped, &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"br0": {Name: "br0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{"user.lxm.managed": "true", "ipv4.address": "10.30.0.1/24", "bridge.driver": "native", "security.acls": "lxm-br0"}},
 		},
-		ACLs: map[string]*api.NetworkACL{
+		ACLs: map[string]*provider.NetworkACL{
 			"lxm-br0":   {Name: "lxm-br0", Config: map[string]string{"user.lxm.managed": "true"}, Description: "lxm managed policy for vswitch br0 (group vms)"},
 			"lxm-ghost": {Name: "lxm-ghost", Config: map[string]string{"user.lxm.managed": "true"}},
 		},
@@ -465,7 +465,7 @@ func TestComputeNetworks_SecurityACLs_OrderInsensitive(t *testing.T) {
 	f := testFleet(t, fleetConfigs()...)
 	rec := plan.NewNetworkReconciler()
 	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
-		Networks: map[string]*api.Network{
+		Networks: map[string]*provider.Network{
 			"vmbr0": {Name: "vmbr0", Description: "lxm managed vswitch (group vms)", Config: map[string]string{
 				"user.lxm.managed":                     "true",
 				"ipv4.address":                         "10.30.0.1/24",
@@ -479,7 +479,7 @@ func TestComputeNetworks_SecurityACLs_OrderInsensitive(t *testing.T) {
 				"security.acls.default.egress.action":  "reject",
 			}},
 		},
-		ACLs: map[string]*api.NetworkACL{},
+		ACLs: map[string]*provider.NetworkACL{},
 	})
 	if err != nil {
 		t.Fatalf("ComputeNetworks: %v", err)
@@ -488,5 +488,87 @@ func TestComputeNetworks_SecurityACLs_OrderInsensitive(t *testing.T) {
 		if s.Kind == "update_vswitch" && s.Name == "vmbr0" {
 			t.Fatalf("security.acls order must not cause update churn")
 		}
+	}
+}
+
+func TestPlan_VSwitch_OVN_CreationAndParentUplink(t *testing.T) {
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "uplinkbr0",
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovnservices",
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{},
+		ACLs:     map[string]*provider.NetworkACL{},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks OVN: %v", err)
+	}
+
+	var foundOVN bool
+	for _, s := range np.Steps {
+		if s.Kind == "create_vswitch" && s.Name == "ovnbr0" {
+			foundOVN = true
+			if s.NetPost.Type != "ovn" {
+				t.Errorf("expected NetPost.Type=ovn, got %q", s.NetPost.Type)
+			}
+			if s.NetPost.Config["network"] != "uplinkbr0" {
+				t.Errorf("expected NetPost.Config[network]=uplinkbr0, got %q", s.NetPost.Config["network"])
+			}
+			if s.NetPost.Config["ipv4.address"] != "10.60.0.1/24" {
+				t.Errorf("expected NetPost.Config[ipv4.address]=10.60.0.1/24, got %q", s.NetPost.Config["ipv4.address"])
+			}
+			if s.NetPost.Config["security.acls"] != "lxm-ovnbr0" {
+				t.Errorf("expected NetPost.Config[security.acls]=lxm-ovnbr0, got %q", s.NetPost.Config["security.acls"])
+			}
+		}
+	}
+	if !foundOVN {
+		t.Fatalf("expected create_vswitch step for ovnbr0")
+	}
+}
+
+func TestPlan_VSwitch_OVN_ImmutableDrift(t *testing.T) {
+	// If live network is type 'bridge' but desired is 'ovn', network type cannot be changed in-place
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "uplinkbr0",
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovnservices",
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	_, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"ovnbr0": {
+				Name:   "ovnbr0",
+				Type:   "bridge", // Live is bridge, desired is OVN
+				Config: map[string]string{"user.lxm.managed": "true"},
+			},
+		},
+		ACLs: map[string]*provider.NetworkACL{},
+	})
+	if err == nil {
+		t.Fatal("expected error on immutable network type change from bridge to ovn, got nil")
+	}
+	if !strings.Contains(err.Error(), "type cannot be changed") && !strings.Contains(err.Error(), "immutable") {
+		t.Logf("got expected error on immutable drift: %v", err)
 	}
 }

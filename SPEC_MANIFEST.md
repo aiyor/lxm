@@ -59,9 +59,32 @@ vm:
 ```
 
 ### 3.4 Presence-Wins Scalar Merging
-Scalar fields (e.g. `user`, `image`, `profiles`, `state`, `type`) merge according to node-level presence:
+Scalar fields (e.g. `user`, `image`, `profiles`, `state`, `type`, `provider`, `remote`, `target`, `project`) merge according to node-level presence:
 * **Omitted Field**: Inherits the base manifest value.
 * **Explicitly Set Field**: Overrides the base manifest value, even when set to an explicit zero value (e.g. `user: ""` explicitly clears an inherited user).
+
+### 3.5 Provider & Remote Targeting (`provider`, `remote`, `target`, `project`, `remotes`)
+`lxm` supports multi-provider execution (Incus 7.x and LXD), cluster node placement, and remote mTLS management:
+```yaml
+schema: lxm/config/v2
+name: web-frontend
+type: container
+image: images:ubuntu/24.04
+
+# Provider & Remote Routing
+provider: incus       # "incus" | "lxd" | "auto" (default: auto-detected)
+remote: lab-node1     # Target remote name declared in remotes.yaml or manifest
+target: incus-node2   # Cluster member node for instance placement
+project: production   # Incus/LXD project isolation boundary (default: "default")
+
+# Manifest-Declared Remotes (Optional fleet-scoped endpoint definitions)
+remotes:
+  lab-node1:
+    address: https://10.171.13.50:8443
+    provider: incus
+    project: production
+    insecure: false
+```
 
 ### 3.5 Network Schema (`#NetworkObj`)
 Network interfaces are declared using the `#NetworkObj` schema:
