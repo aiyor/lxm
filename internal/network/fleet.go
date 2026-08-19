@@ -89,12 +89,27 @@ func vswitchEqual(a, b config.VSwitchConfig) bool {
 	}
 	return a.Name == b.Name &&
 		a.Type == b.Type &&
+		a.Parent == b.Parent &&
 		a.Driver == b.Driver &&
 		a.IPv4 == b.IPv4 &&
 		a.IPv6 == b.IPv6 &&
 		boolVal(a.NAT) == boolVal(b.NAT) &&
 		a.Group == b.Group &&
-		boolVal(a.Internet) == boolVal(b.Internet)
+		boolVal(a.Internet) == boolVal(b.Internet) &&
+		a.MTU == b.MTU &&
+		configMapsEqual(a.Config, b.Config)
+}
+
+func configMapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // boolVal reports the effective value of an optional bool, treating a nil

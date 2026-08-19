@@ -28,6 +28,19 @@ func (conf *Config) validateVSwitches() error {
 			return err
 		}
 
+		if vs.Type == "ovn" {
+			if vs.Parent == "" {
+				return fmt.Errorf("vswitch %q: parent uplink network is required for type: ovn", vs.Name)
+			}
+			if vs.Driver != "" {
+				return fmt.Errorf("vswitch %q: driver is not supported on type: ovn (driver is bridge-only)", vs.Name)
+			}
+		}
+
+		if vs.MTU != 0 && (vs.MTU < 576 || vs.MTU > 65535) {
+			return fmt.Errorf("vswitch %q: mtu %d is out of range [576, 65535]", vs.Name, vs.MTU)
+		}
+
 		if vs.Group == "" && vs.Internet != nil && !*vs.Internet {
 			return fmt.Errorf("vswitch %q: internet: false requires a group (ungrouped vswitches are not policy-managed)", vs.Name)
 		}

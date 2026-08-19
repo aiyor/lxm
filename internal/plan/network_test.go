@@ -568,7 +568,96 @@ func TestPlan_VSwitch_OVN_ImmutableDrift(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on immutable network type change from bridge to ovn, got nil")
 	}
-	if !strings.Contains(err.Error(), "type cannot be changed") && !strings.Contains(err.Error(), "immutable") {
-		t.Logf("got expected error on immutable drift: %v", err)
+	if !strings.Contains(err.Error(), "type change") && !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestPlan_VSwitch_OVN_ParentDrift_Error(t *testing.T) {
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "uplinkbr1", // Desired parent changed
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovnservices",
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	_, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"ovnbr0": {
+				Name: "ovnbr0",
+				Type: "ovn",
+				Config: map[string]string{
+					"user.lxm.managed": "true",
+					"network":          "uplinkbr0", // Live parent
+					"ipv4.address":     "10.60.0.1/24",
+				},
+			},
+		},
+		ACLs: map[string]*provider.NetworkACL{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "uplink parent change") {
+		t.Fatalf("expected immutable uplink parent drift error, got: %v", err)
+	}
+}
+
+func TestPlan_VSwitch_OVN_MTU_Update(t *testing.T) {
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "uplinkbr0",
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovnservices",
+				MTU:    1400,
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"ovnbr0": {
+				Name:        "ovnbr0",
+				Type:        "ovn",
+				Description: "lxm managed vswitch (group ovnservices)",
+				Config: map[string]string{
+					"user.lxm.managed": "true",
+					"network":          "uplinkbr0",
+					"ipv4.address":     "10.60.0.1/24",
+					"bridge.mtu":       "1442", // Live MTU
+					"security.acls":    "lxm-ovnbr0",
+				},
+			},
+		},
+		ACLs: map[string]*provider.NetworkACL{
+			"lxm-ovnbr0": {Name: "lxm-ovnbr0"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+
+	var foundUpdate bool
+	for _, s := range np.Steps {
+		if s.Kind == "update_vswitch" && s.Name == "ovnbr0" {
+			foundUpdate = true
+			if s.NetPut.Config["bridge.mtu"] != "1400" {
+				t.Errorf("expected updated bridge.mtu=1400, got %q", s.NetPut.Config["bridge.mtu"])
+			}
+		}
+	}
+	if !foundUpdate {
+		t.Fatalf("expected update_vswitch step for MTU change: %+v", np.Steps)
 	}
 }

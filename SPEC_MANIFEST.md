@@ -103,29 +103,40 @@ Fields allowed: `name` (required string), `ipv4` (optional IPv4 address string),
 > generator matrix, CIDR decomposition, reconciliation/execution model, and verification — lives in
 > [`NETWORK-SPEC.md`](NETWORK-SPEC.md). Keep the two schema tables in sync when either changes.
 
-`vswitches:` declares LXD managed bridges that lxm creates and owns. It is **fleet-scoped**: the
+`vswitches:` declares provider managed virtual switches (Linux bridges or OVN overlay networks) that lxm creates and owns. It is **fleet-scoped**: the
 union of every loaded manifest's `vswitches:` is compiled (identical duplicates dedup; conflicting
 specs exit 3 citing both files). Usually declared in a `_base.yaml` and inherited via `include`.
 
 ```yaml
 vswitches:
   - name: vmbr0
+    type: bridge
     ipv4: 10.30.0.1/24
     group: vms
+
+  - name: ovnbr0
+    type: ovn
+    parent: lxdbr0
+    ipv4: 10.60.0.1/24
+    group: ovnservices
+    mtu: 1442
 ```
 
 | Field | Type | Default | Rules |
 | :-- | :-- | :-- | :-- |
 | `name` | string | — (required) | `=~"^[a-z][a-z0-9-]{0,30}$"`. |
-| `type` | string | `"bridge"` | v1 lock: only `"bridge"`. |
-| `driver` | string | `"native"` | `"native" \| "openvswitch"`; immutable after create (exit 3). |
-| `ipv4` | string | — (required) | CIDR whose address is the **first usable host** (network `.1`); prefix `/8`–`/29` (Go-validated). |
+| `type` | string | `"bridge"` | `"bridge"` \| `"ovn"`. `"bridge"` creates a local Linux bridge; `"ovn"` creates an Open Virtual Network overlay switch across cluster nodes. Immutable after create (exit 3). |
+| `parent` | string | — | Uplink parent network (e.g. `lxdbr0` / `incusbr0`). Required on `type: ovn`; forbidden on `type: bridge`. Immutable after create (exit 3). |
+| `driver` | string | `"native"` | `"native" \| "openvswitch"`; bridge-only (forbidden on `type: ovn`); immutable after create (exit 3). |
+| `ipv4` | string | — (required) | CIDR whose address is the **first usable host** (network `.1`); prefix `/8`–`/29` (Go-validated). Immutable after create (exit 3). |
 | `ipv6` | string | `"none"` | v1 lock: only `"none"`. |
 | `nat` | bool | `true` | → `ipv4.nat`. |
 | `group` | string | — | Group membership; absence ⇒ managed for addressing only (no ACLs). |
 | `internet` | bool | `true` | Only meaningful with `group`. |
+| `mtu` | int | — | Optional MTU override (maps to `bridge.mtu` on OVN; must be ∈ [576, 65535]). |
+| `config` | map[string]string | — | Optional backend-specific passthrough options (managed keys take strict precedence). |
 
-An ungrouped vswitch gets no ACLs (stock LXD routing). Removing `group` detaches the ACL; removing
+An ungrouped vswitch gets no ACLs (stock routing). Removing `group` detaches the ACL; removing
 the vswitch stops managing it (lxm never deletes networks).
 
 ### 3.7 Network Policy (`network_policy` / fleet-scoped)

@@ -323,18 +323,25 @@ loaded manifests are deduplicated, and conflicting ones fail with both file path
 ```yaml
 vswitches:
   - name: vmbr0
+    type: bridge           # "bridge" (default) | "ovn" (immutable after create)
     ipv4: 10.30.0.1/24     # required; gateway must be the first usable host (network .1)
     group: vms             # optional; network group for network_policy
-    type: bridge           # optional; v1 only "bridge"
-    driver: native         # optional; "native" | "openvswitch" (immutable after create)
+    driver: native         # optional; bridge only: "native" | "openvswitch" (immutable)
     nat: true              # optional; default true
     internet: true         # optional; only meaningful with a group; default true
     ipv6: none             # optional; v1 only "none"
+
+  - name: ovnbr0
+    type: ovn
+    parent: lxdbr0         # required for type: ovn (uplink parent bridge/network)
+    ipv4: 10.60.0.1/24
+    group: ovnservices
+    mtu: 1442              # optional MTU override (maps to bridge.mtu)
 ```
 
 Validation (Go-side, exit 3): `ipv4` must parse as a CIDR whose address is the first usable host
 (`10.10.50.1/16` is rejected — it is not the first host of `10.10.0.0/16`); prefix length must be
-`/8`–`/29`; names must be unique; subnets must not overlap; `internet: false` requires a `group`.
+`/8`–`/29`; `parent` is required for `type: ovn`; `driver` is bridge-only; names must be unique; subnets must not overlap; `internet: false` requires a `group`.
 
 An **ungrouped** vswitch is managed for addressing only — stock LXD open routing, no ACLs. Removing
 a `group` later detaches the ACL and leaves it unmanaged. Removing a vswitch from the manifests

@@ -362,6 +362,7 @@ type VSwitchConfig struct {
 	NAT      *bool             `yaml:"nat,omitempty"`  // nil = true
 	Group    string            `yaml:"group,omitempty"`
 	Internet *bool             `yaml:"internet,omitempty"` // nil = true
+	MTU      int               `yaml:"mtu,omitempty"`      // Maps to bridge.mtu on OVN
 	Config   map[string]string `yaml:"config,omitempty"`   // Backend passthrough options
 }
 
@@ -1490,7 +1491,7 @@ func LoadConfig(configFile string) (*Config, error) {
 		if vs.Type == "" {
 			vs.Type = "bridge"
 		}
-		if vs.Driver == "" {
+		if vs.Type == "bridge" && vs.Driver == "" {
 			vs.Driver = "native"
 		}
 		if vs.IPv6 == "" {

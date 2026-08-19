@@ -270,18 +270,13 @@ func buildNetworksPost(vs *network.VSwitch) *provider.NetworkCreateRequest {
 	}
 
 	if netType == "ovn" {
-		if vs.EffectiveParent() != "" {
-			cfg["network"] = vs.EffectiveParent()
-		}
-		if vs.IPv4 != "" {
-			cfg["ipv4.address"] = vs.IPv4
-		}
-		if vs.IPv6 != "" {
-			cfg["ipv6.address"] = vs.IPv6
-		} else {
-			cfg["ipv6.address"] = "none"
-		}
+		cfg["network"] = vs.EffectiveParent()
+		cfg["ipv4.address"] = vs.IPv4
+		cfg["ipv6.address"] = "none"
 		cfg["ipv4.nat"] = strconv.FormatBool(vs.EffectiveNAT())
+		if vs.MTU > 0 {
+			cfg["bridge.mtu"] = strconv.Itoa(vs.MTU)
+		}
 		cfg["dns.domain"] = "lxd"
 		cfg["user.lxm.managed"] = "true"
 		if vs.Group != "" {
@@ -319,7 +314,7 @@ func buildNetworksPost(vs *network.VSwitch) *provider.NetworkCreateRequest {
 }
 
 // checkImmutableDrift returns a plan error when a live vswitch's immutable
-// keys (ipv4.address, driver) drift from the desired spec (§7.3).
+// keys (ipv4.address, driver, network parent) drift from the desired spec (§7.3).
 func checkImmutableDrift(vs *network.VSwitch, live *provider.Network) error {
 	if live.Type != "" && vs.EffectiveType() != "" && live.Type != vs.EffectiveType() {
 		return fmt.Errorf("vswitch %q: type change %q -> %q is immutable after create", vs.Name, live.Type, vs.EffectiveType())
@@ -338,6 +333,14 @@ func checkImmutableDrift(vs *network.VSwitch, live *provider.Network) error {
 		desiredDriver := vs.EffectiveDriver()
 		if liveDriver != desiredDriver {
 			return fmt.Errorf("vswitch %q: bridge.driver change %q -> %q is immutable after create (migrate to a new vswitch name)", vs.Name, liveDriver, desiredDriver)
+		}
+	}
+
+	if vs.EffectiveType() == "ovn" {
+		liveParent := live.Config["network"]
+		desiredParent := vs.EffectiveParent()
+		if liveParent != "" && desiredParent != "" && liveParent != desiredParent {
+			return fmt.Errorf("vswitch %q: uplink parent change %q -> %q requires migrating instances to a new vswitch name (uplink parent is immutable in lxm policy)", vs.Name, liveParent, desiredParent)
 		}
 	}
 	return nil
@@ -424,6 +427,9 @@ func desiredNetworkConfig(vs *network.VSwitch, live *provider.Network) map[strin
 	if vs.EffectiveType() == "bridge" || vs.EffectiveType() == "" {
 		out["bridge.driver"] = vs.EffectiveDriver()
 		out["ipv4.dhcp"] = "true"
+	}
+	if vs.EffectiveType() == "ovn" && vs.MTU > 0 {
+		out["bridge.mtu"] = strconv.Itoa(vs.MTU)
 	}
 	out["ipv4.address"] = vs.IPv4
 	out["ipv4.nat"] = strconv.FormatBool(vs.EffectiveNAT())

@@ -1600,6 +1600,12 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 					warnings = append(warnings, "provider server lacks the network_acl extension; network_policy (vswitches groups) is unavailable")
 					checks = append(checks, "[WARN] provider network_acl extension")
 				}
+
+				if svc.HasExtension("network_ovn") {
+					checks = append(checks, "[OK] provider network_ovn extension")
+				} else {
+					checks = append(checks, "[INFO] provider network_ovn extension not present (OVN vswitches unavailable)")
+				}
 			} else {
 				checks = append(checks, "[SKIP] Remote LXD socket check skipped")
 			}

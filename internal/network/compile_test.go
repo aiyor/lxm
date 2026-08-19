@@ -250,3 +250,181 @@ func containsRule(rules []Rule, dir, action, src, dst string) bool {
 	}
 	return false
 }
+
+func TestCompile_OVN_SingleSwitch_EmitsG0AndNoOwnSubnetReject(t *testing.T) {
+	b := &config.Config{
+		Schema: "lxm/config/v2",
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "lxdbr0",
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovngroup",
+			},
+		},
+	}
+	f, err := Union([]*config.Config{b})
+	if err != nil {
+		t.Fatalf("Union: %v", err)
+	}
+	rules := aclRules(t, f, "ovnbr0")
+
+	// G0 intra-switch must be present
+	if !containsRule(rules, "egress", "allow", "10.60.0.0/24", "10.60.0.0/24") {
+		t.Fatalf("OVN switch missing G0 egress allow for own subnet: %v", rules)
+	}
+	if !containsRule(rules, "ingress", "allow", "10.60.0.0/24", "10.60.0.0/24") {
+		t.Fatalf("OVN switch missing G0 ingress allow for own subnet: %v", rules)
+	}
+
+	// G7 internet egress must be present
+	if !containsRule(rules, "egress", "allow", "10.60.0.0/24", "0.0.0.0/0") {
+		t.Fatalf("OVN switch missing G7 wildcard allow: %v", rules)
+	}
+
+	// Own subnet 10.60.0.0/24 MUST NOT be in any reject rule (or overlapped by any reject rule)
+	ownNet := mustParse(t, "10.60.0.0/24")
+	for _, r := range rules {
+		if r.Action == "reject" {
+			dst := mustParse(t, r.Destination)
+			if dst.String() == "10.60.0.0/24" || overlaps(dst, ownNet) {
+				t.Fatalf("OVN switch must NOT reject own subnet (got reject %s)", r.Destination)
+			}
+		}
+	}
+}
+
+func TestCompile_OVN_IntraSwitchAllowedInIsolated(t *testing.T) {
+	boolFalse := false
+	b := &config.Config{
+		Schema: "lxm/config/v2",
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:     "ovnbr0",
+				Type:     "ovn",
+				Parent:   "lxdbr0",
+				IPv4:     "10.60.0.1/24",
+				Group:    "isolated",
+				Internet: &boolFalse,
+			},
+		},
+	}
+	f, err := Union([]*config.Config{b})
+	if err != nil {
+		t.Fatalf("Union: %v", err)
+	}
+	rules := aclRules(t, f, "ovnbr0")
+
+	// G0 intra-switch MUST still be present
+	if !containsRule(rules, "egress", "allow", "10.60.0.0/24", "10.60.0.0/24") {
+		t.Fatalf("isolated OVN switch missing G0 egress allow: %v", rules)
+	}
+	if !containsRule(rules, "ingress", "allow", "10.60.0.0/24", "10.60.0.0/24") {
+		t.Fatalf("isolated OVN switch missing G0 ingress allow: %v", rules)
+	}
+
+	// Zero G7 or G8 rules
+	for _, r := range rules {
+		if r.Destination == "0.0.0.0/0" || r.Action == "reject" {
+			t.Fatalf("isolated switch must not have G7/G8 rules: %+v", r)
+		}
+	}
+}
+
+func TestCompile_HybridFleet_BridgeAndOVN(t *testing.T) {
+	b := &config.Config{
+		Schema: "lxm/config/v2",
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:  "vmbr0",
+				Type:  "bridge",
+				IPv4:  "10.30.0.1/24",
+				Group: "vms",
+			},
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "lxdbr0",
+				IPv4:   "10.60.0.1/24",
+				Group:  "services",
+			},
+		},
+		NetworkPolicy: &config.NetworkPolicy{
+			Allow: []config.NetworkPolicyRule{
+				{From: "vms", To: "services", Direction: "both"},
+			},
+		},
+	}
+	f, err := Union([]*config.Config{b})
+	if err != nil {
+		t.Fatalf("Union: %v", err)
+	}
+
+	vmRules := aclRules(t, f, "vmbr0")
+	ovnRules := aclRules(t, f, "ovnbr0")
+
+	// Bridge (vmbr0) has NO G0
+	if containsRule(vmRules, "egress", "allow", "10.30.0.0/24", "10.30.0.0/24") {
+		t.Fatalf("bridge switch vmbr0 must not have G0 allow")
+	}
+
+	// OVN (ovnbr0) HAS G0
+	if !containsRule(ovnRules, "egress", "allow", "10.60.0.0/24", "10.60.0.0/24") {
+		t.Fatalf("OVN switch ovnbr0 must have G0 allow")
+	}
+
+	// Inter-group mutual allowances exist
+	if !containsRule(vmRules, "egress", "allow", "10.30.0.0/24", "10.60.0.0/24") {
+		t.Fatalf("vmbr0 missing egress to ovnbr0")
+	}
+	if !containsRule(ovnRules, "ingress", "allow", "10.30.0.0/24", "10.60.0.0/24") {
+		t.Fatalf("ovnbr0 missing ingress from vmbr0")
+	}
+}
+
+func TestCompile_OVN_RejectSetDoesNotOverlapOwnSubnetOrPermittedEgress(t *testing.T) {
+	b := &config.Config{
+		Schema: "lxm/config/v2",
+		VSwitches: []config.VSwitchConfig{
+			{Name: "ovn1", Type: "ovn", Parent: "lxdbr0", IPv4: "10.10.0.1/24", Group: "g1"},
+			{Name: "ovn2", Type: "ovn", Parent: "lxdbr0", IPv4: "10.20.0.1/24", Group: "g2"},
+			{Name: "ovn3", Type: "ovn", Parent: "lxdbr0", IPv4: "172.16.50.1/24", Group: "g3"},
+		},
+		NetworkPolicy: &config.NetworkPolicy{
+			Allow: []config.NetworkPolicyRule{
+				{From: "g1", To: "g2", Direction: "both"},
+			},
+		},
+	}
+	f, err := Union([]*config.Config{b})
+	if err != nil {
+		t.Fatalf("Union: %v", err)
+	}
+
+	for _, acl := range Compile(f) {
+		vs := f.ByName[strings.TrimPrefix(acl.Name, "lxm-")]
+		permitted := PermittedEgress(f, vs)
+		carveList := append([]string{}, permitted...)
+		if vs.EffectiveType() == "ovn" {
+			carveList = append(carveList, vs.Subnet.String())
+		}
+
+		carveNets := make([]*net.IPNet, 0, len(carveList))
+		for _, c := range carveList {
+			carveNets = append(carveNets, mustParse(t, c))
+		}
+
+		for _, r := range acl.Rules {
+			if r.Action != "reject" {
+				continue
+			}
+			dst := mustParse(t, r.Destination)
+			for _, p := range carveNets {
+				if overlaps(dst, p) {
+					t.Fatalf("ACL %s: reject %s overlaps carved network %s", acl.Name, r.Destination, p.String())
+				}
+			}
+		}
+	}
+}

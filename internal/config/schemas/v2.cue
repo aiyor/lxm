@@ -184,13 +184,16 @@ import (
 #VSwitchObjAuthoring: close({
 	name:      string & =~"^[a-z][a-z0-9-]{0,30}$"
 	status?:   #VSwitchStatus | *"present"
-	type?:     "bridge"                    // v1 lock; "ovn" added later (additive relaxation)
+	type?:     "bridge" | "ovn" | *"bridge"
+	parent?:   string & =~"^[a-z][a-z0-9-]{0,30}$"
 	driver?:   "native" | "openvswitch" | *"native"
 	ipv4?:     string & =~"^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3})/[0-9]{1,2}$"
-	ipv6?:     "none"                      // v1 lock; IPv6 policy compilation deferred
+	ipv6?:     "none" | *"none"
 	nat?:      bool | *true
 	group?:    string
 	internet?: bool | *true
+	mtu?:      int
+	config?:   {[string]: string}
 })
 
 // One inter-group allowance in network_policy.
@@ -342,15 +345,18 @@ import (
 	disks?: [...#DiskObjResolved]
 
 	vswitches?: [...close({
-		name:     string
-		status:   #VSwitchStatus
-		type:     "bridge"
-		driver:   "native" | "openvswitch"
-		ipv4?:    string
-		ipv6:     "none"
-		nat:      bool
-		group?:   string
-		internet: bool
+		name:      string
+		status:    #VSwitchStatus
+		type:      "bridge" | "ovn"
+		parent?:   string
+		driver?:   "native" | "openvswitch"
+		ipv4?:     string
+		ipv6:      "none"
+		nat:       bool
+		group?:    string
+		internet:  bool
+		mtu?:      int
+		config?:   {[string]: string}
 	})]
 
 	network_policy?: close({

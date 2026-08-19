@@ -121,14 +121,17 @@ network_policy:
 
 | Field | Type | Default | Rules |
 | :-- | :-- | :-- | :-- |
-| `name` | string | — (required) | `^[a-z][a-z0-9-]{0,30}$`. The LXD network name; referenced by instance `networks[].parent`. |
-| `type` | string | `"bridge"` | v1: only `"bridge"` (CUE-restricted). `"ovn"` is a future additive relaxation. |
-| `driver` | string | `"native"` | → `bridge.driver`. `"native" \| "openvswitch"`. **Immutable after create** (change ⇒ plan error, exit 3). |
-| `ipv4` | string | — (required) | Coarse CUE regex, then Go validation: `net.ParseCIDR`, address must equal the **first usable host** (`network IP + 1`), prefix length ∈ **[8, 29]**. Rationale: `/8` is the largest sane bridge supernet; `/29` is the smallest practical for DHCP (8 addresses ⇒ network + gateway `.1` + broadcast leave 5 usable hosts). `10.10.50.1/16` is rejected — it is not the first host of `10.10.0.0/16`. |
+| `name` | string | — (required) | `^[a-z][a-z0-9-]{0,30}$`. The provider network name; referenced by instance `networks[].parent`. |
+| `type` | string | `"bridge"` | `"bridge"` \| `"ovn"`. `"bridge"` creates a local Linux bridge; `"ovn"` creates an Open Virtual Network overlay switch spanning cluster nodes. **Immutable after create** (change ⇒ plan error, exit 3). |
+| `parent` | string | — | Uplink parent network (e.g. `lxdbr0` / `incusbr0`). **Required on `type: ovn`**; forbidden on `type: bridge`. **Immutable after create** (change ⇒ plan error, exit 3). |
+| `driver` | string | `"native"` | → `bridge.driver`. `"native" \| "openvswitch"`. Bridge-only (forbidden on `type: ovn`). **Immutable after create** (change ⇒ plan error, exit 3). |
+| `ipv4` | string | — (required) | Coarse CUE regex, then Go validation: `net.ParseCIDR`, address must equal the **first usable host** (`network IP + 1`), prefix length ∈ **[8, 29]**. Rationale: `/8` is the largest sane supernet; `/29` is the smallest practical for DHCP (8 addresses ⇒ network + gateway `.1` + broadcast leave 5 usable hosts). `10.10.50.1/16` is rejected — it is not the first host of `10.10.0.0/16`. **Immutable after create** (change ⇒ plan error, exit 3). |
 | `ipv6` | string | `"none"` | v1: only `"none"` (IPv6 policy compilation is deferred — accepting a CIDR without compiling policy for it would be a silent security hole). |
 | `nat` | bool | `true` | → `ipv4.nat`. |
 | `group` | string | — | Optional group membership. Absence ⇒ managed for addressing only (no ACLs). Removing `group` later detaches the ACL (§8.2). |
 | `internet` | bool | `true` | Only meaningful with `group`. `true` ⇒ egress to the internet allowed. `false` ⇒ fully internal group (internet-bound egress rejected). |
+| `mtu` | int | — | Optional MTU override (maps to `bridge.mtu` on OVN; must be ∈ [576, 65535]). |
+| `config` | map[string]string | — | Optional backend-specific passthrough options (managed keys take strict precedence). |
 
 Fixed, non-configurable (locked for determinism): `ipv4.dhcp: true`, `dns.domain: lxd`, no
 `ipv4.routes`.
@@ -206,6 +209,7 @@ All generators are formulated from the ACL being compiled — vswitch `V` in gro
 
 | Gen | Direction | Action | Source | Destination | Trigger |
 | :-- | :-- | :-- | :-- | :-- | :-- |
+| G0 | egress + ingress | allow | `S_V` | `S_V` | **OVN only** (R1): permits intra-switch traffic under default-reject |
 | G1 | egress | allow | `S_V` | `S_P` ∀ P ∈ G_V, P ≠ V | intra-group (R2) |
 | G2 | ingress | allow | `S_P` ∀ P ∈ G_V, P ≠ V | `S_V` | intra-group (R2) |
 | G3 | egress | allow | `S_V` | `S_P` ∀ P ∈ H | policy `from G_V → H`, `direction: both \| egress` (R4/R5) |
@@ -213,17 +217,16 @@ All generators are formulated from the ACL being compiled — vswitch `V` in gro
 | G5 | ingress | allow | `S_P` ∀ P ∈ H | `S_V` | policy `from G_V → H`, `direction: both` (mirror ingress leg of R4) |
 | G6 | ingress | allow | `S_P` ∀ P ∈ F | `S_V` | policy `from F → G_V`, `direction: both \| egress` — admits F-initiated flows at V's boundary (R4/R5) |
 | G7 | egress | allow | `S_V` | `0.0.0.0/0` | only when `internet: true` on V (R6) |
-| G8 | egress | **reject** | `S_V` | `Decompose(InternalSet, PermittedEgress(V)) ∪ {S_V}` | only when G7 exists (otherwise the reject default covers) |
+| G8 | egress | **reject** | `S_V` | `Decompose(InternalSet, PermittedEgress(V) ∪ ({S_V} if OVN)) ∪ ({S_V} if Bridge)` | only when G7 exists (otherwise the reject default covers) |
 
-`PermittedEgress(V)` = the union of destination subnets produced by G1, G3, G4 (all ≠ `S_V`). `S_V`
-itself is excluded from `PermittedEgress` by construction, so it is never a carve-out candidate.
+`PermittedEgress(V)` = the union of destination subnets produced by G1, G3, G4 (all ≠ `S_V`).
 
 No other rules are generated; everything unmatched hits the reject defaults. Deterministic ordering
 within each ACL: `(direction, action, source, destination)`, then deduplicated.
 
 ### 5.2 Internal set, decomposition & host protection
 
-**Why decomposition is mandatory.** If G8 subtracted *list entries* from the internal set, LXD's
+**Why decomposition is mandatory.** If G8 subtracted *list entries* from the internal set, the provider's
 action-priority model (C3) would still evaluate `reject S_V → 10.0.0.0/8` before
 `allow S_V → 10.50.0.0/24` — shadowing every inter-group allow inside RFC1918 space. The fix is
 true **CIDR carve-out by prefix decomposition**:
@@ -233,7 +236,7 @@ true **CIDR carve-out by prefix decomposition**:
 > produces exactly 16 prefixes — one sibling per level from `/9` to `/24`.
 
 Compliance requirement (enforced by a property test): the emitted reject set contains **no CIDR
-overlapping any G1/G3/G4 destination**.
+overlapping any G1/G3/G4 destination** (and for OVN, no CIDR overlapping `S_V`).
 
 **Default internal set (locked)** — managed vswitch subnets ∪ operator `internal_cidrs` ∪:
 
@@ -253,11 +256,9 @@ initiate toward the host's physical LAN unless the operator remembered to declar
 supernets + decomposing costs a bounded, small rule set and preserves both LAN-isolation default
 and host protection.
 
-**Own-subnet host protection (locked).** `S_V` is **always** in the G8 reject set and is **never**
-a carve-out candidate. Because the bridge gateway (e.g. `10.60.0.1`) is an IP alias on the LXD
-host, this rejects instance→host traffic on the gateway IP (SSH, LXD API, exporters bound to
-`0.0.0.0`) — with the sole exception of DHCP/DNS (C4, R8). Intra-vswitch instance↔instance traffic
-does not cross the boundary (C1) and is unaffected.
+**Own-subnet protection: Bridge vs OVN.**
+- **Bridge vswitches**: `S_V` is **always** in the G8 reject set. Because the bridge gateway (e.g. `10.60.0.1`) is an IP alias on the host OS network namespace, this rejects instance→host traffic on the gateway IP (SSH, API, host-bound listeners) — with the sole exception of DHCP/DNS (C4, R8). Intra-bridge traffic bypasses the ACL filter (C1) and is unaffected.
+- **OVN vswitches**: The gateway IP lives inside an isolated OVN logical router datapath (not a host OS interface). OVN evaluates ACLs on every logical switch port; therefore, `S_V` is **carved out** of G8 and permitted via **G0** (`allow S_V → S_V`) so intra-switch traffic communicates freely under default-reject without self-blocking. Host services are naturally isolated by the logical router boundary.
 
 **Host non-RFC1918 addresses (documented caveat).** The internal set covers RFC1918 space,
 operator `internal_cidrs`, and managed vswitch subnets — but **not** the host's public/routable

@@ -61,6 +61,15 @@ func Compile(f *Fleet) []*CompiledACL {
 		acl := aclIndex[vs.Name]
 		src := vs.Subnet.String()
 
+		// G0 — intra-vswitch (R1) for OVN: because OVN evaluates ACLs per port,
+		// default reject would block intra-switch traffic unless explicitly allowed.
+		if vs.EffectiveType() == "ovn" {
+			acl.Rules = append(acl.Rules,
+				Rule{Direction: "egress", Action: "allow", Source: src, Destination: src},
+				Rule{Direction: "ingress", Action: "allow", Source: src, Destination: src},
+			)
+		}
+
 		// G1/G2 — intra-group (R2): all peers share the group.
 		for _, peer := range f.ByGroup[vs.Group] {
 			if peer.Name == vs.Name {
@@ -170,8 +179,8 @@ func PermittedEgress(f *Fleet, vs *VSwitch) []string {
 
 // compileRejectRules implements G8: egress rejects covering every internal
 // CIDR not decomposed out by a permitted allowance, plus the vswitch's own
-// subnet (host-gateway protection, §3.2). Only IPv4 subjects are emitted in
-// v1 (C2/C6).
+// subnet for bridges (host-gateway protection, NETWORK-SPEC §5.2). Only IPv4
+// subjects are emitted in v1 (C2/C6).
 func compileRejectRules(f *Fleet, vs *VSwitch) []Rule {
 	src := vs.Subnet.String()
 	carveNets := make([]*net.IPNet, 0)
@@ -180,6 +189,14 @@ func compileRejectRules(f *Fleet, vs *VSwitch) []Rule {
 		if err == nil {
 			carveNets = append(carveNets, n)
 		}
+	}
+
+	// For OVN vswitches, vs.Subnet is carved out of the internal supernets
+	// so that decomposed reject rules never shadow G0 (intra-switch allow).
+	// For bridge vswitches, vs.Subnet is intentionally left in the reject set
+	// to protect the host gateway IP alias (.1).
+	if vs.EffectiveType() == "ovn" {
+		carveNets = append(carveNets, vs.Subnet)
 	}
 
 	rejectSet := make(map[string]bool)
@@ -196,11 +213,13 @@ func compileRejectRules(f *Fleet, vs *VSwitch) []Rule {
 		}
 	}
 
-	// The vswitch's own subnet is always a reject subject (§3.2 host
-	// protection) — added explicitly only when it is not already covered by a
-	// decomposed internal supernet (e.g. an RFC1918 subnet under 10.0.0.0/8).
-	if !cidrCoveredByAny(rejectSet, vs.Subnet.String()) {
-		rejectSet[vs.Subnet.String()] = true
+	if vs.EffectiveType() == "bridge" {
+		// The bridge vswitch's own subnet is always a reject subject (NETWORK-SPEC §5.2 host
+		// protection) — added explicitly only when it is not already covered by a
+		// decomposed internal supernet (e.g. an RFC1918 subnet under 10.0.0.0/8).
+		if !cidrCoveredByAny(rejectSet, vs.Subnet.String()) {
+			rejectSet[vs.Subnet.String()] = true
+		}
 	}
 
 	rejects := make([]string, 0, len(rejectSet))

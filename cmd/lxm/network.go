@@ -26,10 +26,13 @@ func computeNetworkPlan(ctx context.Context, svc provider.Driver, loaded []*conf
 	warnings := append([]string{}, fleet.Warnings...)
 
 	hasGrouped := false
+	hasOVN := false
 	for _, vs := range fleet.VSwitches {
 		if vs.Group != "" {
 			hasGrouped = true
-			break
+		}
+		if vs.EffectiveType() == "ovn" {
+			hasOVN = true
 		}
 	}
 
@@ -49,8 +52,11 @@ func computeNetworkPlan(ctx context.Context, svc provider.Driver, loaded []*conf
 	// surface: even a vswitch-less fleet needs the live network set so the
 	// NIC unknown-parent check (§4) doesn't misfire on the stock lxdbr0 / incusbr0.
 	if svc != nil {
+		if hasOVN && !svc.HasExtension("network_ovn") {
+			return nil, nil, &exitError{code: 4, err: fmt.Errorf("server lacks the network_ovn extension; OVN virtual switches cannot be created")}
+		}
 		if hasGrouped && !svc.HasExtension("network_acl") {
-			return nil, nil, &exitError{code: 4, err: fmt.Errorf("server lacks the network_acl extension; grouped vswitches cannot be policy-managed (needs provider with bridge network ACL support)")}
+			return nil, nil, &exitError{code: 4, err: fmt.Errorf("server lacks the network_acl extension; grouped vswitches cannot be policy-managed (needs provider with network ACL support)")}
 		}
 		// Live-state listing failures are fatal (exit 4): planning against
 		// an empty live set would propose create steps for existing objects

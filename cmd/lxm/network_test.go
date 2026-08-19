@@ -304,3 +304,60 @@ networks:
 		t.Fatalf("plan returned %d, want 0 (ACL listing must be gated on the extension). Stderr: %s", code, stderr.String())
 	}
 }
+
+func TestRun_VSwitches_OVN_MissingNetworkOVNExtension_Exit4(t *testing.T) {
+	driver := fake.New()
+	driver.Extensions["network_acl"] = true // Has ACL but lacks network_ovn
+	tmpDir := t.TempDir()
+	writeTestFile(t, filepath.Join(tmpDir, "_base.yaml"), `schema: lxm/config/v2
+base: true
+vswitches:
+  - name: ovnbr0
+    type: ovn
+    parent: lxdbr0
+    ipv4: 10.60.0.1/24
+    group: ovnservices
+`)
+	writeTestFile(t, filepath.Join(tmpDir, "web-a.yaml"), `schema: lxm/config/v2
+include: [_base.yaml]
+name: web-a
+image: ubuntu:22.04
+`)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"plan", tmpDir}, &stdout, &stderr, driver)
+	if code != 4 {
+		t.Fatalf("expected exit 4 (missing network_ovn), got %d. Stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "network_ovn extension") {
+		t.Fatalf("expected network_ovn extension error, got: %s", stderr.String())
+	}
+}
+
+func TestRun_VSwitches_OVN_WithExtensions_Success(t *testing.T) {
+	driver := fake.New()
+	driver.Extensions["network_acl"] = true
+	driver.Extensions["network_ovn"] = true
+	tmpDir := t.TempDir()
+	writeTestFile(t, filepath.Join(tmpDir, "_base.yaml"), `schema: lxm/config/v2
+base: true
+vswitches:
+  - name: ovnbr0
+    type: ovn
+    parent: lxdbr0
+    ipv4: 10.60.0.1/24
+    group: ovnservices
+    mtu: 1442
+`)
+	writeTestFile(t, filepath.Join(tmpDir, "web-a.yaml"), `schema: lxm/config/v2
+include: [_base.yaml]
+name: web-a
+image: ubuntu:22.04
+`)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"plan", tmpDir}, &stdout, &stderr, driver)
+	if code != 0 {
+		t.Fatalf("expected plan exit 0, got %d. Stderr: %s", code, stderr.String())
+	}
+}
