@@ -126,7 +126,7 @@ func (d *Driver) CreateInstance(ctx context.Context, req provider.InstanceCreate
 
 func (d *Driver) UpdateInstance(ctx context.Context, name string, req provider.InstanceUpdateRequest, etag string) error {
 	lxdPut := api.InstancePut{
-		Config:      common.TranslateBootModeToDaemon(provider.InstanceTypeVM, req.Config),
+		Config:      common.TranslateBootModeToDaemon(req.Type, req.Config),
 		Devices:     req.Devices,
 		Profiles:    req.Profiles,
 		Description: req.Description,
@@ -587,7 +587,16 @@ func (d *Driver) ExecInstance(ctx context.Context, name string, cmd []string, ui
 		return provider.ExecResult{ExitCode: -1}, err
 	}
 	waitErr := common.WaitOpContext(ctx, op)
-	return common.SafeExecResult(op, stdout.String(), stderr.String(), waitErr)
+	var metadata map[string]interface{}
+	if op != nil {
+		metadata = op.Get().Metadata
+	}
+	exitCode, finalErr := common.ExtractExecExitCode(metadata, waitErr)
+	return provider.ExecResult{
+		ExitCode: exitCode,
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+	}, finalErr
 }
 
 func (d *Driver) InteractiveExecInstance(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) error {

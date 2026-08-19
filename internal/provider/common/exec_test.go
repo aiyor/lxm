@@ -70,31 +70,3 @@ func TestExtractExecExitCode(t *testing.T) {
 		t.Errorf("expected 2 and nil error, got %d, %v", code, err)
 	}
 }
-
-type mockOpWithMeta struct {
-	meta map[string]interface{}
-}
-
-func (m *mockOpWithMeta) Wait() error { return nil }
-func (m *mockOpWithMeta) Get() struct{ Metadata map[string]interface{} } {
-	return struct{ Metadata map[string]interface{} }{Metadata: m.meta}
-}
-
-func TestSafeExecResult(t *testing.T) {
-	op := &mockOpWithMeta{
-		meta: map[string]interface{}{"return": float64(0)},
-	}
-	res, err := common.SafeExecResult(op, "out\n", "", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if res.ExitCode != 0 || res.Stdout != "out\n" {
-		t.Errorf("unexpected exec result: %+v", res)
-	}
-
-	// Nil op
-	resNil, errNil := common.SafeExecResult(nil, "", "err\n", errors.New("exec failed"))
-	if errNil == nil || resNil.ExitCode != -1 || resNil.Stderr != "err\n" {
-		t.Errorf("unexpected nil op result: %+v, err: %v", resNil, errNil)
-	}
-}

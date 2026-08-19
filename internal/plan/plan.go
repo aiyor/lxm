@@ -581,7 +581,12 @@ func imageFetchEnabled() bool {
 }
 
 func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*provider.InstanceUpdateRequest, error) {
+	instType := provider.InstanceType(manifest.Type)
+	if instType == "" {
+		instType = provider.InstanceTypeContainer
+	}
 	put := &provider.InstanceUpdateRequest{
+		Type:     instType,
 		Config:   make(map[string]string),
 		Devices:  make(map[string]map[string]string),
 		Profiles: live.Profiles,

@@ -51,6 +51,7 @@ type Instance struct {
 // Writable converts an Instance into an InstanceUpdateRequest payload.
 func (i *Instance) Writable() InstanceUpdateRequest {
 	return InstanceUpdateRequest{
+		Type:        i.Type,
 		Config:      i.Config,
 		Devices:     i.Devices,
 		Profiles:    i.Profiles,
@@ -275,6 +276,7 @@ type InstanceCreateRequest struct {
 }
 
 type InstanceUpdateRequest struct {
+	Type        InstanceType                 `json:"type,omitempty"`
 	Config      map[string]string            `json:"config"`
 	Devices     map[string]map[string]string `json:"devices"`
 	Profiles    []string                     `json:"profiles,omitempty"`
