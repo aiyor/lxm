@@ -289,6 +289,13 @@ func buildNetworksPost(vs *network.VSwitch) *provider.NetworkCreateRequest {
 	}
 
 	if netType == "ovn" {
+		cfg := make(map[string]string)
+		for k, v := range vs.Config {
+			if k == "dns.nameservers" {
+				continue // dns.nameservers is used for LXM resolver derivation; not a valid LXD/Incus OVN config key
+			}
+			cfg[k] = v
+		}
 		cfg["network"] = vs.EffectiveParent()
 		cfg["ipv4.address"] = vs.IPv4
 		cfg["ipv6.address"] = "none"
@@ -449,6 +456,8 @@ func desiredNetworkConfig(vs *network.VSwitch, live *provider.Network) map[strin
 	if vs.EffectiveType() == "bridge" || vs.EffectiveType() == "" {
 		out["bridge.driver"] = vs.EffectiveDriver()
 		out["ipv4.dhcp"] = "true"
+	} else if vs.EffectiveType() == "ovn" {
+		delete(out, "dns.nameservers")
 	}
 	if vs.MTU > 0 {
 		out["bridge.mtu"] = strconv.Itoa(vs.MTU)
@@ -598,23 +607,25 @@ func deriveDNSResolvers(vs *network.VSwitch, live *NetworkLiveState) ([]string, 
 					addIP(item)
 				}
 			}
-			if len(resolvers) == 0 {
-				if ipStr, ok := parentNet.Config["ipv4.address"]; ok && ipStr != "" && ipStr != "none" {
-					if ipStr == "auto" {
-						if volIP, ok := parentNet.Config["volatile.network.ipv4.address"]; ok && volIP != "" {
-							addIP(volIP)
-						}
-					} else {
-						addIP(ipStr)
+			if ipStr, ok := parentNet.Config["ipv4.address"]; ok && ipStr != "" && ipStr != "none" {
+				if ipStr == "auto" {
+					if volIP, ok := parentNet.Config["volatile.network.ipv4.address"]; ok && volIP != "" {
+						addIP(volIP)
 					}
+				} else {
+					addIP(ipStr)
 				}
 			}
 		}
 	}
 
 	var warn string
-	if len(resolvers) == 0 && vs.EffectiveInternet() {
-		warn = fmt.Sprintf("vswitch %q: unable to derive uplink DNS resolver; private DNS queries may be rejected by G8 policy", vs.Name)
+	if len(resolvers) == 0 {
+		if vs.EffectiveInternet() {
+			warn = fmt.Sprintf("vswitch %q: unable to derive uplink DNS resolver; private DNS queries may be rejected by G8 policy", vs.Name)
+		} else {
+			warn = fmt.Sprintf("vswitch %q: internet: false on OVN but unable to derive uplink DNS resolver to seal daemon baseline DNS; specify dns.nameservers to install port 53 reject rules", vs.Name)
+		}
 	}
 
 	seen := make(map[string]bool)

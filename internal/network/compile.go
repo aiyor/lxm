@@ -132,8 +132,14 @@ func Compile(f *Fleet) []*CompiledACL {
 			// On internet: false OVN networks, the provider daemon baseline rule installs a priority 200 allow
 			// for DNS (port 53) to the upstream router/resolver, which would sit above default reject (0).
 			// To strictly seal this DNS exfiltration leak (EC-18 / R8), emit priority 400 reject rules on port 53.
+			// Skip in-network resolvers located inside vs.Subnet (R8), which are legitimately reachable
+			// via G0 (allow S_V -> S_V) for intra-subnet DNS resolution.
 			for _, res := range vs.DNSResolvers {
 				if isIPv4CIDR(res) {
+					ip, _, err := net.ParseCIDR(res)
+					if err == nil && vs.Subnet != nil && vs.Subnet.Contains(ip) {
+						continue
+					}
 					acl.Rules = append(acl.Rules,
 						Rule{Direction: "egress", Action: "reject", Source: src, Destination: res, Protocol: "udp", DestinationPort: "53"},
 						Rule{Direction: "egress", Action: "reject", Source: src, Destination: res, Protocol: "tcp", DestinationPort: "53"},
@@ -206,14 +212,14 @@ func compileRejectRules(f *Fleet, vs *VSwitch) []Rule {
 		}
 	}
 
-	// For OVN vswitches, vs.Subnet and vs.DNSResolvers are carved out of the internal supernets
+	// For OVN vswitches, vs.Subnet and internal vs.DNSResolvers are carved out of the internal supernets
 	// so that decomposed reject rules never shadow G0 (intra-switch allow) or uplink DNS queries.
 	// For bridge vswitches, vs.Subnet is intentionally left in the reject set
 	// to protect the host gateway IP alias (.1).
 	if vs.EffectiveType() == "ovn" {
 		carveNets = append(carveNets, vs.Subnet)
 		for _, res := range vs.DNSResolvers {
-			if rNet, err := ParseCIDR(res); err == nil && isIPv4CIDR(res) {
+			if rNet, err := ParseCIDR(res); err == nil && isIPv4CIDR(res) && cidrCoveredBySlice(f.InternalCIDRs, res) {
 				carveNets = append(carveNets, rNet)
 			}
 		}
@@ -252,9 +258,11 @@ func compileRejectRules(f *Fleet, vs *VSwitch) []Rule {
 	// For OVN vswitches with carved DNS resolvers, emit port-guard reject rules
 	// so that ONLY DNS (port 53 UDP/TCP) can reach the resolver IP, while all other
 	// host gateway services (SSH, API, HTTP, ICMP) are strictly rejected.
+	// We only emit port guards for internal / RFC1918 resolvers that fall within the internal set,
+	// because public IPs (e.g. 1.1.1.1) are already permitted by G7 and never rejected by G8.
 	if vs.EffectiveType() == "ovn" {
 		for _, res := range vs.DNSResolvers {
-			if isIPv4CIDR(res) {
+			if isIPv4CIDR(res) && cidrCoveredBySlice(f.InternalCIDRs, res) {
 				rules = append(rules,
 					Rule{Direction: "egress", Action: "reject", Source: src, Destination: res, Protocol: "tcp", DestinationPort: "1-52,54-65535"},
 					Rule{Direction: "egress", Action: "reject", Source: src, Destination: res, Protocol: "udp", DestinationPort: "1-52,54-65535"},
@@ -292,6 +300,25 @@ func cidrCoveredByAny(set map[string]bool, cidr string) bool {
 		return false
 	}
 	for s := range set {
+		outer, err := ParseCIDR(s)
+		if err != nil {
+			continue
+		}
+		if covers(outer, inner) {
+			return true
+		}
+	}
+	return false
+}
+
+// cidrCoveredBySlice reports whether any CIDR string in list covers (contains)
+// the given network.
+func cidrCoveredBySlice(list []string, cidr string) bool {
+	inner, err := ParseCIDR(cidr)
+	if err != nil {
+		return false
+	}
+	for _, s := range list {
 		outer, err := ParseCIDR(s)
 		if err != nil {
 			continue

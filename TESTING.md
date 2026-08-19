@@ -171,12 +171,14 @@ flowchart LR
    - **Cross-subnet forward (T1-OVN)**: policy `web → db` permits the forward flow; replies ride conntrack (stateful).
    - **Reverse isolation (T2-OVN)**: `db → web` initiation is rejected; must be asserted with a hard failure on violation.
    - **G8 decomposition & quarantine**: `internet: true` allows WAN egress while RFC1918 / `internal_cidrs` / sibling subnets are rejected; the emitted reject set never overlaps the own subnet or any permitted egress (property-tested in `internal/network`).
-   - **`internet: false`**: only G0 emitted — no G7 wildcard, no G8 rejects; the default-reject covers all other egress.
-   - **DNS**: assert instance DNS resolution via the uplink's resolvers on grouped OVN networks (known risk area — see §5 remediation); do not rely on the G7 wildcard to permit RFC1918 resolvers.
+   - **DNS Resolution on `internet: true` (T6-OVN)**: assert instance DNS resolution through the carved-out uplink resolver on grouped OVN networks.
+   - **Host Gateway Port Protection (T7-OVN)**: assert that non-DNS ports (SSH `:22`, API `:8443`, web services) on the carved host gateway resolver `/32` are strictly rejected by G9 port guards.
+   - **Isolated Network DNS Leak-Seal (T8-OVN)**: assert that on `internet: false` OVN networks, port 53 access to the upstream uplink resolver is rejected (priority 400 override of daemon baseline).
+   - **In-Network Resolver & Intra-Switch DNS (T9-OVN)**: assert that in-network DNS resolvers located within `S_V` remain accessible via G0 on `internet: false` networks without being blocked (R8).
    - **Immutability (Exit 3)**: in-place drift of `type`, `parent`, or `ipv4` is refused at plan time.
    - **Extension gating (Exit 4)**: planning refuses OVN vswitches when the provider lacks the `network_ovn` extension.
    - **Zero-drift (T5-OVN)**: a re-plan immediately after apply reports 0 steps.
-   - **Cluster (T4-OVN)**: cross-node Geneve connectivity on a multi-node cluster — **known gap**, not yet covered by the script; must be added before OVN can be declared cluster-verified.
+   - **Cluster (T4-OVN)**: cross-node Geneve connectivity on a multi-node cluster — **known gap**, not yet covered by the single-node script; must be added before OVN can be declared cluster-verified.
 
 ---
 

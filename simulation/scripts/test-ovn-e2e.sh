@@ -57,7 +57,7 @@ TEST_DIR="/tmp/e2e_ovn_test"
 
 cleanup_resources() {
     info "Cleaning up OVN test resources..."
-    for inst in e2e-ovn-web-1 e2e-ovn-web-2 e2e-ovn-db; do
+    for inst in e2e-ovn-web-1 e2e-ovn-web-2 e2e-ovn-db e2e-ovn-iso-1 e2e-ovn-iso-2; do
         "${PROVIDER_CLI}" stop -f "${inst}" 2>/dev/null || true
         for _ in {1..10}; do
             if ! "${PROVIDER_CLI}" info "${inst}" >/dev/null 2>&1; then
@@ -70,12 +70,16 @@ cleanup_resources() {
     for _ in {1..15}; do
         "${PROVIDER_CLI}" network delete ovn-webbr0 2>/dev/null || true
         "${PROVIDER_CLI}" network delete ovn-dbbr0 2>/dev/null || true
+        "${PROVIDER_CLI}" network delete ovn-isobr0 2>/dev/null || true
         "${PROVIDER_CLI}" network acl delete lxm-ovn-webbr0 2>/dev/null || true
         "${PROVIDER_CLI}" network acl delete lxm-ovn-dbbr0 2>/dev/null || true
+        "${PROVIDER_CLI}" network acl delete lxm-ovn-isobr0 2>/dev/null || true
         if ! "${PROVIDER_CLI}" network show ovn-webbr0 >/dev/null 2>&1 && \
            ! "${PROVIDER_CLI}" network show ovn-dbbr0 >/dev/null 2>&1 && \
+           ! "${PROVIDER_CLI}" network show ovn-isobr0 >/dev/null 2>&1 && \
            ! "${PROVIDER_CLI}" network acl show lxm-ovn-webbr0 >/dev/null 2>&1 && \
-           ! "${PROVIDER_CLI}" network acl show lxm-ovn-dbbr0 >/dev/null 2>&1; then
+           ! "${PROVIDER_CLI}" network acl show lxm-ovn-dbbr0 >/dev/null 2>&1 && \
+           ! "${PROVIDER_CLI}" network acl show lxm-ovn-isobr0 >/dev/null 2>&1; then
             break
         fi
         sleep 1
@@ -130,6 +134,15 @@ vswitches:
     ipv4: 10.75.0.1/24
     nat: false
     group: db
+  - name: ovn-isobr0
+    type: ovn
+    parent: ${UPLINK_NET}
+    ipv4: 10.80.0.1/24
+    nat: true
+    internet: false
+    group: iso
+    config:
+      dns.nameservers: 10.80.0.10
 network_policy:
   allow:
     - from: web
@@ -176,6 +189,32 @@ networks:
     ipv4: 10.75.0.10
 MANIFEST
 
+cat << 'MANIFEST' > "${TEST_DIR}/iso-1.yaml"
+schema: lxm/config/v2
+include: [_base.yaml]
+name: e2e-ovn-iso-1
+type: container
+status: present
+groups: [iso]
+networks:
+  - name: eth0
+    parent: ovn-isobr0
+    ipv4: 10.80.0.10
+MANIFEST
+
+cat << 'MANIFEST' > "${TEST_DIR}/iso-2.yaml"
+schema: lxm/config/v2
+include: [_base.yaml]
+name: e2e-ovn-iso-2
+type: container
+status: present
+groups: [iso]
+networks:
+  - name: eth0
+    parent: ovn-isobr0
+    ipv4: 10.80.0.20
+MANIFEST
+
 info "Step 1: Running lxm plan on OVN topology..."
 PLAN_OUTPUT=$("${LXM_BIN}" plan "${TEST_DIR}")
 echo "${PLAN_OUTPUT}"
@@ -188,10 +227,11 @@ pass "Apply succeeded"
 info "Step 3: Verifying OVN network objects in provider..."
 "${PROVIDER_CLI}" network show ovn-webbr0 | grep -q "type: ovn"
 "${PROVIDER_CLI}" network show ovn-dbbr0 | grep -q "type: ovn"
+"${PROVIDER_CLI}" network show ovn-isobr0 | grep -q "type: ovn"
 pass "OVN networks created and confirmed as type: ovn"
 
 info "Step 4: Waiting for container agent readiness..."
-for c in e2e-ovn-web-1 e2e-ovn-web-2 e2e-ovn-db; do
+for c in e2e-ovn-web-1 e2e-ovn-web-2 e2e-ovn-db e2e-ovn-iso-1 e2e-ovn-iso-2; do
     READY=0
     for _ in {1..30}; do
         if "${PROVIDER_CLI}" exec "${c}" -- ip addr show eth0 | grep -q "inet "; then
@@ -207,10 +247,6 @@ done
 pass "Containers booted and IP addresses assigned"
 
 # Configure host nexthop routes for inter-OVN routing via parent uplink bridge.
-# NOTE: TEST HARNESS SCAFFOLDING, not an lxm feature — two independent OVN networks
-# reach each other (and the WAN) only through the host L3 stack on the uplink bridge.
-# Operators enabling inter-OVN-network or WAN traffic with nat: false must provide
-# equivalent host routing/SNAT themselves (see NETWORK-SPEC §8.5).
 WEB_UPLINK=$("${PROVIDER_CLI}" network show ovn-webbr0 | grep -E "volatile.network.ipv4.address:" | awk '{print $2}' | tr -d '"' || true)
 DB_UPLINK=$("${PROVIDER_CLI}" network show ovn-dbbr0 | grep -E "volatile.network.ipv4.address:" | awk '{print $2}' | tr -d '"' || true)
 if [[ -n "${WEB_UPLINK}" && -n "${DB_UPLINK}" ]]; then
@@ -272,7 +308,25 @@ else
     pass "Gate T7-OVN: Host gateway SSH access rejected by port guards as expected"
 fi
 
-info "Step 12: Gate T5-OVN - Testing Idempotent Zero-Drift..."
+info "Step 12: Gate T8-OVN - Testing isolated network DNS leak-seal (uplink DNS must be rejected)..."
+if "${PROVIDER_CLI}" exec e2e-ovn-iso-2 -- python3 -c "import socket; s = socket.create_connection(('${UPLINK_GW}', 53), timeout=2)" 2>/dev/null; then
+    fail "Security violation: isolated container was able to connect to uplink resolver on port 53"
+else
+    pass "Gate T8-OVN: Uplink resolver port 53 access strictly rejected on isolated network"
+fi
+
+info "Step 13: Gate T9-OVN - Testing in-network DNS resolver & intra-switch access on isolated network..."
+"${PROVIDER_CLI}" exec e2e-ovn-iso-1 -- systemd-run --unit=e2e-iso-http python3 -m http.server 8080 --bind 0.0.0.0
+for _ in {1..10}; do
+    if "${PROVIDER_CLI}" exec e2e-ovn-iso-1 -- python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080', timeout=1)" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+"${PROVIDER_CLI}" exec e2e-ovn-iso-2 -- python3 -c "import urllib.request; print('Isolated Intra-switch HTTP Status:', urllib.request.urlopen('http://10.80.0.10:8080', timeout=2).status)"
+pass "Gate T9-OVN: In-network resolver and intra-switch communication preserved on isolated OVN network (R8)"
+
+info "Step 14: Gate T5-OVN - Testing Idempotent Zero-Drift..."
 REPLAN_OUT=$("${LXM_BIN}" plan "${TEST_DIR}")
 if echo "${REPLAN_OUT}" | grep -qE "create_|update_|delete_"; then
     echo "${REPLAN_OUT}"

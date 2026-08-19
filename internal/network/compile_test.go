@@ -548,3 +548,80 @@ func TestCompile_OVN_InternetFalse_BlocksDNS(t *testing.T) {
 		t.Errorf("missing TCP port 53 reject rule for isolated OVN network")
 	}
 }
+
+func TestCompile_OVN_InternetFalse_AllowsInNetworkDNS_BlocksUplinkDNS(t *testing.T) {
+	tr := true
+	fls := false
+	m := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{Name: "ovn-isolated", Type: "ovn", Parent: "lxdbr0", IPv4: "10.80.0.1/24", Group: "isolated", NAT: &tr, Internet: &fls},
+		},
+	}
+
+	f, err := Union([]*config.Config{m})
+	if err != nil {
+		t.Fatalf("Union: %v", err)
+	}
+
+	// 10.80.0.50/32 is an in-network resolver (inside 10.80.0.0/24)
+	// 10.171.13.1/32 is an uplink/external resolver
+	f.VSwitches[0].DNSResolvers = []string{"10.80.0.50/32", "10.171.13.1/32"}
+
+	acls := Compile(f)
+	if len(acls) != 1 {
+		t.Fatalf("expected 1 ACL, got %d", len(acls))
+	}
+	rules := acls[0].Rules
+
+	hasUplinkReject := false
+	hasInNetworkReject := false
+	for _, r := range rules {
+		if r.Action == "reject" && (r.DestinationPort == "53" || r.Protocol == "udp" || r.Protocol == "tcp") {
+			if r.Destination == "10.171.13.1/32" {
+				hasUplinkReject = true
+			}
+			if r.Destination == "10.80.0.50/32" {
+				hasInNetworkReject = true
+			}
+		}
+	}
+
+	if !hasUplinkReject {
+		t.Errorf("expected uplink resolver 10.171.13.1/32 to have port 53 reject rules")
+	}
+	if hasInNetworkReject {
+		t.Errorf("in-network resolver 10.80.0.50/32 was unexpectedly rejected on internet: false OVN network")
+	}
+}
+
+func TestCompile_OVN_PublicDNSResolver_NoPortGuards(t *testing.T) {
+	tr := true
+	m := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{Name: "ovn-webbr0", Type: "ovn", Parent: "lxdbr0", IPv4: "10.70.0.1/24", Group: "web", NAT: &tr, Internet: &tr},
+		},
+	}
+
+	f, err := Union([]*config.Config{m})
+	if err != nil {
+		t.Fatalf("Union: %v", err)
+	}
+
+	f.VSwitches[0].DNSResolvers = []string{"1.1.1.1/32"}
+
+	acls := Compile(f)
+	if len(acls) != 1 {
+		t.Fatalf("expected 1 ACL, got %d", len(acls))
+	}
+	rules := acls[0].Rules
+
+	for _, r := range rules {
+		if r.Destination == "1.1.1.1/32" {
+			t.Errorf("unexpected rule generated for public DNS resolver 1.1.1.1/32: %+v", r)
+		}
+	}
+}

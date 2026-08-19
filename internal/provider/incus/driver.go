@@ -303,15 +303,16 @@ func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRe
 		default:
 		}
 		n, _, getErr := d.clusterClient().GetNetwork(net.Name)
-		if getErr == nil && n != nil && n.Status != "Pending" {
-			if net.Type == "ovn" {
-				time.Sleep(1500 * time.Millisecond)
-			}
+		if getErr == nil && n != nil && n.Status != "Pending" && (n.Status == "Created" || n.Managed) {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if n, _, getErr := d.clusterClient().GetNetwork(net.Name); getErr == nil && n != nil && n.Status == "Pending" {
+	n, _, getErr := d.clusterClient().GetNetwork(net.Name)
+	if getErr != nil {
+		return fmt.Errorf("failed to verify network %q creation: %w", net.Name, getErr)
+	}
+	if n != nil && n.Status == "Pending" {
 		return fmt.Errorf("network %q remained in Pending status after creation (OVN chassis or uplink may be unresponsive)", net.Name)
 	}
 	return nil

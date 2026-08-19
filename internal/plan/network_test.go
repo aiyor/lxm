@@ -947,4 +947,42 @@ func TestPlan_VSwitch_OVN_DNS_Derivation_Nameservers_And_Volatile(t *testing.T) 
 			}
 		}
 	})
+
+	t.Run("internet:false warning when unable to derive uplink resolver", func(t *testing.T) {
+		fls := false
+		m := &config.Config{
+			Schema: "lxm/config/v2",
+			Base:   true,
+			VSwitches: []config.VSwitchConfig{
+				{
+					Name:     "ovn-isolated",
+					Type:     "ovn",
+					Parent:   "unknownbr0",
+					IPv4:     "10.80.0.1/24",
+					Group:    "isolated",
+					Internet: &fls,
+				},
+			},
+		}
+
+		f := testFleet(t, m)
+		rec := plan.NewNetworkReconciler()
+		np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+			Networks: map[string]*provider.Network{},
+		})
+		if err != nil {
+			t.Fatalf("ComputeNetworks: %v", err)
+		}
+
+		hasWarn := false
+		for _, w := range np.Warnings {
+			if strings.Contains(w, "internet: false on OVN but unable to derive uplink DNS resolver") {
+				hasWarn = true
+				break
+			}
+		}
+		if !hasWarn {
+			t.Errorf("expected warning for unresolvable uplink on internet:false OVN, got: %v", np.Warnings)
+		}
+	})
 }
