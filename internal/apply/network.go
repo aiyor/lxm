@@ -48,6 +48,10 @@ func (e *defaultExecutor) executeNetworkStep(ctx context.Context, step plan.Netw
 			return res, &ErrorInfo{Code: "INTERNAL_ERROR", Name: step.Name, Message: fmt.Sprintf("create_acl step %q has no payload", step.Name)}, ""
 		}
 		opErr = e.driver.CreateNetworkACL(ctx, *step.ACLPost)
+		if opErr == nil {
+			// Allow provider daemon and OVN database to commit ACL records before attaching to vswitches
+			time.Sleep(500 * time.Millisecond)
+		}
 	case "update_acl":
 		// Fresh ETag and re-fetch immediately before PUT.
 		if acl, etag, err := e.driver.GetNetworkACL(ctx, step.Name); err == nil && acl != nil {

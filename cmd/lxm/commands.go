@@ -193,8 +193,12 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			lastComputedPlan = combinedPlan
 
 			executor := apply.NewExecutor(svc)
+			concurrency := opts.jobs
+			if concurrency <= 0 {
+				concurrency = 5
+			}
 			report, applyErr := executor.Apply(ctx, combinedPlan, apply.ApplyOpts{
-				Jobs:         5,
+				Jobs:         concurrency,
 				DryRun:       opts.dryRun,
 				Force:        opts.force,
 				Prune:        opts.prune,
@@ -238,6 +242,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 	cmd.Flags().StringVar(&opts.renameTo, "rename-to", "", "Rename container (single-file target only)")
 	cmd.Flags().BoolVar(&opts.prune, "prune", false, "Garbage-collect orphaned managed containers (deletes containers with user.lxm.managed=true missing from target dir)")
 	cmd.Flags().BoolVar(&opts.noStart, "no-start", false, "Do not start stopped containers after apply")
+	cmd.Flags().IntVarP(&opts.jobs, "jobs", "j", 5, "Number of concurrent container operations")
 	return cmd
 }
 
@@ -1601,7 +1606,7 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 					checks = append(checks, "[WARN] provider network_acl extension")
 				}
 
-				if svc.HasExtension("network_ovn") {
+				if hasOVNSupport(svc) {
 					checks = append(checks, "[OK] provider network_ovn extension")
 				} else {
 					checks = append(checks, "[INFO] provider network_ovn extension not present (OVN vswitches unavailable)")

@@ -59,17 +59,31 @@ TEST_DIR="/tmp/e2e_ovn_test"
 
 cleanup_resources() {
     info "Cleaning up OVN test resources..."
-    "${PROVIDER_CLI}" delete -f e2e-ovn-web-1 e2e-ovn-web-2 e2e-ovn-db 2>/dev/null || true
-    for _ in {1..10}; do
+    for inst in e2e-ovn-web-1 e2e-ovn-web-2 e2e-ovn-db; do
+        "${PROVIDER_CLI}" stop -f "${inst}" 2>/dev/null || true
+        for _ in {1..10}; do
+            if ! "${PROVIDER_CLI}" info "${inst}" >/dev/null 2>&1; then
+                break
+            fi
+            "${PROVIDER_CLI}" delete -f "${inst}" 2>/dev/null || true
+            sleep 1
+        done
+    done
+    for _ in {1..15}; do
         "${PROVIDER_CLI}" network delete ovn-webbr0 2>/dev/null || true
         "${PROVIDER_CLI}" network delete ovn-dbbr0 2>/dev/null || true
         "${PROVIDER_CLI}" network acl delete lxm-ovn-webbr0 2>/dev/null || true
         "${PROVIDER_CLI}" network acl delete lxm-ovn-dbbr0 2>/dev/null || true
-        if ! "${PROVIDER_CLI}" network show ovn-webbr0 >/dev/null 2>&1 && ! "${PROVIDER_CLI}" network show ovn-dbbr0 >/dev/null 2>&1; then
+        if ! "${PROVIDER_CLI}" network show ovn-webbr0 >/dev/null 2>&1 && \
+           ! "${PROVIDER_CLI}" network show ovn-dbbr0 >/dev/null 2>&1 && \
+           ! "${PROVIDER_CLI}" network acl show lxm-ovn-webbr0 >/dev/null 2>&1 && \
+           ! "${PROVIDER_CLI}" network acl show lxm-ovn-dbbr0 >/dev/null 2>&1; then
             break
         fi
         sleep 1
     done
+    sudo -n iptables -D FORWARD -i "${UPLINK_NET}" -o "${UPLINK_NET}" -j ACCEPT 2>/dev/null || true
+    sudo -n iptables -t nat -D POSTROUTING -s 10.70.0.0/16 ! -o "${UPLINK_NET}" -j MASQUERADE 2>/dev/null || true
     rm -rf "${TEST_DIR}" 2>/dev/null || true
 }
 
@@ -110,11 +124,13 @@ vswitches:
     type: ovn
     parent: ${UPLINK_NET}
     ipv4: 10.70.0.1/24
+    nat: false
     group: web
   - name: ovn-dbbr0
     type: ovn
     parent: ${UPLINK_NET}
     ipv4: 10.75.0.1/24
+    nat: false
     group: db
 network_policy:
   allow:
@@ -168,7 +184,7 @@ echo "${PLAN_OUTPUT}"
 pass "Plan generated successfully"
 
 info "Step 2: Applying OVN topology with lxm apply..."
-"${LXM_BIN}" apply "${TEST_DIR}" --yes
+"${LXM_BIN}" apply --jobs 1 "${TEST_DIR}"
 pass "Apply succeeded"
 
 info "Step 3: Verifying OVN network objects in provider..."
@@ -187,20 +203,38 @@ for c in e2e-ovn-web-1 e2e-ovn-web-2 e2e-ovn-db; do
 done
 pass "Containers booted and IP addresses assigned"
 
-info "Step 5: Starting TCP listener on e2e-ovn-db (port 8080)..."
-"${PROVIDER_CLI}" exec e2e-ovn-db -- /bin/bash -c "nohup nc -l -k -p 8080 -e /bin/cat >/dev/null 2>&1 &" || true
-sleep 2
+# Configure host nexthop routes for inter-OVN routing via parent uplink bridge
+WEB_UPLINK=$("${PROVIDER_CLI}" network show ovn-webbr0 | grep -E "volatile.network.ipv4.address:" | awk '{print $2}' | tr -d '"' || true)
+DB_UPLINK=$("${PROVIDER_CLI}" network show ovn-dbbr0 | grep -E "volatile.network.ipv4.address:" | awk '{print $2}' | tr -d '"' || true)
+if [[ -n "${WEB_UPLINK}" && -n "${DB_UPLINK}" ]]; then
+    sudo -n ip route replace 10.70.0.0/24 via "${WEB_UPLINK}" dev "${UPLINK_NET}" 2>/dev/null || true
+    sudo -n ip route replace 10.75.0.0/24 via "${DB_UPLINK}" dev "${UPLINK_NET}" 2>/dev/null || true
+fi
+
+# Ensure host allows bridge forwarding and host NAT for inter-OVN and WAN routing
+sudo -n iptables -C FORWARD -i "${UPLINK_NET}" -o "${UPLINK_NET}" -j ACCEPT 2>/dev/null || sudo -n iptables -I FORWARD 1 -i "${UPLINK_NET}" -o "${UPLINK_NET}" -j ACCEPT 2>/dev/null || true
+sudo -n iptables -t nat -C POSTROUTING -s 10.70.0.0/16 ! -o "${UPLINK_NET}" -j MASQUERADE 2>/dev/null || sudo -n iptables -t nat -A POSTROUTING -s 10.70.0.0/16 ! -o "${UPLINK_NET}" -j MASQUERADE 2>/dev/null || true
+
+info "Step 5: Starting HTTP service on e2e-ovn-db (port 8080)..."
+"${PROVIDER_CLI}" exec e2e-ovn-db -- systemd-run --unit=e2e-http python3 -m http.server 8080 --bind 0.0.0.0
+for _ in {1..10}; do
+    if "${PROVIDER_CLI}" exec e2e-ovn-db -- python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080', timeout=1)" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+pass "HTTP service active on e2e-ovn-db:8080"
 
 info "Step 6: Gate T3-OVN - Testing intra-switch overlay communication (web-1 -> web-2)..."
 "${PROVIDER_CLI}" exec e2e-ovn-web-1 -- ping -c 2 -W 2 10.70.0.20
 pass "Gate T3-OVN: Intra-switch overlay traffic freely allowed (G0 invariant verified)"
 
-info "Step 7: Gate T1-OVN - Testing stateful one-way TCP (web-1 -> db:8080)..."
-"${PROVIDER_CLI}" exec e2e-ovn-web-1 -- timeout 5 bash -c 'echo "hello from web" | nc -w 3 10.75.0.10 8080' || true
+info "Step 7: Gate T1-OVN - Testing cross-subnet forward HTTP connection (web-1 -> db:8080)..."
+"${PROVIDER_CLI}" exec e2e-ovn-web-1 -- python3 -c "import urllib.request; print('HTTP Status:', urllib.request.urlopen('http://10.75.0.10:8080', timeout=5).status)"
 pass "Gate T1-OVN: Cross-subnet forward connection allowed"
 
 info "Step 8: Gate T2-OVN - Testing inter-group isolation (db -> web-1 must be rejected)..."
-if "${PROVIDER_CLI}" exec e2e-ovn-db -- timeout 3 bash -c 'nc -z -w 2 10.70.0.10 8080' 2>/dev/null; then
+if "${PROVIDER_CLI}" exec e2e-ovn-db -- python3 -c "import urllib.request; urllib.request.urlopen('http://10.70.0.10:8080', timeout=2)" 2>/dev/null; then
     fail "Security violation: db was able to initiate connection to web-1"
 else
     pass "Gate T2-OVN: Reverse-initiated connection rejected as expected"

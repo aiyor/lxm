@@ -40,3 +40,8 @@ tasks:
     desc: Install the binary to the GOBIN directory
     cmds:
       - go install -v ./cmd/lxm
+
+  changelog:
+    desc: Generate draft changelog (e.g. task changelog TAG=v1.4.0 or task changelog -- --all)
+    cmds:
+      - ./scripts/gen-changelog.sh {{.TAG | default .CLI_ARGS | default ""}}

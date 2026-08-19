@@ -14,6 +14,14 @@ import (
 // invocation: union of vswitches/network_policy across ALL loaded manifests
 // (selector-scope invariant §7.2), extension gating (§7.5), live-state diff,
 // and instance-NIC integrity checks (§4).
+func hasOVNSupport(svc provider.Driver) bool {
+	return svc.HasExtension("network_ovn") || svc.HasExtension("network_ovn_nat") || svc.HasExtension("network_ovn_acl")
+}
+
+// computeNetworkPlan performs the fleet-scoped network reconciliation for an
+// invocation: union of vswitches/network_policy across ALL loaded manifests
+// (selector-scope invariant §7.2), extension gating (§7.5), live-state diff,
+// and instance-NIC integrity checks (§4).
 //
 // Config/policy/union violations return exit code 3; a missing network_acl
 // extension (with grouped vswitches declared) returns exit code 4.
@@ -52,7 +60,7 @@ func computeNetworkPlan(ctx context.Context, svc provider.Driver, loaded []*conf
 	// surface: even a vswitch-less fleet needs the live network set so the
 	// NIC unknown-parent check (§4) doesn't misfire on the stock lxdbr0 / incusbr0.
 	if svc != nil {
-		if hasOVN && !svc.HasExtension("network_ovn") {
+		if hasOVN && !hasOVNSupport(svc) {
 			return nil, nil, &exitError{code: 4, err: fmt.Errorf("server lacks the network_ovn extension; OVN virtual switches cannot be created")}
 		}
 		if hasGrouped && !svc.HasExtension("network_acl") {
