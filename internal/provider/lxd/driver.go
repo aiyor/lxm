@@ -116,7 +116,7 @@ func (d *Driver) ListInstances(ctx context.Context) ([]provider.Instance, error)
 }
 
 func (d *Driver) CreateInstance(ctx context.Context, req provider.InstanceCreateRequest) error {
-	lxdReq := toLXDInstancePost(req)
+	lxdReq := toLXDInstancePost(req, d.HasExtension("instance_boot_mode"))
 	op, err := d.client.CreateInstance(lxdReq)
 	if err != nil {
 		return err
@@ -125,8 +125,12 @@ func (d *Driver) CreateInstance(ctx context.Context, req provider.InstanceCreate
 }
 
 func (d *Driver) UpdateInstance(ctx context.Context, name string, req provider.InstanceUpdateRequest, etag string) error {
+	cfg := req.Config
+	if !d.HasExtension("instance_boot_mode") {
+		cfg = common.TranslateBootModeToDaemon(req.Type, req.Config)
+	}
 	lxdPut := api.InstancePut{
-		Config:      common.TranslateBootModeToDaemon(req.Type, req.Config),
+		Config:      cfg,
 		Devices:     req.Devices,
 		Profiles:    req.Profiles,
 		Description: req.Description,
@@ -832,8 +836,11 @@ func toLXDRules(rules []provider.NetworkACLRule) []api.NetworkACLRule {
 	return result
 }
 
-func toLXDInstancePost(req provider.InstanceCreateRequest) api.InstancesPost {
-	cfg := common.TranslateBootModeToDaemon(req.Type, req.Config)
+func toLXDInstancePost(req provider.InstanceCreateRequest, hasBootModeExtension bool) api.InstancesPost {
+	cfg := req.Config
+	if !hasBootModeExtension {
+		cfg = common.TranslateBootModeToDaemon(req.Type, req.Config)
+	}
 
 	return api.InstancesPost{
 		Name: req.Name,
