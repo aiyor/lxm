@@ -1,6 +1,16 @@
 SRC ?= /mnt/devel/tools/lxm
 VM  ?= lxm-lab
 
+# --- End-to-End Multi-Provider Test Targets ---
+test-lxd:
+	$(SRC)/simulation/scripts/test-lxd-e2e.sh
+
+test-incus:
+	$(MAKE) -C $(SRC)/simulation/incus test-local
+
+test-all: test-lxd test-incus
+
+# --- Legacy LXD Lab Simulation Targets ---
 provision:
 	lxm apply $(SRC)/simulation/host/lxm-lab.yaml
 
@@ -9,7 +19,7 @@ rebuild:
 	lxm run $(VM) -- $(SRC)/simulation/host/recipes/build-lxm.sh
 
 plan:
-	lxc exec $(VM) -- su - lxm -c 'cd /opt/lxm-src/simulation/vm/lab && lxm plan . --format json'
+	lxc exec $(VM) -- su - lxm -c 'cd /opt/lxm-src/simulation/vm/lab && lxm plan .'
 
 apply:
 	lxc exec $(VM) -- su - lxm -c 'cd /opt/lxm-src/simulation/vm/lab && lxm apply .'

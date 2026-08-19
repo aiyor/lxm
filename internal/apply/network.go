@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aiyor/lxm/internal/plan"
 	"github.com/aiyor/lxm/internal/provider/common"
@@ -59,6 +60,16 @@ func (e *defaultExecutor) executeNetworkStep(ctx context.Context, step plan.Netw
 			return res, &ErrorInfo{Code: "INTERNAL_ERROR", Name: step.Name, Message: fmt.Sprintf("create_vswitch step %q has no payload", step.Name)}, ""
 		}
 		opErr = e.driver.CreateNetwork(ctx, *step.NetPost)
+		if opErr == nil {
+			// Ensure daemon and kernel network device registration is complete
+			for i := 0; i < 20; i++ {
+				if net, _, err := e.driver.GetNetwork(ctx, step.Name); err == nil && net != nil && net.Status != "" {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
 	case "update_vswitch":
 		if net, etag, err := e.driver.GetNetwork(ctx, step.Name); err == nil && net != nil {
 			opErr = e.driver.UpdateNetwork(ctx, step.Name, *step.NetPut, etag)

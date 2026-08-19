@@ -216,6 +216,16 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 		return report, nil
 	}
 
+	if !opts.DryRun {
+		for _, nstep := range preNetSteps {
+			if nstep.Kind == "create_vswitch" && nstep.Changed {
+				// Allow daemon dnsmasq fork to initialize directory structures on newly created bridges
+				time.Sleep(300 * time.Millisecond)
+				break
+			}
+		}
+	}
+
 	// Phase 2: instance steps (creates, updates, rebuilds, device detachments).
 	for _, step := range p.Steps {
 		wg.Add(1)
@@ -575,7 +585,17 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 		}
 		opErr = e.driver.CreateInstance(ctx, req)
 		if opErr == nil && !opts.NoStart && (step.PowerTransition == "start" || step.PowerTransition == "") {
-			opErr = e.driver.UpdateInstanceState(ctx, step.Container, "start", false)
+			for attempt := 0; attempt < 10; attempt++ {
+				opErr = e.driver.UpdateInstanceState(ctx, step.Container, "start", false)
+				if opErr == nil {
+					break
+				}
+				if strings.Contains(opErr.Error(), "does not exist") || strings.Contains(opErr.Error(), "no such file or directory") {
+					time.Sleep(300 * time.Millisecond)
+					continue
+				}
+				break
+			}
 		}
 
 	case "update":
