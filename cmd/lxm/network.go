@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
 
 	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/network"
@@ -78,27 +77,6 @@ func computeNetworkPlan(ctx context.Context, svc provider.Driver, loaded []*conf
 			for i := range acls {
 				live.ACLs[acls[i].Name] = &acls[i]
 			}
-		}
-	}
-
-	// For OVN vswitches with internet: true, auto-resolve parent DNS resolver /32 if not already populated.
-	for _, vs := range fleet.VSwitches {
-		if vs.EffectiveType() == "ovn" && vs.EffectiveInternet() && len(vs.DNSResolvers) == 0 {
-			parent := vs.EffectiveParent()
-			if liveNet, ok := live.Networks[parent]; ok && liveNet.Config != nil {
-				if parentIPv4, ok := liveNet.Config["ipv4.address"]; ok && parentIPv4 != "" && parentIPv4 != "none" {
-					if ip, _, err := net.ParseCIDR(parentIPv4); err == nil && ip.To4() != nil {
-						vs.DNSResolvers = []string{ip.String() + "/32"}
-					}
-				}
-			}
-		}
-	}
-
-	// Rule-count guard (§3.2): >256 reject rules per vswitch warns, proceeds.
-	for _, acl := range network.Compile(fleet) {
-		if n := network.RejectRuleCount(acl); n > 256 {
-			warnings = append(warnings, fmt.Sprintf("ACL %q has %d reject rules (>256); consider fewer inter-group carve-outs", acl.Name, n))
 		}
 	}
 

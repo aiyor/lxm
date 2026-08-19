@@ -475,7 +475,7 @@ func TestCompile_OVN_DNSResolver_CarvedAndPortGuarded(t *testing.T) {
 		t.Errorf("missing UDP non-DNS port guard for 10.171.13.1/32")
 	}
 	if !hasICMPGuard {
-		t.Errorf("missing ICMP guard for 10.171.13.1/32")
+		t.Errorf("missing ICMP4 guard for 10.171.13.1/32")
 	}
 
 	// 2. Verify 10.171.13.1 is not covered by any decomposed supernet reject rule
@@ -501,5 +501,50 @@ func TestCompile_OVN_DNSResolver_CarvedAndPortGuarded(t *testing.T) {
 
 	if !siblingCovered {
 		t.Errorf("sibling host IP 10.171.13.2 was unexpectedly carved out")
+	}
+}
+
+func TestCompile_OVN_InternetFalse_BlocksDNS(t *testing.T) {
+	tr := true
+	fls := false
+	m := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{Name: "ovn-isolated", Type: "ovn", Parent: "lxdbr0", IPv4: "10.80.0.1/24", Group: "isolated", NAT: &tr, Internet: &fls},
+		},
+	}
+
+	f, err := Union([]*config.Config{m})
+	if err != nil {
+		t.Fatalf("Union: %v", err)
+	}
+
+	f.VSwitches[0].DNSResolvers = []string{"10.171.13.1/32"}
+
+	acls := Compile(f)
+	if len(acls) != 1 {
+		t.Fatalf("expected 1 ACL, got %d", len(acls))
+	}
+	rules := acls[0].Rules
+
+	hasUDP53Reject := false
+	hasTCP53Reject := false
+	for _, r := range rules {
+		if r.Destination == "10.171.13.1/32" && r.Action == "reject" {
+			if r.Protocol == "udp" && r.DestinationPort == "53" {
+				hasUDP53Reject = true
+			}
+			if r.Protocol == "tcp" && r.DestinationPort == "53" {
+				hasTCP53Reject = true
+			}
+		}
+	}
+
+	if !hasUDP53Reject {
+		t.Errorf("missing UDP port 53 reject rule for isolated OVN network")
+	}
+	if !hasTCP53Reject {
+		t.Errorf("missing TCP port 53 reject rule for isolated OVN network")
 	}
 }

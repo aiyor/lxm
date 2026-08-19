@@ -794,3 +794,157 @@ func TestPlan_VSwitch_OVN_AutoResolve_DNS(t *testing.T) {
 		}
 	}
 }
+
+func TestPlan_VSwitch_Adopted_Preserves_Foreign_Bridge_MTU(t *testing.T) {
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:  "br0",
+				Type:  "bridge",
+				IPv4:  "10.60.0.1/24",
+				Group: "services",
+				// MTU omitted (0)
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"br0": {
+				Name:        "br0",
+				Type:        "bridge",
+				Description: "external adopted bridge",
+				Config: map[string]string{
+					// user.lxm.managed NOT true (adopted network)
+					"bridge.driver": "native",
+					"ipv4.address":  "10.60.0.1/24",
+					"ipv4.dhcp":     "true",
+					"ipv4.nat":      "true",
+					"ipv6.address":  "none",
+					"dns.domain":    "lxd",
+					"bridge.mtu":    "9000", // Foreign MTU
+					"security.acls": "lxm-br0",
+				},
+			},
+		},
+		ACLs: map[string]*provider.NetworkACL{
+			"lxm-br0": {Name: "lxm-br0"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+
+	for _, s := range np.Steps {
+		if s.Kind == "update_vswitch" && s.Name == "br0" {
+			if s.NetPut.Config["bridge.mtu"] != "9000" {
+				t.Errorf("expected foreign bridge.mtu 9000 to be preserved, got %q", s.NetPut.Config["bridge.mtu"])
+			}
+		}
+	}
+}
+
+func TestPlan_VSwitch_OVN_DNS_Derivation_Nameservers_And_Volatile(t *testing.T) {
+	t.Run("derived from vswitch dns.nameservers config", func(t *testing.T) {
+		cfg := &config.Config{
+			Schema: "lxm/config/v2",
+			Base:   true,
+			VSwitches: []config.VSwitchConfig{
+				{
+					Name:   "ovnbr0",
+					Type:   "ovn",
+					Parent: "lxdbr0",
+					IPv4:   "10.70.0.1/24",
+					Group:  "web",
+					Config: map[string]string{
+						"dns.nameservers": "10.20.0.53, 10.20.0.54",
+					},
+				},
+			},
+		}
+		f := testFleet(t, cfg)
+		rec := plan.NewNetworkReconciler()
+		np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+			Networks: map[string]*provider.Network{
+				"lxdbr0": {
+					Name: "lxdbr0",
+					Type: "bridge",
+					Config: map[string]string{
+						"ipv4.address": "10.171.13.1/24",
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ComputeNetworks: %v", err)
+		}
+
+		for _, s := range np.Steps {
+			if s.Kind == "create_acl" && s.Name == "lxm-ovnbr0" {
+				has53 := false
+				has54 := false
+				for _, r := range s.ACLPost.Egress {
+					if r.Destination == "10.20.0.53/32" && r.Protocol == "tcp" {
+						has53 = true
+					}
+					if r.Destination == "10.20.0.54/32" && r.Protocol == "tcp" {
+						has54 = true
+					}
+				}
+				if !has53 || !has54 {
+					t.Errorf("expected DNS port guards for both nameservers, got: %+v", s.ACLPost.Egress)
+				}
+			}
+		}
+	})
+
+	t.Run("derived from parent volatile.network.ipv4.address when auto", func(t *testing.T) {
+		cfg := &config.Config{
+			Schema: "lxm/config/v2",
+			Base:   true,
+			VSwitches: []config.VSwitchConfig{
+				{
+					Name:   "ovnbr0",
+					Type:   "ovn",
+					Parent: "dynamicbr0",
+					IPv4:   "10.70.0.1/24",
+					Group:  "web",
+				},
+			},
+		}
+		f := testFleet(t, cfg)
+		rec := plan.NewNetworkReconciler()
+		np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+			Networks: map[string]*provider.Network{
+				"dynamicbr0": {
+					Name: "dynamicbr0",
+					Type: "bridge",
+					Config: map[string]string{
+						"ipv4.address":                  "auto",
+						"volatile.network.ipv4.address": "10.99.0.1/24",
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ComputeNetworks: %v", err)
+		}
+
+		for _, s := range np.Steps {
+			if s.Kind == "create_acl" && s.Name == "lxm-ovnbr0" {
+				hasGuard := false
+				for _, r := range s.ACLPost.Egress {
+					if r.Destination == "10.99.0.1/32" && r.Protocol == "tcp" {
+						hasGuard = true
+					}
+				}
+				if !hasGuard {
+					t.Errorf("expected DNS port guard for 10.99.0.1/32, got: %+v", s.ACLPost.Egress)
+				}
+			}
+		}
+	})
+}

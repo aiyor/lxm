@@ -1620,7 +1620,8 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 						}
 					}
 					if uplinkParent != "" {
-						probeOVN := "lxm-probe-ovn"
+						probeOVN := fmt.Sprintf("lxm-probe-ovn-%d", os.Getpid())
+						_ = svc.DeleteNetwork(ctx, probeOVN)
 						err := svc.CreateNetwork(ctx, provider.NetworkCreateRequest{
 							Name: probeOVN,
 							Type: "ovn",
@@ -1630,11 +1631,23 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 								"ipv6.address": "none",
 							},
 						})
-						if err != nil {
-							warnings = append(warnings, fmt.Sprintf("OVN throwaway network probe failed: %v", err))
+						if err == nil {
+							n, _, getErr := svc.GetNetwork(ctx, probeOVN)
+							if getErr != nil {
+								err = fmt.Errorf("network remained in pending state: %w", getErr)
+							} else if n == nil || n.Status == "Pending" {
+								err = errors.New("network remained in pending state")
+							}
+						}
+						delErr := svc.DeleteNetwork(ctx, probeOVN)
+						switch {
+						case err != nil:
+							warnings = append(warnings, fmt.Sprintf("OVN throwaway network probe create failed: %v", err))
 							checks = append(checks, "[WARN] provider OVN chassis capability (probe failed)")
-						} else {
-							_ = svc.DeleteNetwork(ctx, probeOVN)
+						case delErr != nil:
+							warnings = append(warnings, fmt.Sprintf("OVN throwaway network probe delete failed: %v", delErr))
+							checks = append(checks, "[WARN] provider OVN chassis capability (delete failed)")
+						default:
 							checks = append(checks, "[OK] provider OVN network capability (probe create/delete)")
 						}
 					}

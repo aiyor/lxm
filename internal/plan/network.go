@@ -65,21 +65,25 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 
 	np := &NetworkPlan{Steps: []NetworkStep{}, Warnings: []string{}}
 
-	// For OVN vswitches with internet: true, auto-resolve parent DNS resolver /32 if not already populated.
+	// For OVN vswitches, auto-resolve parent DNS resolver /32 if not already populated.
 	for _, vs := range f.VSwitches {
-		if vs.EffectiveType() == "ovn" && vs.EffectiveInternet() && len(vs.DNSResolvers) == 0 {
-			parent := vs.EffectiveParent()
-			if liveNet, ok := live.Networks[parent]; ok && liveNet.Config != nil {
-				if parentIPv4, ok := liveNet.Config["ipv4.address"]; ok && parentIPv4 != "" && parentIPv4 != "none" {
-					if ip, _, err := net.ParseCIDR(parentIPv4); err == nil && ip.To4() != nil {
-						vs.DNSResolvers = []string{ip.String() + "/32"}
-					}
-				}
+		if vs.EffectiveType() == "ovn" {
+			resolvers, warn := deriveDNSResolvers(vs, live)
+			if len(vs.DNSResolvers) == 0 && len(resolvers) > 0 {
+				vs.DNSResolvers = resolvers
+			}
+			if warn != "" {
+				np.Warnings = append(np.Warnings, warn)
 			}
 		}
 	}
 
 	compiled := network.Compile(f)
+	for _, acl := range compiled {
+		if n := network.RejectRuleCount(acl); n > 256 {
+			np.Warnings = append(np.Warnings, fmt.Sprintf("ACL %q has %d reject rules (>256); consider fewer inter-group carve-outs", acl.Name, n))
+		}
+	}
 	aclByName := make(map[string]*network.CompiledACL)
 	for _, acl := range compiled {
 		aclByName[acl.Name] = acl
@@ -448,7 +452,7 @@ func desiredNetworkConfig(vs *network.VSwitch, live *provider.Network) map[strin
 	}
 	if vs.MTU > 0 {
 		out["bridge.mtu"] = strconv.Itoa(vs.MTU)
-	} else {
+	} else if live.Config["user.lxm.managed"] == "true" {
 		delete(out, "bridge.mtu")
 	}
 	out["ipv4.address"] = vs.IPv4
@@ -553,4 +557,73 @@ func NetworkStepKindOrder(kind string) int {
 	default:
 		return 2
 	}
+}
+
+// deriveDNSResolvers extracts effective DNS resolver IPs for an OVN vswitch.
+// Resolves in order: explicit vs.DNSResolvers -> vs.Config["dns.nameservers"] ->
+// parentNet.Config["dns.nameservers"] -> parentNet.Config["ipv4.address"] (or volatile address if "auto").
+func deriveDNSResolvers(vs *network.VSwitch, live *NetworkLiveState) ([]string, string) {
+	if len(vs.DNSResolvers) > 0 {
+		return vs.DNSResolvers, ""
+	}
+	var resolvers []string
+	addIP := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || raw == "none" || raw == "auto" {
+			return
+		}
+		if ip, _, err := net.ParseCIDR(raw); err == nil && ip.To4() != nil {
+			resolvers = append(resolvers, ip.String()+"/32")
+			return
+		}
+		if ip := net.ParseIP(raw); ip != nil && ip.To4() != nil {
+			resolvers = append(resolvers, ip.String()+"/32")
+			return
+		}
+	}
+
+	if vs.Config != nil {
+		if ns, ok := vs.Config["dns.nameservers"]; ok && ns != "" {
+			for _, item := range strings.FieldsFunc(ns, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+				addIP(item)
+			}
+		}
+	}
+
+	if live != nil && live.Networks != nil {
+		parentName := vs.EffectiveParent()
+		if parentNet, ok := live.Networks[parentName]; ok && parentNet.Config != nil {
+			if ns, ok := parentNet.Config["dns.nameservers"]; ok && ns != "" {
+				for _, item := range strings.FieldsFunc(ns, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+					addIP(item)
+				}
+			}
+			if len(resolvers) == 0 {
+				if ipStr, ok := parentNet.Config["ipv4.address"]; ok && ipStr != "" && ipStr != "none" {
+					if ipStr == "auto" {
+						if volIP, ok := parentNet.Config["volatile.network.ipv4.address"]; ok && volIP != "" {
+							addIP(volIP)
+						}
+					} else {
+						addIP(ipStr)
+					}
+				}
+			}
+		}
+	}
+
+	var warn string
+	if len(resolvers) == 0 && vs.EffectiveInternet() {
+		warn = fmt.Sprintf("vswitch %q: unable to derive uplink DNS resolver; private DNS queries may be rejected by G8 policy", vs.Name)
+	}
+
+	seen := make(map[string]bool)
+	var deduped []string
+	for _, r := range resolvers {
+		if !seen[r] {
+			seen[r] = true
+			deduped = append(deduped, r)
+		}
+	}
+	return deduped, warn
 }
