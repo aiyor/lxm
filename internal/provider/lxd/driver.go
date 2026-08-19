@@ -258,6 +258,20 @@ func (d *Driver) GetNetwork(ctx context.Context, name string) (*provider.Network
 }
 
 func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRequest) error {
+	clustered, _ := d.IsClustered(ctx)
+	if clustered {
+		members, err := d.GetClusterMembers(ctx)
+		if err == nil && len(members) > 0 {
+			for _, m := range members {
+				if m.Status.IsReady() {
+					_ = d.client.UseTarget(m.ServerName).CreateNetwork(api.NetworksPost{
+						Name: net.Name,
+						Type: net.Type,
+					})
+				}
+			}
+		}
+	}
 	return d.clusterClient().CreateNetwork(api.NetworksPost{
 		NetworkPut: api.NetworkPut{
 			Description: net.Description,
