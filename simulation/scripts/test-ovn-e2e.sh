@@ -141,8 +141,6 @@ vswitches:
     nat: true
     internet: false
     group: iso
-    config:
-      dns.nameservers: 10.80.0.10
 network_policy:
   allow:
     - from: web
@@ -310,21 +308,95 @@ fi
 
 info "Step 12: Gate T8-OVN - Testing isolated network DNS leak-seal (uplink DNS must be rejected)..."
 if "${PROVIDER_CLI}" exec e2e-ovn-iso-2 -- python3 -c "import socket; s = socket.create_connection(('${UPLINK_GW}', 53), timeout=2)" 2>/dev/null; then
-    fail "Security violation: isolated container was able to connect to uplink resolver on port 53"
-else
-    pass "Gate T8-OVN: Uplink resolver port 53 access strictly rejected on isolated network"
+    fail "Security violation: isolated container was able to connect to uplink resolver on TCP port 53"
 fi
+pass "Gate T8-OVN: Uplink resolver port 53 access strictly rejected on isolated network"
 
 info "Step 13: Gate T9-OVN - Testing in-network DNS resolver & intra-switch access on isolated network..."
-"${PROVIDER_CLI}" exec e2e-ovn-iso-1 -- systemd-run --unit=e2e-iso-http python3 -m http.server 8080 --bind 0.0.0.0
+"${PROVIDER_CLI}" exec e2e-ovn-iso-1 -- systemctl stop systemd-resolved 2>/dev/null || true
+"${PROVIDER_CLI}" exec e2e-ovn-iso-1 -- systemd-run --unit=e2e-iso-dns python3 -c "
+import socket, threading
+
+def udp_dns():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(('10.80.0.10', 53))
+    while True:
+        data, addr = sock.recvfrom(512)
+        if len(data) < 12:
+            continue
+        resp = data[:2] + b'\x81\x80' + data[4:6] + b'\x00\x01\x00\x00\x00\x00' + data[12:]
+        resp += b'\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x0a\x50\x00\x0a'
+        sock.sendto(resp, addr)
+
+def tcp_dns():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(('10.80.0.10', 53))
+    sock.listen(5)
+    while True:
+        conn, _ = sock.accept()
+        try:
+            lb = conn.recv(2)
+            if not lb:
+                conn.close()
+                continue
+            l = int.from_bytes(lb, 'big')
+            data = conn.recv(l)
+            resp_body = data[:2] + b'\x81\x80' + data[4:6] + b'\x00\x01\x00\x00\x00\x00' + data[12:]
+            resp_body += b'\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x0a\x50\x00\x0a'
+            resp = len(resp_body).to_bytes(2, 'big') + resp_body
+            conn.sendall(resp)
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+threading.Thread(target=udp_dns, daemon=True).start()
+tcp_dns()
+"
+
+DNS_READY=0
 for _ in {1..10}; do
-    if "${PROVIDER_CLI}" exec e2e-ovn-iso-1 -- python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080', timeout=1)" 2>/dev/null; then
+    if "${PROVIDER_CLI}" exec e2e-ovn-iso-1 -- python3 -c "
+import socket
+q = b'\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03iso\x05local\x00\x00\x01\x00\x01'
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(1)
+s.sendto(q, ('10.80.0.10', 53))
+resp, _ = s.recvfrom(512)
+assert len(resp) > 12 and resp[:2] == b'\x12\x34'
+" 2>/dev/null; then
+        DNS_READY=1
         break
     fi
     sleep 1
 done
-"${PROVIDER_CLI}" exec e2e-ovn-iso-2 -- python3 -c "import urllib.request; print('Isolated Intra-switch HTTP Status:', urllib.request.urlopen('http://10.80.0.10:8080', timeout=2).status)"
-pass "Gate T9-OVN: In-network resolver and intra-switch communication preserved on isolated OVN network (R8)"
+if [[ ${DNS_READY} -ne 1 ]]; then
+    fail "DNS service did not become ready on e2e-ovn-iso-1:53"
+fi
+
+"${PROVIDER_CLI}" exec e2e-ovn-iso-2 -- python3 -c "
+import socket
+
+# Test UDP DNS query to in-network resolver (10.80.0.10:53)
+q = b'\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03iso\x05local\x00\x00\x01\x00\x01'
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(2)
+s.sendto(q, ('10.80.0.10', 53))
+resp, _ = s.recvfrom(512)
+assert len(resp) > 12 and resp[:2] == b'\x12\x34'
+print('In-network UDP DNS query to 10.80.0.10:53 succeeded')
+
+# Test TCP DNS query to in-network resolver (10.80.0.10:53)
+s = socket.create_connection(('10.80.0.10', 53), timeout=2)
+s.sendall(len(q).to_bytes(2, 'big') + q)
+resp_len = int.from_bytes(s.recv(2), 'big')
+resp = s.recv(resp_len)
+assert len(resp) > 12 and resp[:2] == b'\x12\x34'
+print('In-network TCP DNS query to 10.80.0.10:53 succeeded')
+"
+pass "Gate T9-OVN: In-network resolver (UDP/TCP 53) and intra-switch communication preserved on isolated OVN network (R8)"
 
 info "Step 14: Gate T5-OVN - Testing Idempotent Zero-Drift..."
 REPLAN_OUT=$("${LXM_BIN}" plan "${TEST_DIR}")

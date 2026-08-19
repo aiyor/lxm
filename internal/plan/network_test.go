@@ -985,4 +985,53 @@ func TestPlan_VSwitch_OVN_DNS_Derivation_Nameservers_And_Volatile(t *testing.T) 
 			t.Errorf("expected warning for unresolvable uplink on internet:false OVN, got: %v", np.Warnings)
 		}
 	})
+
+	t.Run("ovn config passthrough preserves dns.nameservers and custom keys", func(t *testing.T) {
+		m := &config.Config{
+			Schema: "lxm/config/v2",
+			VSwitches: []config.VSwitchConfig{
+				{
+					Name:   "ovn-passthrough",
+					Type:   "ovn",
+					Parent: "lxdbr0",
+					IPv4:   "10.80.0.1/24",
+					Group:  "iso",
+					Config: map[string]string{
+						"dns.nameservers": "10.80.0.10,10.80.0.11",
+						"custom.key":      "custom-val",
+					},
+				},
+			},
+		}
+
+		f := testFleet(t, m)
+		rec := plan.NewNetworkReconciler()
+		np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+			Networks: map[string]*provider.Network{},
+		})
+		if err != nil {
+			t.Fatalf("ComputeNetworks: %v", err)
+		}
+
+		var createStep *plan.NetworkStep
+		for i := range np.Steps {
+			if np.Steps[i].Kind == "create_vswitch" && np.Steps[i].Name == "ovn-passthrough" {
+				createStep = &np.Steps[i]
+				break
+			}
+		}
+		if createStep == nil {
+			t.Fatal("expected create_vswitch step for ovn-passthrough")
+		}
+		if createStep.NetPost == nil || createStep.NetPost.Config == nil {
+			t.Fatal("expected non-nil NetPost.Config")
+		}
+
+		if got := createStep.NetPost.Config["dns.nameservers"]; got != "10.80.0.10,10.80.0.11" {
+			t.Errorf("expected dns.nameservers to be preserved, got %q", got)
+		}
+		if got := createStep.NetPost.Config["custom.key"]; got != "custom-val" {
+			t.Errorf("expected custom.key to be preserved, got %q", got)
+		}
+	})
 }

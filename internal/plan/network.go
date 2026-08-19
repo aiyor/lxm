@@ -291,9 +291,6 @@ func buildNetworksPost(vs *network.VSwitch) *provider.NetworkCreateRequest {
 	if netType == "ovn" {
 		cfg := make(map[string]string)
 		for k, v := range vs.Config {
-			if k == "dns.nameservers" {
-				continue // dns.nameservers is used for LXM resolver derivation; not a valid LXD/Incus OVN config key
-			}
 			cfg[k] = v
 		}
 		cfg["network"] = vs.EffectiveParent()
@@ -453,11 +450,12 @@ func desiredNetworkConfig(vs *network.VSwitch, live *provider.Network) map[strin
 	for k, v := range live.Config {
 		out[k] = v
 	}
+	for k, v := range vs.Config {
+		out[k] = v
+	}
 	if vs.EffectiveType() == "bridge" || vs.EffectiveType() == "" {
 		out["bridge.driver"] = vs.EffectiveDriver()
 		out["ipv4.dhcp"] = "true"
-	} else if vs.EffectiveType() == "ovn" {
-		delete(out, "dns.nameservers")
 	}
 	if vs.MTU > 0 {
 		out["bridge.mtu"] = strconv.Itoa(vs.MTU)
