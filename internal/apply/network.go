@@ -49,8 +49,14 @@ func (e *defaultExecutor) executeNetworkStep(ctx context.Context, step plan.Netw
 		}
 		opErr = e.driver.CreateNetworkACL(ctx, *step.ACLPost)
 		if opErr == nil {
-			// Allow provider daemon and OVN database to commit ACL records before attaching to vswitches
-			time.Sleep(500 * time.Millisecond)
+			// Poll until ACL record is committed and queryable in provider database
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				if acl, _, err := e.driver.GetNetworkACL(ctx, step.Name); err == nil && acl != nil {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
 		}
 	case "update_acl":
 		// Fresh ETag and re-fetch immediately before PUT.

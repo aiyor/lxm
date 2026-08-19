@@ -9,12 +9,15 @@ import (
 	"github.com/aiyor/lxm/internal/provider"
 )
 
-// Rule is a single compiled ACL rule (CIDR subjects only — C2/C6).
+// Rule is a single compiled ACL rule.
 type Rule struct {
-	Direction   string `json:"direction"`   // "egress" | "ingress"
-	Action      string `json:"action"`      // "allow" | "reject"
-	Source      string `json:"source"`      // CIDR
-	Destination string `json:"destination"` // CIDR
+	Direction       string `json:"direction"`   // "egress" | "ingress"
+	Action          string `json:"action"`      // "allow" | "reject"
+	Source          string `json:"source"`      // CIDR
+	Destination     string `json:"destination"` // CIDR
+	Protocol        string `json:"protocol,omitempty"`
+	DestinationPort string `json:"destination_port,omitempty"`
+	ICMPType        string `json:"icmp_type,omitempty"`
 }
 
 // CompiledACL is the deterministic rule set for one grouped vswitch.
@@ -191,12 +194,17 @@ func compileRejectRules(f *Fleet, vs *VSwitch) []Rule {
 		}
 	}
 
-	// For OVN vswitches, vs.Subnet is carved out of the internal supernets
-	// so that decomposed reject rules never shadow G0 (intra-switch allow).
+	// For OVN vswitches, vs.Subnet and vs.DNSResolvers are carved out of the internal supernets
+	// so that decomposed reject rules never shadow G0 (intra-switch allow) or uplink DNS queries.
 	// For bridge vswitches, vs.Subnet is intentionally left in the reject set
 	// to protect the host gateway IP alias (.1).
 	if vs.EffectiveType() == "ovn" {
 		carveNets = append(carveNets, vs.Subnet)
+		for _, res := range vs.DNSResolvers {
+			if rNet, err := ParseCIDR(res); err == nil && isIPv4CIDR(res) {
+				carveNets = append(carveNets, rNet)
+			}
+		}
 	}
 
 	rejectSet := make(map[string]bool)
@@ -229,6 +237,21 @@ func compileRejectRules(f *Fleet, vs *VSwitch) []Rule {
 	sort.Strings(rejects)
 
 	var rules []Rule
+	// For OVN vswitches with carved DNS resolvers, emit port-guard reject rules
+	// so that ONLY DNS (port 53 UDP/TCP) can reach the resolver IP, while all other
+	// host gateway services (SSH, API, HTTP, ICMP) are strictly rejected.
+	if vs.EffectiveType() == "ovn" {
+		for _, res := range vs.DNSResolvers {
+			if isIPv4CIDR(res) {
+				rules = append(rules,
+					Rule{Direction: "egress", Action: "reject", Source: src, Destination: res, Protocol: "tcp", DestinationPort: "1-52,54-65535"},
+					Rule{Direction: "egress", Action: "reject", Source: src, Destination: res, Protocol: "udp", DestinationPort: "1-52,54-65535"},
+					Rule{Direction: "egress", Action: "reject", Source: src, Destination: res, Protocol: "icmp4"},
+				)
+			}
+		}
+	}
+
 	for _, r := range rejects {
 		rules = append(rules, Rule{Direction: "egress", Action: "reject", Source: src, Destination: r})
 	}
@@ -239,7 +262,7 @@ func dedupRules(rules []Rule) []Rule {
 	seen := make(map[string]bool)
 	var out []Rule
 	for _, r := range rules {
-		key := r.Direction + "\x00" + r.Action + "\x00" + r.Source + "\x00" + r.Destination
+		key := r.Direction + "\x00" + r.Action + "\x00" + r.Source + "\x00" + r.Destination + "\x00" + r.Protocol + "\x00" + r.DestinationPort + "\x00" + r.ICMPType
 		if seen[key] {
 			continue
 		}
@@ -268,7 +291,7 @@ func cidrCoveredByAny(set map[string]bool, cidr string) bool {
 	return false
 }
 
-// ruleLess orders rules by (direction, action, source, destination).
+// ruleLess orders rules by (direction, action, source, destination, protocol, destination_port, icmp_type).
 func ruleLess(a, b Rule) bool {
 	if a.Direction != b.Direction {
 		return a.Direction < b.Direction
@@ -279,7 +302,16 @@ func ruleLess(a, b Rule) bool {
 	if a.Source != b.Source {
 		return a.Source < b.Source
 	}
-	return a.Destination < b.Destination
+	if a.Destination != b.Destination {
+		return a.Destination < b.Destination
+	}
+	if a.Protocol != b.Protocol {
+		return a.Protocol < b.Protocol
+	}
+	if a.DestinationPort != b.DestinationPort {
+		return a.DestinationPort < b.DestinationPort
+	}
+	return a.ICMPType < b.ICMPType
 }
 
 // ACLToAPIRules converts compiled rules into network ACL rule payloads,
@@ -287,10 +319,13 @@ func ruleLess(a, b Rule) bool {
 func ACLToAPIRules(acl *CompiledACL) (ingress, egress []provider.NetworkACLRule) {
 	for _, r := range acl.Rules {
 		rule := provider.NetworkACLRule{
-			Action:      r.Action,
-			Source:      r.Source,
-			Destination: r.Destination,
-			State:       "enabled",
+			Action:          r.Action,
+			Source:          r.Source,
+			Destination:     r.Destination,
+			Protocol:        r.Protocol,
+			DestinationPort: r.DestinationPort,
+			ICMPType:        r.ICMPType,
+			State:           "enabled",
 		}
 		if r.Direction == "ingress" {
 			ingress = append(ingress, rule)
@@ -308,7 +343,7 @@ func RulesEqual(a, b []provider.NetworkACLRule) bool {
 		return false
 	}
 	key := func(r provider.NetworkACLRule) string {
-		return r.Action + "\x00" + r.Source + "\x00" + r.Destination + "\x00" + r.State
+		return r.Action + "\x00" + r.Source + "\x00" + r.Destination + "\x00" + r.Protocol + "\x00" + r.DestinationPort + "\x00" + r.ICMPType + "\x00" + r.State
 	}
 	sa := make([]string, len(a))
 	sb := make([]string, len(b))

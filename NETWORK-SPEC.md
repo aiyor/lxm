@@ -217,12 +217,13 @@ All generators are formulated from the ACL being compiled — vswitch `V` in gro
 | G5 | ingress | allow | `S_P` ∀ P ∈ H | `S_V` | policy `from G_V → H`, `direction: both` (mirror ingress leg of R4) |
 | G6 | ingress | allow | `S_P` ∀ P ∈ F | `S_V` | policy `from F → G_V`, `direction: both \| egress` — admits F-initiated flows at V's boundary (R4/R5) |
 | G7 | egress | allow | `S_V` | `0.0.0.0/0` | only when `internet: true` on V (R6) |
-| G8 | egress | **reject** | `S_V` | `Decompose(InternalSet, PermittedEgress(V) ∪ ({S_V} if OVN)) ∪ ({S_V} if Bridge)` | only when G7 exists (otherwise the reject default covers) |
+| G8 | egress | **reject** | `S_V` | `Decompose(InternalSet, PermittedEgress(V) ∪ ({S_V} ∪ DNSResolvers if OVN)) ∪ ({S_V} if Bridge)` | only when G7 exists (otherwise the reject default covers) |
+| G9 | egress | **reject** | `S_V` | `<resolver>/32` (ports `1-52,54-65535` TCP/UDP, ICMP4) | **OVN only**: port guards restricting carved resolver access strictly to DNS (port 53) |
 
 `PermittedEgress(V)` = the union of destination subnets produced by G1, G3, G4 (all ≠ `S_V`).
 
 No other rules are generated; everything unmatched hits the reject defaults. Deterministic ordering
-within each ACL: `(direction, action, source, destination)`, then deduplicated.
+within each ACL: `(direction, action, source, destination, protocol, destination_port, icmp_type)`, then deduplicated.
 
 ### 5.2 Internal set, decomposition & host protection
 
@@ -236,7 +237,7 @@ true **CIDR carve-out by prefix decomposition**:
 > produces exactly 16 prefixes — one sibling per level from `/9` to `/24`.
 
 Compliance requirement (enforced by a property test): the emitted reject set contains **no CIDR
-overlapping any G1/G3/G4 destination** (and for OVN, no CIDR overlapping `S_V`).
+overlapping any G1/G3/G4 destination** (and for OVN, no CIDR overlapping `S_V` or `DNSResolvers`).
 
 **Default internal set (locked)** — managed vswitch subnets ∪ operator `internal_cidrs` ∪:
 
@@ -256,9 +257,10 @@ initiate toward the host's physical LAN unless the operator remembered to declar
 supernets + decomposing costs a bounded, small rule set and preserves both LAN-isolation default
 and host protection.
 
-**Own-subnet protection: Bridge vs OVN.**
+**Own-subnet & DNS Resolver protection: Bridge vs OVN.**
 - **Bridge vswitches**: `S_V` is **always** in the G8 reject set. Because the bridge gateway (e.g. `10.60.0.1`) is an IP alias on the host OS network namespace, this rejects instance→host traffic on the gateway IP (SSH, API, host-bound listeners) — with the sole exception of DHCP/DNS (C4, R8). Intra-bridge traffic bypasses the ACL filter (C1) and is unaffected.
-- **OVN vswitches**: The gateway IP lives inside an isolated OVN logical router datapath (not a host OS interface). OVN evaluates ACLs on every logical switch port; therefore, `S_V` is **carved out** of G8 and permitted via **G0** (`allow S_V → S_V`) so intra-switch traffic communicates freely under default-reject without self-blocking. Host services are naturally isolated by the logical router boundary.
+- **OVN vswitches**: The gateway IP lives inside an isolated OVN logical router datapath. OVN evaluates ACLs on every logical switch port; therefore, `S_V` is **carved out** of G8 and permitted via **G0** (`allow S_V → S_V`) so intra-switch traffic communicates freely under default-reject.
+- **OVN DNS Resolution (R8 / G9)**: When `internet: true`, instances need DNS resolution. In LXD/Incus, OVN inherits its DNS upstream from the parent uplink bridge gateway IP (`<uplink_gw>/32`). Because OVN evaluates `reject (priority 400) > allow (priority 300) > baseline (priority 200)`, general RFC1918 reject rules would block DNS to private resolvers. LXM automatically carves `<uplink_gw>/32` out of the G8 reject set and installs **G9 port-guard reject rules** (`1-52,54-65535` for TCP/UDP, plus ICMP4) on that `/32`. This permits UDP/TCP port 53 DNS queries to pass while strictly blocking SSH, LXD API, and all other host ports.
 
 **Host non-RFC1918 addresses (documented caveat).** The internal set covers RFC1918 space,
 operator `internal_cidrs`, and managed vswitch subnets — but **not** the host's public/routable
@@ -522,6 +524,13 @@ with the repository):
 | **T2** cross-bridge source-NAT | See §8.5 — guests see the gateway source, but ACLs match pre-NAT; R2/R4/R5 hold |
 | Conntrack lifecycle | **PASS** — established flow survives a tightening; new connection rejected; tightening warning emitted; kernel timeout 432000 s confirmed |
 | Idempotency | Re-apply after a clean apply produces 0 network steps and 5 instance noops |
+| **T1-OVN** cross-subnet forward connection | **PASS** — forward HTTP connection from web to db allowed |
+| **T2-OVN** inter-group isolation | **PASS** — reverse connection from db to web rejected by OpenFlow ACL |
+| **T3-OVN** intra-switch overlay | **PASS** — intra-switch overlay traffic between instances freely permitted (G0 invariant) |
+| **T5-OVN** zero-drift idempotency | **PASS** — re-apply after clean apply produces 0 network steps and 3 instance noops |
+| **T6-OVN** guest DNS resolution | **PASS** — DNS queries to uplink resolver pass via G8 `/32` carve-out |
+| **T7-OVN** host gateway port protection | **PASS** — host gateway SSH access rejected by G9 non-DNS port guards |
+| **WAN egress** | **PASS** — 0% packet loss on 1.1.1.1 egress ping |
 
 ## 14. Locked Decisions & Open Questions
 

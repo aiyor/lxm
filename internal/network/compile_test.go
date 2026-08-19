@@ -428,3 +428,78 @@ func TestCompile_OVN_RejectSetDoesNotOverlapOwnSubnetOrPermittedEgress(t *testin
 		}
 	}
 }
+
+func TestCompile_OVN_DNSResolver_CarvedAndPortGuarded(t *testing.T) {
+	b := &config.Config{
+		Schema: "lxm/config/v2",
+		VSwitches: []config.VSwitchConfig{
+			{Name: "ovn1", Type: "ovn", Parent: "lxdbr0", IPv4: "10.70.0.1/24", Group: "web"},
+		},
+	}
+	f, err := Union([]*config.Config{b})
+	if err != nil {
+		t.Fatalf("Union: %v", err)
+	}
+
+	// Attach a DNS resolver
+	f.VSwitches[0].DNSResolvers = []string{"10.171.13.1/32"}
+
+	acls := Compile(f)
+	if len(acls) != 1 {
+		t.Fatalf("expected 1 ACL, got %d", len(acls))
+	}
+	rules := acls[0].Rules
+
+	// 1. Verify port guards exist for 10.171.13.1/32
+	hasTCPGuard := false
+	hasUDPGuard := false
+	hasICMPGuard := false
+	for _, r := range rules {
+		if r.Destination == "10.171.13.1/32" && r.Action == "reject" {
+			if r.Protocol == "tcp" && r.DestinationPort == "1-52,54-65535" {
+				hasTCPGuard = true
+			}
+			if r.Protocol == "udp" && r.DestinationPort == "1-52,54-65535" {
+				hasUDPGuard = true
+			}
+			if r.Protocol == "icmp4" {
+				hasICMPGuard = true
+			}
+		}
+	}
+
+	if !hasTCPGuard {
+		t.Errorf("missing TCP non-DNS port guard for 10.171.13.1/32")
+	}
+	if !hasUDPGuard {
+		t.Errorf("missing UDP non-DNS port guard for 10.171.13.1/32")
+	}
+	if !hasICMPGuard {
+		t.Errorf("missing ICMP guard for 10.171.13.1/32")
+	}
+
+	// 2. Verify 10.171.13.1 is not covered by any decomposed supernet reject rule
+	targetIP := net.ParseIP("10.171.13.1")
+	siblingIP := net.ParseIP("10.171.13.2")
+	siblingCovered := false
+
+	for _, r := range rules {
+		if r.Action != "reject" || r.Protocol != "" {
+			continue // Skip port-specific rules, check general CIDR rejects
+		}
+		_, netDst, err := net.ParseCIDR(r.Destination)
+		if err != nil {
+			continue
+		}
+		if netDst.Contains(targetIP) {
+			t.Errorf("general reject rule %s shadows DNS resolver IP 10.171.13.1", r.Destination)
+		}
+		if netDst.Contains(siblingIP) {
+			siblingCovered = true
+		}
+	}
+
+	if !siblingCovered {
+		t.Errorf("sibling host IP 10.171.13.2 was unexpectedly carved out")
+	}
+}

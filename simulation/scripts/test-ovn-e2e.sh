@@ -24,12 +24,10 @@ fail() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 info() { echo -e "${YELLOW}==>${NC} $1"; }
 skip() { echo -e "${YELLOW}[SKIP]${NC} $1"; exit 0; }
 
-LXM_BIN="${LXM_BIN:-/usr/local/bin/lxm}"
+LXM_BIN="${LXM_BIN:-$(pwd)/bin/lxm}"
 if [[ ! -x "${LXM_BIN}" ]]; then
     if command -v lxm >/dev/null 2>&1; then
         LXM_BIN="$(command -v lxm)"
-    else
-        LXM_BIN="$(pwd)/bin/lxm"
     fi
 fi
 
@@ -194,16 +192,25 @@ pass "OVN networks created and confirmed as type: ovn"
 
 info "Step 4: Waiting for container agent readiness..."
 for c in e2e-ovn-web-1 e2e-ovn-web-2 e2e-ovn-db; do
+    READY=0
     for _ in {1..30}; do
         if "${PROVIDER_CLI}" exec "${c}" -- ip addr show eth0 | grep -q "inet "; then
+            READY=1
             break
         fi
         sleep 2
     done
+    if [[ ${READY} -ne 1 ]]; then
+        fail "Container ${c} did not get an IP address on eth0 within the timeout"
+    fi
 done
 pass "Containers booted and IP addresses assigned"
 
-# Configure host nexthop routes for inter-OVN routing via parent uplink bridge
+# Configure host nexthop routes for inter-OVN routing via parent uplink bridge.
+# NOTE: TEST HARNESS SCAFFOLDING, not an lxm feature — two independent OVN networks
+# reach each other (and the WAN) only through the host L3 stack on the uplink bridge.
+# Operators enabling inter-OVN-network or WAN traffic with nat: false must provide
+# equivalent host routing/SNAT themselves (see NETWORK-SPEC §8.5).
 WEB_UPLINK=$("${PROVIDER_CLI}" network show ovn-webbr0 | grep -E "volatile.network.ipv4.address:" | awk '{print $2}' | tr -d '"' || true)
 DB_UPLINK=$("${PROVIDER_CLI}" network show ovn-dbbr0 | grep -E "volatile.network.ipv4.address:" | awk '{print $2}' | tr -d '"' || true)
 if [[ -n "${WEB_UPLINK}" && -n "${DB_UPLINK}" ]]; then
@@ -217,12 +224,17 @@ sudo -n iptables -t nat -C POSTROUTING -s 10.70.0.0/16 ! -o "${UPLINK_NET}" -j M
 
 info "Step 5: Starting HTTP service on e2e-ovn-db (port 8080)..."
 "${PROVIDER_CLI}" exec e2e-ovn-db -- systemd-run --unit=e2e-http python3 -m http.server 8080 --bind 0.0.0.0
+HTTP_READY=0
 for _ in {1..10}; do
     if "${PROVIDER_CLI}" exec e2e-ovn-db -- python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080', timeout=1)" 2>/dev/null; then
+        HTTP_READY=1
         break
     fi
     sleep 1
 done
+if [[ ${HTTP_READY} -ne 1 ]]; then
+    fail "HTTP service did not become ready on e2e-ovn-db:8080"
+fi
 pass "HTTP service active on e2e-ovn-db:8080"
 
 info "Step 6: Gate T3-OVN - Testing intra-switch overlay communication (web-1 -> web-2)..."
@@ -241,10 +253,26 @@ else
 fi
 
 info "Step 9: Testing WAN egress SNAT..."
-"${PROVIDER_CLI}" exec e2e-ovn-web-1 -- ping -c 2 -W 3 1.1.1.1 || true
+if ! "${PROVIDER_CLI}" exec e2e-ovn-web-1 -- ping -c 2 -W 3 1.1.1.1; then
+    fail "WAN egress failed: e2e-ovn-web-1 could not reach 1.1.1.1"
+fi
 pass "WAN egress verified"
 
-info "Step 10: Gate T5-OVN - Testing Idempotent Zero-Drift..."
+info "Step 10: Gate T6-OVN - Testing guest DNS resolution via uplink resolver..."
+if ! "${PROVIDER_CLI}" exec e2e-ovn-web-1 -- python3 -c "import socket; print('DNS resolved google.com:', socket.getaddrinfo('google.com', 80)[0][4])"; then
+    fail "DNS resolution failed: e2e-ovn-web-1 could not resolve hostnames via uplink resolver"
+fi
+pass "Gate T6-OVN: DNS resolution through carved-out uplink resolver verified"
+
+info "Step 11: Gate T7-OVN - Testing host gateway port protection (non-DNS must be rejected)..."
+UPLINK_GW=$("${PROVIDER_CLI}" network get "${UPLINK_NET}" ipv4.address | cut -d/ -f1)
+if "${PROVIDER_CLI}" exec e2e-ovn-web-1 -- python3 -c "import socket; s = socket.create_connection(('${UPLINK_GW}', 22), timeout=2)" 2>/dev/null; then
+    fail "Security violation: container was able to reach host gateway SSH on port 22"
+else
+    pass "Gate T7-OVN: Host gateway SSH access rejected by port guards as expected"
+fi
+
+info "Step 12: Gate T5-OVN - Testing Idempotent Zero-Drift..."
 REPLAN_OUT=$("${LXM_BIN}" plan "${TEST_DIR}")
 if echo "${REPLAN_OUT}" | grep -qE "create_|update_|delete_"; then
     echo "${REPLAN_OUT}"

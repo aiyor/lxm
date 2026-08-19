@@ -271,7 +271,7 @@ func (d *Driver) GetNetwork(ctx context.Context, name string) (*provider.Network
 
 func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRequest) error {
 	clustered, _ := d.IsClustered(ctx)
-	if clustered {
+	if clustered && net.Type != "ovn" {
 		members, err := d.GetClusterMembers(ctx)
 		if err == nil && len(members) > 0 {
 			for _, m := range members {

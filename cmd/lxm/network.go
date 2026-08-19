@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 
 	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/network"
@@ -10,10 +11,7 @@ import (
 	"github.com/aiyor/lxm/internal/provider"
 )
 
-// computeNetworkPlan performs the fleet-scoped network reconciliation for an
-// invocation: union of vswitches/network_policy across ALL loaded manifests
-// (selector-scope invariant §7.2), extension gating (§7.5), live-state diff,
-// and instance-NIC integrity checks (§4).
+// hasOVNSupport reports whether the provider daemon supports OVN virtual switches.
 func hasOVNSupport(svc provider.Driver) bool {
 	return svc.HasExtension("network_ovn") || svc.HasExtension("network_ovn_nat") || svc.HasExtension("network_ovn_acl")
 }
@@ -41,13 +39,6 @@ func computeNetworkPlan(ctx context.Context, svc provider.Driver, loaded []*conf
 		}
 		if vs.EffectiveType() == "ovn" {
 			hasOVN = true
-		}
-	}
-
-	// Rule-count guard (§3.2): >256 reject rules per vswitch warns, proceeds.
-	for _, acl := range network.Compile(fleet) {
-		if n := network.RejectRuleCount(acl); n > 256 {
-			warnings = append(warnings, fmt.Sprintf("ACL %q has %d reject rules (>256); consider fewer inter-group carve-outs", acl.Name, n))
 		}
 	}
 
@@ -87,6 +78,27 @@ func computeNetworkPlan(ctx context.Context, svc provider.Driver, loaded []*conf
 			for i := range acls {
 				live.ACLs[acls[i].Name] = &acls[i]
 			}
+		}
+	}
+
+	// For OVN vswitches with internet: true, auto-resolve parent DNS resolver /32 if not already populated.
+	for _, vs := range fleet.VSwitches {
+		if vs.EffectiveType() == "ovn" && vs.EffectiveInternet() && len(vs.DNSResolvers) == 0 {
+			parent := vs.EffectiveParent()
+			if liveNet, ok := live.Networks[parent]; ok && liveNet.Config != nil {
+				if parentIPv4, ok := liveNet.Config["ipv4.address"]; ok && parentIPv4 != "" && parentIPv4 != "none" {
+					if ip, _, err := net.ParseCIDR(parentIPv4); err == nil && ip.To4() != nil {
+						vs.DNSResolvers = []string{ip.String() + "/32"}
+					}
+				}
+			}
+		}
+	}
+
+	// Rule-count guard (§3.2): >256 reject rules per vswitch warns, proceeds.
+	for _, acl := range network.Compile(fleet) {
+		if n := network.RejectRuleCount(acl); n > 256 {
+			warnings = append(warnings, fmt.Sprintf("ACL %q has %d reject rules (>256); consider fewer inter-group carve-outs", acl.Name, n))
 		}
 	}
 

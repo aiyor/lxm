@@ -11,8 +11,9 @@ import (
 // VSwitch is a resolved, validated managed virtual switch.
 type VSwitch struct {
 	config.VSwitchConfig
-	Subnet *net.IPNet // canonical network CIDR (e.g. 10.50.0.0/24)
-	File   string     // manifest file that declared it (conflict attribution)
+	Subnet       *net.IPNet // canonical network CIDR (e.g. 10.50.0.0/24)
+	File         string     // manifest file that declared it (conflict attribution)
+	DNSResolvers []string   // optional DNS resolver CIDRs (e.g. 10.171.13.1/32) carved out on OVN
 }
 
 // EffectiveType returns the vswitch type (default "bridge").

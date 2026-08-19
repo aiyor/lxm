@@ -8,7 +8,18 @@ test-lxd:
 test-incus:
 	$(SRC)/simulation/scripts/test-incus-e2e.sh
 
-test-all: test-lxd test-incus
+# OVN e2e against whichever provider CLI is on PATH (auto-detected)
+test-ovn:
+	$(SRC)/simulation/scripts/test-ovn-e2e.sh
+
+# OVN e2e pinned to a specific provider — run BOTH to satisfy the matrix (§2.1)
+test-ovn-lxd:
+	PROVIDER_CLI=lxc $(SRC)/simulation/scripts/test-ovn-e2e.sh
+
+test-ovn-incus:
+	PROVIDER_CLI=incus $(SRC)/simulation/scripts/test-ovn-e2e.sh
+
+test-all: test-lxd test-incus test-ovn
 
 # --- Legacy LXD Lab Simulation Targets ---
 provision:

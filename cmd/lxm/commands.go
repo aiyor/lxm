@@ -1608,6 +1608,36 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 
 				if hasOVNSupport(svc) {
 					checks = append(checks, "[OK] provider network_ovn extension")
+
+					// Functional throwaway OVN switch probe to verify OVS/OVN database connectivity (Design §9.3)
+					uplinkParent := ""
+					if nets, err := svc.GetNetworks(ctx); err == nil {
+						for _, n := range nets {
+							if n.Type == "bridge" && n.Config["ipv4.address"] != "" && n.Config["ipv4.address"] != "none" {
+								uplinkParent = n.Name
+								break
+							}
+						}
+					}
+					if uplinkParent != "" {
+						probeOVN := "lxm-probe-ovn"
+						err := svc.CreateNetwork(ctx, provider.NetworkCreateRequest{
+							Name: probeOVN,
+							Type: "ovn",
+							Config: map[string]string{
+								"network":      uplinkParent,
+								"ipv4.address": "10.254.254.1/24",
+								"ipv6.address": "none",
+							},
+						})
+						if err != nil {
+							warnings = append(warnings, fmt.Sprintf("OVN throwaway network probe failed: %v", err))
+							checks = append(checks, "[WARN] provider OVN chassis capability (probe failed)")
+						} else {
+							_ = svc.DeleteNetwork(ctx, probeOVN)
+							checks = append(checks, "[OK] provider OVN network capability (probe create/delete)")
+						}
+					}
 				} else {
 					checks = append(checks, "[INFO] provider network_ovn extension not present (OVN vswitches unavailable)")
 				}

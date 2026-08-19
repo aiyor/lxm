@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,6 +64,20 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 	}
 
 	np := &NetworkPlan{Steps: []NetworkStep{}, Warnings: []string{}}
+
+	// For OVN vswitches with internet: true, auto-resolve parent DNS resolver /32 if not already populated.
+	for _, vs := range f.VSwitches {
+		if vs.EffectiveType() == "ovn" && vs.EffectiveInternet() && len(vs.DNSResolvers) == 0 {
+			parent := vs.EffectiveParent()
+			if liveNet, ok := live.Networks[parent]; ok && liveNet.Config != nil {
+				if parentIPv4, ok := liveNet.Config["ipv4.address"]; ok && parentIPv4 != "" && parentIPv4 != "none" {
+					if ip, _, err := net.ParseCIDR(parentIPv4); err == nil && ip.To4() != nil {
+						vs.DNSResolvers = []string{ip.String() + "/32"}
+					}
+				}
+			}
+		}
+	}
 
 	compiled := network.Compile(f)
 	aclByName := make(map[string]*network.CompiledACL)
@@ -299,6 +314,9 @@ func buildNetworksPost(vs *network.VSwitch) *provider.NetworkCreateRequest {
 	cfg["ipv6.address"] = "none"
 	cfg["dns.domain"] = "lxd"
 	cfg["user.lxm.managed"] = "true"
+	if vs.MTU > 0 {
+		cfg["bridge.mtu"] = strconv.Itoa(vs.MTU)
+	}
 
 	if vs.Group != "" {
 		cfg["security.acls"] = network.ACLName(vs.Name)
@@ -428,8 +446,10 @@ func desiredNetworkConfig(vs *network.VSwitch, live *provider.Network) map[strin
 		out["bridge.driver"] = vs.EffectiveDriver()
 		out["ipv4.dhcp"] = "true"
 	}
-	if vs.EffectiveType() == "ovn" && vs.MTU > 0 {
+	if vs.MTU > 0 {
 		out["bridge.mtu"] = strconv.Itoa(vs.MTU)
+	} else {
+		delete(out, "bridge.mtu")
 	}
 	out["ipv4.address"] = vs.IPv4
 	out["ipv4.nat"] = strconv.FormatBool(vs.EffectiveNAT())
