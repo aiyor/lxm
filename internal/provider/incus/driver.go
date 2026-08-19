@@ -6,16 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"strconv"
-	"sync"
-	"syscall"
 
 	"github.com/gorilla/websocket"
 	incus_client "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
-	"golang.org/x/term"
 
 	"github.com/aiyor/lxm/internal/provider"
 	"github.com/aiyor/lxm/internal/provider/common"
@@ -593,149 +588,42 @@ func (d *Driver) ExecInstance(ctx context.Context, name string, cmd []string, ui
 		return provider.ExecResult{ExitCode: -1}, err
 	}
 	waitErr := common.WaitOpContext(ctx, op)
-
-	var metadata map[string]interface{}
-	if op != nil {
-		meta := op.Get()
-		metadata = meta.Metadata
-	}
-	exitCode, finalErr := common.ExtractExecExitCode(metadata, waitErr)
-
-	res := provider.ExecResult{
-		ExitCode: exitCode,
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-	}
-
-	return res, finalErr
+	return common.SafeExecResult(op, stdout.String(), stderr.String(), waitErr)
 }
 
 func (d *Driver) InteractiveExecInstance(ctx context.Context, name string, cmd []string, uid uint32, env map[string]string) error {
-	stdinFd := int(os.Stdin.Fd())
-	var oldState *term.State
-	var isTerminal bool
-
-	if term.IsTerminal(stdinFd) {
-		isTerminal = true
-		state, err := term.MakeRaw(stdinFd)
-		if err != nil {
-			return fmt.Errorf("setting terminal to raw mode: %w", err)
+	return common.RunInteractiveTerminal(func(width, height int, controlChan <-chan common.ControlMessage) error {
+		execReq := api.InstanceExecPost{
+			Command:     cmd,
+			WaitForWS:   true,
+			Interactive: true,
+			Width:       width,
+			Height:      height,
+			User:        uid,
+			Environment: env,
 		}
-		oldState = state
-		defer func() {
-			_ = term.Restore(stdinFd, oldState)
-		}()
-	}
 
-	width, height := 80, 24
-	if isTerminal {
-		if w, h, err := term.GetSize(stdinFd); err == nil {
-			width, height = w, h
-		}
-	}
-
-	execReq := api.InstanceExecPost{
-		Command:     cmd,
-		WaitForWS:   true,
-		Interactive: true,
-		Width:       width,
-		Height:      height,
-		User:        uid,
-		Environment: env,
-	}
-
-	controlChan := make(chan api.InstanceExecControl, 10)
-	done := make(chan struct{})
-	defer func() {
-		close(done)
-		close(controlChan)
-	}()
-
-	execArgs := &incus_client.InstanceExecArgs{
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		Control: func(conn *websocket.Conn) {
-			for control := range controlChan {
-				_ = conn.WriteJSON(control)
-			}
-		},
-	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			if isTerminal {
-				_ = term.Restore(stdinFd, oldState)
-			}
-			panic(r)
-		}
-	}()
-
-	if isTerminal {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGWINCH, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-		defer signal.Stop(sigChan)
-
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case sig := <-sigChan:
-					switch sig {
-					case syscall.SIGWINCH:
-						w, h, err := term.GetSize(stdinFd)
-						if err == nil {
-							select {
-							case controlChan <- api.InstanceExecControl{
-								Command: "window-resize",
-								Args: map[string]string{
-									"width":  strconv.Itoa(w),
-									"height": strconv.Itoa(h),
-								},
-							}:
-							case <-done:
-								return
-							}
-						}
-					case syscall.SIGINT:
-						select {
-						case controlChan <- api.InstanceExecControl{
-							Command: "signal",
-							Args: map[string]string{
-								"signum": strconv.Itoa(int(syscall.SIGINT)),
-							},
-						}:
-						case <-done:
-							return
-						}
-					default:
-						if oldState != nil {
-							_ = term.Restore(stdinFd, oldState)
-						}
-						signal.Stop(sigChan)
-						if p, err := os.FindProcess(os.Getpid()); err == nil {
-							_ = p.Signal(sig)
-						}
-						return
-					}
-				case <-done:
-					return
+		execArgs := &incus_client.InstanceExecArgs{
+			Stdin:  os.Stdin,
+			Stdout: os.Stdout,
+			Stderr: os.Stderr,
+			Control: func(conn *websocket.Conn) {
+				for msg := range controlChan {
+					_ = conn.WriteJSON(api.InstanceExecControl{
+						Command: msg.Command,
+						Args:    msg.Args,
+					})
 				}
-			}
-		}()
-		defer func() {
-			wg.Wait()
-		}()
-	}
+			},
+		}
 
-	op, err := d.client.ExecInstance(name, execReq, execArgs)
-	if err != nil {
-		return fmt.Errorf("starting interactive exec: %w", err)
-	}
+		op, err := d.client.ExecInstance(name, execReq, execArgs)
+		if err != nil {
+			return fmt.Errorf("starting interactive exec: %w", err)
+		}
 
-	return op.Wait()
+		return op.Wait()
+	})
 }
 
 func (d *Driver) CreateInstanceFile(ctx context.Context, name string, path string, content io.Reader, mode int, uid, gid int64) error {
@@ -797,6 +685,7 @@ func toProviderInstance(inst *api.Instance, etag string) *provider.Instance {
 		StatusCode:      int(inst.StatusCode),
 		Architecture:    inst.Architecture,
 		Location:        inst.Location,
+		Description:     inst.Description,
 		Config:          cfg,
 		ExpandedConfig:  inst.ExpandedConfig,
 		Devices:         inst.Devices,
@@ -936,10 +825,7 @@ func toIncusRules(rules []provider.NetworkACLRule) []api.NetworkACLRule {
 }
 
 func toIncusInstancePost(req provider.InstanceCreateRequest) api.InstancesPost {
-	cfg := req.Config
-	if req.Type == provider.InstanceTypeVM || req.Type == provider.InstanceTypeVirtualMachine {
-		cfg = common.TranslateBootModeToDaemon(provider.InstanceTypeVM, cfg)
-	}
+	cfg := common.TranslateBootModeToDaemon(req.Type, req.Config)
 
 	return api.InstancesPost{
 		Name: req.Name,
@@ -953,10 +839,11 @@ func toIncusInstancePost(req provider.InstanceCreateRequest) api.InstancesPost {
 			Secret:      req.Source.Secret,
 		},
 		InstancePut: api.InstancePut{
-			Config:    cfg,
-			Devices:   req.Devices,
-			Profiles:  req.Profiles,
-			Ephemeral: req.Ephemeral,
+			Description: req.Description,
+			Config:      cfg,
+			Devices:     req.Devices,
+			Profiles:    req.Profiles,
+			Ephemeral:   req.Ephemeral,
 		},
 	}
 }

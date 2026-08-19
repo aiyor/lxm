@@ -32,6 +32,7 @@ type Instance struct {
 	StatusCode      int                          `json:"status_code"`
 	Architecture    string                       `json:"architecture"`
 	Location        string                       `json:"location,omitempty"` // Cluster member node name
+	Description     string                       `json:"description,omitempty"`
 	Config          map[string]string            `json:"config"`
 	ExpandedConfig  map[string]string            `json:"expanded_config,omitempty"`
 	Devices         map[string]map[string]string `json:"devices"`
@@ -53,7 +54,7 @@ func (i *Instance) Writable() InstanceUpdateRequest {
 		Config:      i.Config,
 		Devices:     i.Devices,
 		Profiles:    i.Profiles,
-		Description: "",
+		Description: i.Description,
 	}
 }
 
@@ -263,13 +264,14 @@ type InstanceSource struct {
 }
 
 type InstanceCreateRequest struct {
-	Name      string                       `json:"name"`
-	Type      InstanceType                 `json:"type"`
-	Source    InstanceSource               `json:"source"`
-	Config    map[string]string            `json:"config"`
-	Devices   map[string]map[string]string `json:"devices"`
-	Profiles  []string                     `json:"profiles,omitempty"`
-	Ephemeral bool                         `json:"ephemeral,omitempty"`
+	Name        string                       `json:"name"`
+	Type        InstanceType                 `json:"type"`
+	Source      InstanceSource               `json:"source"`
+	Description string                       `json:"description,omitempty"`
+	Config      map[string]string            `json:"config"`
+	Devices     map[string]map[string]string `json:"devices"`
+	Profiles    []string                     `json:"profiles,omitempty"`
+	Ephemeral   bool                         `json:"ephemeral,omitempty"`
 }
 
 type InstanceUpdateRequest struct {

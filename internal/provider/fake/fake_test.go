@@ -102,3 +102,83 @@ func TestFakeDriver_Operations(t *testing.T) {
 		t.Errorf("expected test-box to be deleted")
 	}
 }
+
+func TestFakeDriver_CreateNetwork_Types(t *testing.T) {
+	ctx := context.Background()
+	driver := fake.New()
+
+	// 1. Create bridge network
+	err := driver.CreateNetwork(ctx, provider.NetworkCreateRequest{
+		Name:        "testbridge0",
+		Type:        "bridge",
+		Description: "test bridge",
+		Config: map[string]string{
+			"ipv4.address": "10.100.0.1/24",
+			"ipv4.nat":     "true",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateNetwork bridge failed: %v", err)
+	}
+
+	// 2. Create OVN network
+	err = driver.CreateNetwork(ctx, provider.NetworkCreateRequest{
+		Name:        "testovn0",
+		Type:        "ovn",
+		Description: "test ovn overlay",
+		Config: map[string]string{
+			"network":      "testbridge0",
+			"ipv4.address": "10.200.0.1/24",
+			"ipv4.nat":     "true",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateNetwork ovn failed: %v", err)
+	}
+
+	// 3. Verify GetNetworks returns both with distinct Types
+	nets, err := driver.GetNetworks(ctx)
+	if err != nil {
+		t.Fatalf("GetNetworks failed: %v", err)
+	}
+	netMap := make(map[string]provider.Network)
+	for _, n := range nets {
+		netMap[n.Name] = n
+	}
+
+	bridge, ok := netMap["testbridge0"]
+	if !ok || bridge.Type != "bridge" || bridge.Config["ipv4.address"] != "10.100.0.1/24" {
+		t.Errorf("bridge network mismatch: %+v", bridge)
+	}
+
+	ovn, ok := netMap["testovn0"]
+	if !ok || ovn.Type != "ovn" || ovn.Config["network"] != "testbridge0" {
+		t.Errorf("ovn network mismatch: %+v", ovn)
+	}
+
+	// 4. Update OVN network
+	err = driver.UpdateNetwork(ctx, "testovn0", provider.NetworkUpdateRequest{
+		Description: "updated ovn",
+		Config: map[string]string{
+			"network":      "testbridge0",
+			"ipv4.address": "10.200.0.1/24",
+			"ipv4.nat":     "false",
+		},
+	}, ovn.ETag)
+	if err != nil {
+		t.Fatalf("UpdateNetwork failed: %v", err)
+	}
+
+	updated, _, err := driver.GetNetwork(ctx, "testovn0")
+	if err != nil || updated.Config["ipv4.nat"] != "false" || updated.Description != "updated ovn" {
+		t.Errorf("expected updated ovn config, got %+v, err: %v", updated, err)
+	}
+
+	// 5. Delete networks
+	if err := driver.DeleteNetwork(ctx, "testovn0"); err != nil {
+		t.Fatalf("DeleteNetwork ovn failed: %v", err)
+	}
+	if _, _, err := driver.GetNetwork(ctx, "testovn0"); err == nil {
+		t.Errorf("expected testovn0 to be deleted")
+	}
+}

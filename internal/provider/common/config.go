@@ -51,7 +51,7 @@ func TranslateDaemonToBootMode(instType provider.InstanceType, cfg map[string]st
 			out["boot.mode"] = "bios"
 		case out["security.secureboot"] == "false":
 			out["boot.mode"] = "uefi-nosecureboot"
-		case out["security.secureboot"] == "true":
+		default:
 			out["boot.mode"] = "uefi-secureboot"
 		}
 	}

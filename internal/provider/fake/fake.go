@@ -359,6 +359,7 @@ func (f *FakeDriver) CreateInstance(ctx context.Context, req provider.InstanceCr
 		Status:       "Stopped",
 		StatusCode:   102,
 		Location:     location,
+		Description:  req.Description,
 		Config:       cfg,
 		Devices:      req.Devices,
 		Ephemeral:    req.Ephemeral,
@@ -399,6 +400,7 @@ func (f *FakeDriver) UpdateInstance(ctx context.Context, name string, req provid
 	if req.Profiles != nil {
 		inst.Profiles = req.Profiles
 	}
+	inst.Description = req.Description
 
 	f.ETags[name] = "fake-etag-updated"
 	return nil

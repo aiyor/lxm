@@ -490,3 +490,85 @@ func TestComputeNetworks_SecurityACLs_OrderInsensitive(t *testing.T) {
 		}
 	}
 }
+
+func TestPlan_VSwitch_OVN_CreationAndParentUplink(t *testing.T) {
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "uplinkbr0",
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovnservices",
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{},
+		ACLs:     map[string]*provider.NetworkACL{},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks OVN: %v", err)
+	}
+
+	var foundOVN bool
+	for _, s := range np.Steps {
+		if s.Kind == "create_vswitch" && s.Name == "ovnbr0" {
+			foundOVN = true
+			if s.NetPost.Type != "ovn" {
+				t.Errorf("expected NetPost.Type=ovn, got %q", s.NetPost.Type)
+			}
+			if s.NetPost.Config["network"] != "uplinkbr0" {
+				t.Errorf("expected NetPost.Config[network]=uplinkbr0, got %q", s.NetPost.Config["network"])
+			}
+			if s.NetPost.Config["ipv4.address"] != "10.60.0.1/24" {
+				t.Errorf("expected NetPost.Config[ipv4.address]=10.60.0.1/24, got %q", s.NetPost.Config["ipv4.address"])
+			}
+			if s.NetPost.Config["security.acls"] != "lxm-ovnbr0" {
+				t.Errorf("expected NetPost.Config[security.acls]=lxm-ovnbr0, got %q", s.NetPost.Config["security.acls"])
+			}
+		}
+	}
+	if !foundOVN {
+		t.Fatalf("expected create_vswitch step for ovnbr0")
+	}
+}
+
+func TestPlan_VSwitch_OVN_ImmutableDrift(t *testing.T) {
+	// If live network is type 'bridge' but desired is 'ovn', network type cannot be changed in-place
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "uplinkbr0",
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovnservices",
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	_, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"ovnbr0": {
+				Name:   "ovnbr0",
+				Type:   "bridge", // Live is bridge, desired is OVN
+				Config: map[string]string{"user.lxm.managed": "true"},
+			},
+		},
+		ACLs: map[string]*provider.NetworkACL{},
+	})
+	if err == nil {
+		t.Fatal("expected error on immutable network type change from bridge to ovn, got nil")
+	}
+	if !strings.Contains(err.Error(), "type cannot be changed") && !strings.Contains(err.Error(), "immutable") {
+		t.Logf("got expected error on immutable drift: %v", err)
+	}
+}

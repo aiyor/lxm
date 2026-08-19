@@ -63,10 +63,24 @@ func TestTranslateDaemonToBootMode(t *testing.T) {
 		t.Errorf("expected boot.mode=uefi-nosecureboot, got %q", outVM2["boot.mode"])
 	}
 
-	// 4. VM: uefi-secureboot
+	// 4. VM: uefi-secureboot (explicit)
 	vmCfg3 := map[string]string{"security.secureboot": "true"}
 	outVM3 := common.TranslateDaemonToBootMode(provider.InstanceTypeVM, vmCfg3)
 	if outVM3["boot.mode"] != "uefi-secureboot" {
 		t.Errorf("expected boot.mode=uefi-secureboot, got %q", outVM3["boot.mode"])
+	}
+
+	// 5. VM: uefi-secureboot (omitted on VM defaults to uefi-secureboot)
+	vmCfg4 := map[string]string{"image.os": "ubuntu"}
+	outVM4 := common.TranslateDaemonToBootMode(provider.InstanceTypeVM, vmCfg4)
+	if outVM4["boot.mode"] != "uefi-secureboot" {
+		t.Errorf("expected omitted secureboot on VM to map to boot.mode=uefi-secureboot, got %q", outVM4["boot.mode"])
+	}
+
+	// 6. Container: omitted secureboot should NOT set boot.mode
+	containerCfg2 := map[string]string{"image.os": "ubuntu"}
+	outContainer2 := common.TranslateDaemonToBootMode(provider.InstanceTypeContainer, containerCfg2)
+	if _, hasBootMode := outContainer2["boot.mode"]; hasBootMode {
+		t.Errorf("expected container with omitted secureboot to not have boot.mode, got %+v", outContainer2)
 	}
 }
