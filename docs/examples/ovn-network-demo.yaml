@@ -1,0 +1,38 @@
+schema: lxm/config/v2
+include:
+  - _base.yaml
+name: ovn-service-01
+status: present
+state: running
+image: ubuntu:22.04
+groups: [services]
+sudo: false
+inject_ssh_keys: false
+
+vswitches:
+  - name: vmbr0
+    type: bridge
+    ipv4: 10.30.0.1/24
+    group: clients
+
+  - name: ovnbr0
+    type: ovn
+    parent: lxdbr0
+    ipv4: 10.60.0.1/24
+    group: services
+    mtu: 1442
+
+network_policy:
+  allow:
+    - from: clients
+      to: services
+      direction: both
+
+networks:
+  - name: eth0
+    ipv4: 10.60.0.50
+    parent: ovnbr0
+
+wait:
+  cloud_init: 5m
+  required: true

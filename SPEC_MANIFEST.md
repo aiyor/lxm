@@ -126,13 +126,13 @@ vswitches:
 | :-- | :-- | :-- | :-- |
 | `name` | string | — (required) | `=~"^[a-z][a-z0-9-]{0,30}$"`. |
 | `type` | string | `"bridge"` | `"bridge"` \| `"ovn"`. `"bridge"` creates a local Linux bridge; `"ovn"` creates an Open Virtual Network overlay switch across cluster nodes. Immutable after create (exit 3). |
-| `parent` | string | — | Uplink parent network (e.g. `lxdbr0` / `incusbr0`). Required on `type: ovn`; forbidden on `type: bridge`. Immutable after create (exit 3). |
+| `parent` | string | — | Uplink parent network (e.g. `lxdbr0` / `incusbr0`). Required on `type: ovn` (immutable after create, exit 3); optional/ignored on `type: bridge`. |
 | `driver` | string | `"native"` | `"native" \| "openvswitch"`; bridge-only (forbidden on `type: ovn`); immutable after create (exit 3). |
 | `ipv4` | string | — (required) | CIDR whose address is the **first usable host** (network `.1`); prefix `/8`–`/29` (Go-validated). Immutable after create (exit 3). |
 | `ipv6` | string | `"none"` | v1 lock: only `"none"`. |
-| `nat` | bool | `true` | → `ipv4.nat`. |
+| `nat` | bool | `true` | → `ipv4.nat`. Setting `nat: false` while `internet: true` emits a plan warning that wildcard egress runs without source NAT. |
 | `group` | string | — | Group membership; absence ⇒ managed for addressing only (no ACLs). |
-| `internet` | bool | `true` | Only meaningful with `group`. |
+| `internet` | bool | `true` | Only meaningful with `group`. `internet: false` on OVN virtual switches emits port 53 reject rules targeting derived upstream resolvers to block outbound DNS. |
 | `mtu` | int | — | Optional MTU override (maps to `bridge.mtu` on OVN; must be ∈ [576, 65535]). |
 | `config` | map[string]string | — | Optional backend-specific passthrough options (managed keys take strict precedence). |
 

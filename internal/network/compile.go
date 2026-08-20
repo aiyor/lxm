@@ -129,9 +129,9 @@ func Compile(f *Fleet) []*CompiledACL {
 			acl.Rules = append(acl.Rules, Rule{Direction: "egress", Action: "allow", Source: src, Destination: "0.0.0.0/0"})
 			acl.Rules = append(acl.Rules, compileRejectRules(f, vs)...)
 		} else if vs.EffectiveType() == "ovn" {
-			// On internet: false OVN networks, the provider daemon baseline rule installs a priority 200 allow
-			// for DNS (port 53) to the upstream router/resolver, which would sit above default reject (0).
-			// To strictly seal this DNS exfiltration leak (EC-18 / R8), emit priority 400 reject rules on port 53.
+			// On internet: false OVN networks, emit port 53 reject rules for derived upstream resolvers.
+			// The provider maps reject->400, allow->300, baseline->200 on OVN (and orders reject before
+			// allow on nftables bridges), ensuring explicit port 53 rejects override baseline DNS allows (EC-18/R8).
 			// Skip in-network resolvers located inside vs.Subnet (R8), which are legitimately reachable
 			// via G0 (allow S_V -> S_V) for intra-subnet DNS resolution.
 			for _, res := range vs.DNSResolvers {

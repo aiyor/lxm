@@ -102,7 +102,9 @@ fleets.
 
 The mental model:
 
-* A **vswitch** is a provider managed virtual switch (Linux bridge or OVN overlay switch) that lxm creates, owns, and reconciles (`vswitches:`).
+* A **vswitch** is a provider-managed virtual switch that lxm creates, owns, and reconciles (`vswitches:`).
+  * **Linux Bridge (`type: bridge`)**: Local bridge on a single host.
+  * **OVN Overlay Switch (`type: ovn`)**: Distributed virtual switch spanning multiple nodes across a cluster via Geneve encapsulation.
 * A **network group** is a set of vswitches that share policy (the `group:` field on a vswitch).
 * A **network policy** (`network_policy:`) expresses which groups may talk to which other groups,
   mutually or one-way. lxm compiles it into **network ACLs** (one `lxm-<vswitch>` ACL per
@@ -117,17 +119,30 @@ schema: lxm/config/v2
 base: true
 
 vswitches:
+  # Local Linux bridge for single-host VM workloads
   - name: vmbr0
+    type: bridge
     ipv4: 10.30.0.1/24
     group: vms
+
+  # Local Linux bridge for container services
   - name: cbr0
+    type: bridge
     ipv4: 10.40.0.1/24
     group: containers
-  - name: svcbr0
-    ipv4: 10.50.0.1/24
-    group: services
-  - name: labbr0
+
+  # Distributed OVN overlay virtual switch across cluster nodes
+  - name: ovnbr0
+    type: ovn
+    parent: lxdbr0        # uplink parent bridge (e.g. lxdbr0 or incusbr0)
     ipv4: 10.60.0.1/24
+    group: services
+    mtu: 1442             # 1500 - 58 bytes Geneve tunnel overhead
+
+  # Isolated quarantine network with outbound internet access only
+  - name: labbr0
+    type: bridge
+    ipv4: 10.70.0.1/24
     group: quarantine
 
 network_policy:
@@ -148,24 +163,35 @@ include: [_base.yaml]
 name: web-a
 networks:
   - name: eth0
-    parent: vmbr0
+    parent: ovnbr0
+    ipv4: 10.60.0.10
 ```
+
+### OVN Virtual Switches & Multi-Node Cluster Overlays
+
+Open Virtual Network (OVN) brings software-defined networking (SDN) and multi-node overlay capabilities to LXD and Incus:
+
+* **Cross-Node Connectivity**: Instances placed on the same OVN vswitch (or permitted by `network_policy`) can communicate seamlessly across different physical cluster nodes using Geneve encapsulation tunnels without any manual physical network re-configuration.
+* **Uplink Parent Network (`parent:`)**: Every `type: ovn` virtual switch requires an uplink parent bridge (such as `lxdbr0` or `incusbr0`). The uplink must be an existing, active managed bridge configured with an IPv4 address (`ipv4.address`) and NAT (`ipv4.nat: true`), which provides WAN egress routing and acts as the source for upstream DNS resolver derivation.
+* **MTU Sizing (`mtu:`)**: Geneve tunnel encapsulation adds 58 bytes of encapsulation header. When running over a standard physical network with 1500 MTU, specify `mtu: 1442` on OVN virtual switches to prevent packet fragmentation. On networks with jumbo frames (9000 MTU), set `mtu: 8942`.
 
 ### What the policy means
 
-* **Intra-vswitch** — instances on the *same* bridge talk at L2 with no filtering (LXD bridge
-  ACLs cannot filter within a bridge; segmentation is per-vswitch).
+* **Intra-vswitch**:
+  * On a **Linux Bridge (`type: bridge`)**, instances on the same bridge talk at L2 with no filtering (bridge ACLs operate at the bridge boundary).
+  * On an **OVN Virtual Switch (`type: ovn`)**, OVN evaluates ACLs at every logical switch port under a default-reject policy. `lxm` automatically generates **G0** intra-switch allow rules (`allow S_V → S_V`) so instances on the same OVN switch communicate freely.
 * **Intra-group** — vswitches sharing a `group` may communicate freely, mutually.
 * **Inter-group** — **denied (reject) by default** in both directions unless an `allow` matches.
 * **`direction: both`** (default) — mutual communication.
 * **`direction: egress`** — the `from` group may initiate toward `to`; the `to` group may not
-  initiate back. Reply traffic of established flows is handled by LXD's stateful allows.
+  initiate back. Reply traffic of established flows is handled by stateful allows.
 * **Isolated "internet-only" network** — a group with **no** `allow` entries referencing it keeps
   outbound internet (default `internet: true`) while every internal subnet is rejected.
-
-Each vswitch's own subnet is always in the reject set, so instances cannot reach the **host
-gateway** on the bridge (SSH/LXD API/exporters bound there) — except DHCP/DNS, which ride LXD's
-baseline rules that ACLs cannot block.
+* **Guest DNS Resolution & Host Gateway Protection**:
+  * For `internet: true` networks, `lxm` generates **G8** `/32` resolver carve-out rules allowing UDP/TCP DNS queries (port 53) to reachable internal/RFC1918 upstream resolvers while sealing off all other internal/RFC1918 traffic (public resolvers like `1.1.1.1` pass via the internet wildcard).
+  * IPv4 DNS resolvers are derived automatically in order: explicit `DNSResolvers` → vswitch `dns.nameservers` → parent `dns.nameservers` → parent `ipv4.address` gateway.
+  * For **`internet: false`** OVN networks, `lxm` emits explicit port 53 (UDP & TCP) reject rules targeting derived upstream resolvers to block outbound DNS queries, while keeping in-subnet resolvers open for intra-subnet DNS. If an upstream resolver cannot be derived, `lxm plan` warns: `specify dns.nameservers to install port 53 reject rules`.
+  * **G9** port guards explicitly block non-DNS host ports (SSH, API listeners) on the gateway IP.
 
 ### `internal_cidrs` — declaring more "internal" space
 
@@ -189,6 +215,7 @@ with `internet: true`. Entries outside the defaults are the ones that matter: a
 
 ### Caveats
 
+* **`nat: false` with `internet: true` drops egress.** If a grouped virtual switch disables NAT (`nat: false`) while keeping internet access (`internet: true`), `lxm plan` emits a warning: instances will send egress traffic without source NAT, and packets with RFC1918 source IPs will be dropped upstream by the host or router firewall.
 * **Guest routing can bypass policy.** An instance with NICs on vswitches from two different groups
   can forward traffic between them if guest IP forwarding is enabled. `lxm plan` warns when it sees
   this (R10); it cannot prevent it.

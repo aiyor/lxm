@@ -145,9 +145,26 @@ The v2 schema ships fail-safe defaults, and lxm tells you when a manifest silent
 
 The general rule: **every permission is a manifest line.** If a capability is important enough to grant, it is important enough to be in git, reviewed, and reproducible — that is what "declarative" buys you.
 
+## Design virtual switches & network segmentation deliberately
+
+Virtual switches (`vswitches:`) and traffic policies (`network_policy:`) give you declarative, software-defined microsegmentation for your fleet:
+
+* **Choose the right switch type:**
+  * Use **Linux Bridges (`type: bridge`)** for single-host environments where minimal overhead and direct host routing are preferred.
+  * Use **OVN Overlay Switches (`type: ovn`)** when deploying across a multi-node cluster. OVN establishes distributed Geneve overlay tunnels so instances on different physical nodes communicate as if on the same local L2 switch.
+* **Account for Geneve encapsulation MTU:**
+  * On standard 1500 MTU physical networks, set `mtu: 1442` on OVN virtual switches to prevent packet fragmentation caused by Geneve's 58-byte tunnel header. On networks with jumbo frames (9000 MTU), set `mtu: 8942`.
+* **Group by security boundary, not container name:**
+  * Assign virtual switches to semantic groups (e.g. `frontend`, `api`, `databases`, `quarantine`). Inter-group traffic is denied by default (`reject`), which limits blast radius in multi-tier applications.
+* **Seal host exposure with `internal_cidrs`:**
+  * Default internal isolation covers RFC1918 space (`10/8`, `172.16/12`, `192.168/16`), `100.64/10`, and managed subnets. If your host has public or routable IP addresses exposed to the network, declare them under `network_policy.internal_cidrs` to block guest-to-host traffic.
+* **Verify OVN health with doctor:**
+  * Run `lxm doctor` before applying OVN manifests to verify that the provider daemon has `network_ovn` enabled and that OVS/OVN database connectivity is healthy.
+
 ## Next steps
 
 * [Troubleshooting](troubleshooting.md) — exit-code matrix and failure signatures.
 * [Authoring Manifests](howto/author-manifests.md) — the base-manifest mechanics in full.
+* [Configuring Networking](howto/configure-networking.md) — virtual switch and network policy guide.
 * [Provisioning with Recipes](howto/provision-with-recipes.md) — recipe semantics and the `--force` gate.
 * [Pruning Orphans](howto/prune-orphans.md) — the exact scope rules that keep `--prune` safe.
