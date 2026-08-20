@@ -267,8 +267,45 @@ lxm compile config/ --in-place
 
 See [Migrating from lxm v1](howto/migrate-v1.md) for what the migration changes and what to review after.
 
+### Provider lacks OVN extension
+
+**Symptoms.** `plan` or `apply` fails when declaring an OVN virtual switch:
+
+```text
+Error: server lacks the network_ovn extension; OVN virtual switches cannot be created
+```
+
+**Cause.** The target provider daemon (LXD or Incus) does not have OVN integration installed or enabled.
+
+**Fix.** Install and configure Open vSwitch / OVN on the host or cluster nodes (`ovn-central`, `ovn-host`, `openvswitch-switch`), initialize OVN chassis integration in LXD/Incus, or switch to `type: bridge` for single-host deployments. Run `lxm doctor` to verify when OVN becomes active.
+
+### Provider lacks network ACL extension
+
+**Symptoms.** `plan` or `apply` fails when assigning a `group:` to a virtual switch:
+
+```text
+Error: server lacks the network_acl extension; grouped vswitches cannot be policy-managed (needs provider with network ACL support)
+```
+
+**Cause.** The target provider daemon does not support network ACLs.
+
+**Fix.** Upgrade LXD (5.0+ LTS / 6.x) or Incus (6.x / 7.x) to a release that supports `network_acl`, or remove the `group:` field if traffic filtering is not required (ungrouped virtual switches remain managed for IP addressing and routing).
+
+### Provider lacks OVN network ACL support (`network_ovn_acl`)
+
+**Symptoms.** `lxm plan` succeeds, but `lxm apply` fails with a provider error when creating or updating a grouped OVN virtual switch:
+
+```text
+Error: Failed to update network "ovnbr0": Config key "security.acls" is not supported on network type "ovn"
+```
+
+**Cause.** `lxm plan` checks general OVN availability via `hasOVNSupport` (which accepts `network_ovn`, `network_ovn_nat`, or `network_ovn_acl`) and general ACLs via `network_acl`. However, attaching ACLs to an OVN virtual switch (`group:`) configures `security.acls`, which specifically requires the `network_ovn_acl` provider extension. A daemon with `network_ovn` but without `network_ovn_acl` passes initial plan gates but fails during apply.
+
+**Fix.** Upgrade the provider daemon (LXD / Incus) to a release that supports `network_ovn_acl`, or remove the `group:` field from the OVN virtual switch to use it for addressing and overlay routing without ACL policies.
+
 ## Next steps
 
 * [Best Practices](best-practices.md) — the operating habits that prevent most of these failures.
 * [Results & Exit Codes](reference/results-and-exit-codes.md) — the exact machine contract for the codes above.
+* [Configuring Networking](howto/configure-networking.md) — OVN and virtual switch guide.
 * [Diagnosing with doctor](howto/diagnose-with-doctor.md) — the doctor output in full.

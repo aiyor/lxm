@@ -198,19 +198,55 @@ wait:
 * **Firmware & QEMU**: The `vm:` block controls UEFI/BIOS firmware and QEMU arguments.
 * **Agent Handshake**: `wait.agent` ensures `lxm` waits for the guest `lxd-agent` over virtio channel before running recipes or network gates.
 
-## 6. Validate your manifests
+## 6. Authoring Virtual Switches & Network Policy
+
+To manage software-defined virtual switches (Linux bridges or multi-node OVN overlay switches) and traffic policies across your fleet, declare `vswitches:` and `network_policy:` (typically in `_base.yaml`):
+
+```yaml
+# _base.yaml
+schema: lxm/config/v2
+base: true
+
+vswitches:
+  # Linux bridge for local communication
+  - name: vmbr0
+    type: bridge
+    ipv4: 10.30.0.1/24
+    group: internal
+
+  # Distributed OVN overlay virtual switch across cluster nodes
+  - name: ovnbr0
+    type: ovn
+    parent: lxdbr0       # uplink parent bridge
+    ipv4: 10.60.0.1/24
+    group: services
+    mtu: 1442
+
+network_policy:
+  allow:
+    - from: internal
+      to: services
+      direction: both
+```
+
+* **`vswitches`**: Declares managed bridges or OVN overlay networks. `parent:` is required on `type: ovn` to specify the uplink network.
+* **`network_policy`**: Groups communicate freely within their group; inter-group traffic is denied by default unless permitted by an `allow` rule.
+* **Fleet-scoped**: `vswitches` and `network_policy` are unioned across all manifests in your fleet.
+
+## 7. Validate your manifests
 
 Before applying anything, confirm every file compiles and preview what it would do:
 
 ```text
 $ lxm compile docs/examples/
-Successfully compiled 7 manifest(s):
+Successfully compiled 8 manifest(s):
   - docs/examples/.lxm/compiled/absent-demo.yaml
   - docs/examples/.lxm/compiled/cloud-init-demo.yaml
   - docs/examples/.lxm/compiled/dev-station.yaml
   - docs/examples/.lxm/compiled/inheritance-demo.yaml
   - docs/examples/.lxm/compiled/mounts-demo.yaml
   - docs/examples/.lxm/compiled/mounts-map.yaml
+  - docs/examples/.lxm/compiled/ovn-network-demo.yaml
   - docs/examples/.lxm/compiled/recipes-demo.yaml
 ```
 

@@ -136,10 +136,29 @@ mounts:
   - source: /tmp/projects
     path: /var/www/html
 
+vswitches:
+  - name: vmbr0
+    type: bridge
+    ipv4: 10.30.0.1/24
+    group: clients
+
+  - name: ovnbr0
+    type: ovn
+    parent: lxdbr0       # uplink parent bridge (e.g. lxdbr0 or incusbr0)
+    ipv4: 10.60.0.1/24
+    group: services
+    mtu: 1442
+
+network_policy:
+  allow:
+    - from: clients
+      to: services
+      direction: both
+
 networks:
   - name: eth0
-    ipv4: 10.10.10.50
-    parent: lxdbr0
+    ipv4: 10.60.0.50
+    parent: ovnbr0
 
 wait:
   cloud_init: 5m

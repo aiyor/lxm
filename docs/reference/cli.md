@@ -10,22 +10,25 @@ If a command is not listed here, it does not exist — run `lxm --help` to see t
 
 ```
 lxm
-├── apply       Reconcile desired state (manifests) against live LXD containers
+├── apply       Reconcile desired state (manifests) against live LXD/Incus containers and VMs
 ├── compile     Emit resolved v2 manifests and migrate legacy v1 configs
 ├── completion  Generate shell completion scripts (bash, zsh, fish, powershell)
 ├── diff        Show Plan scoped to a single container
-├── doctor      Run fleet and host diagnostic checks
+├── disk        Manage storage disks and custom volumes (gc)
+├── doctor      Run fleet and host diagnostic checks (socket, extensions, OVN probes)
 ├── include     Add an include directive to all configs in a directory
 ├── init        Scaffold a new fleet directory with base config and template manifests
 ├── list        List fleet inventory (managed containers and live state)
 ├── plan        Compute and print the reconciliation Plan without mutating live state
+├── remote      Manage Incus and LXD remote endpoints and trust authentication (add, list, remove, ...)
 ├── rollback    Restore an instance to a previous snapshot
 ├── run         Run a script across targeted fleet containers
 ├── script      Run a single script on a container
 ├── shell       Open an interactive shell in a container
-├── snapshot    Manage instance snapshots
+├── snapshot    Manage instance snapshots (create, list, delete, gc)
 ├── ssh         Open an SSH session to a container (hardened host-key verification)
-└── status      Show cloud-init, network, recipe, and snapshot status for a container
+├── status      Show cloud-init, network, recipe, and snapshot status for a container
+└── vswitch     Manage virtual switches and network ACLs (gc)
 ```
 
 ## Global persistent flags
@@ -41,6 +44,11 @@ Flags:
       --format string           Output format (text, json) (default "text")
   -g, --group strings           Filter to containers matching ANY tag (OR)
       --include-hidden          Include _-prefixed base config files
+      --project string          Target project name
+      --provider string         Target provider type (incus, lxd, auto)
+      --remote string           Target remote name from remotes.yaml
+      --target string           Cluster member target node
+  -v, --version                 version for lxm
       --wait                    Wait for cloud-init to finish
 ```
 
@@ -48,11 +56,15 @@ Flags:
 |---|---|
 | `--debug` | Enable verbose debug logging. |
 | `--dry-run` | Show what would change without applying any mutation. No container, snapshot, or recipe state changes. |
+| `--exclude-group` | Exclude containers matching **any** of the given group tags (OR). |
 | `--force` | Re-run recipes even if their idempotency hashes match. |
 | `--format` | Output format: `text` (default) or `json` (`lxm/result/v1` envelope, see [Results & Exit Codes](results-and-exit-codes.md)). Rejected with exit code 2 on the interactive `shell` and `ssh` commands. |
 | `-g, --group` | Filter to containers matching **any** of the given group tags (OR union). Repeatable, and comma-separated values are accepted. |
-| `--exclude-group` | Exclude containers matching **any** of the given group tags (OR). |
 | `--include-hidden` | Include `_`-prefixed base config files during directory discovery. |
+| `--project` | Target specific multi-tenant project name on the provider. |
+| `--provider` | Target provider driver type (`incus`, `lxd`, or `auto`). |
+| `--remote` | Target remote endpoint name configured in `~/.config/lxm/remotes.yaml`. |
+| `--target` | Target specific cluster member node in a cluster environment. |
 | `--wait` | Wait for cloud-init readiness before executing recipes. Overrides `wait.required`. |
 | `-v, --version` | Print the version and exit. |
 
@@ -480,15 +492,33 @@ Example (text):
 
 ```text
 $ lxm compile docs/examples/
-Successfully compiled 7 manifest(s):
+Successfully compiled 8 manifest(s):
   - docs/examples/.lxm/compiled/absent-demo.yaml
   - docs/examples/.lxm/compiled/cloud-init-demo.yaml
   - docs/examples/.lxm/compiled/dev-station.yaml
   - docs/examples/.lxm/compiled/inheritance-demo.yaml
   - docs/examples/.lxm/compiled/mounts-demo.yaml
   - docs/examples/.lxm/compiled/mounts-map.yaml
+  - docs/examples/.lxm/compiled/ovn-network-demo.yaml
   - docs/examples/.lxm/compiled/recipes-demo.yaml
 ```
+
+---
+
+## `lxm disk`
+
+Manage storage disks and custom volumes.
+
+```
+Usage:
+  lxm disk [command]
+
+Available Commands:
+  gc          Garbage collect orphaned managed storage volumes
+```
+
+**Subcommands:**
+* **`gc [file|dir]`** — Garbage-collect unreferenced managed storage volumes (`user.lxm.managed=true`).
 
 ---
 
@@ -508,21 +538,59 @@ Usage:
 
 **Arguments:** at most one — a directory to scan for manifests (default `.`).
 
-**Exit codes:** `0` success (warnings do not change the exit code) · `2` invalid `--format` · `4` LXD socket unreachable when `--skip-remote` is not set.
+**Exit codes:** `0` success (warnings do not change the exit code) · `2` invalid `--format` · `4` Provider socket unreachable when `--skip-remote` is not set.
 
-**Notes:** checks LXD socket reachability, `lxd` group membership, kernel idmapped-mount support, and flags un-migrated manifests. See [Diagnosing with doctor](../howto/diagnose-with-doctor.md).
+**Notes:** checks provider socket reachability, `network_acl` and `network_ovn` capability probes (with non-destructive throwaway probes to verify OVN and bridge ACL health when an IPv4 uplink bridge is present), group membership (`lxd`/`incus-admin`), kernel idmapped-mount support, KVM hardware virtualization (`/dev/kvm`), and flags un-migrated manifests. See [Diagnosing with doctor](../howto/diagnose-with-doctor.md).
 
 Example (text):
 
 ```text
-$ lxm doctor --skip-remote docs/examples/
+$ lxm doctor
 Running lxm doctor diagnostic checks...
-[SKIP] Remote LXD socket check skipped
+[OK] LXD socket reachable
+[OK] provider network_acl extension
+[OK] bridge network ACL capability (probe create/delete)
+[OK] provider network_ovn extension
+[OK] provider OVN network capability (probe create/delete)
 [OK] lxd group membership
 [OK] Kernel idmapped mounts support
 [OK] KVM hardware virtualization (/dev/kvm accessible)
-[OK] All discovered configs migrated to lxm/config/v2
 ```
+
+---
+
+## `lxm remote`
+
+Manage Incus and LXD remote endpoints and trust authentication in `~/.config/lxm/remotes.yaml`.
+
+```
+Usage:
+  lxm remote [command]
+
+Available Commands:
+  add         Add a new remote server and enroll client trust certificate
+  list        List configured remote endpoints
+  remove      Remove a remote endpoint from config
+  set-default Set the default remote for CLI operations
+  set-project Set the default project for a remote endpoint
+```
+
+---
+
+## `lxm vswitch`
+
+Manage virtual switches and network ACLs.
+
+```
+Usage:
+  lxm vswitch [command]
+
+Available Commands:
+  gc          Garbage collect orphaned managed network ACLs
+```
+
+**Subcommands:**
+* **`gc [file|dir]`** — Garbage-collect orphaned managed network ACLs (`lxm-<name>`) no longer referenced by active vswitch declarations.
 
 ---
 

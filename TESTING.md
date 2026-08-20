@@ -173,7 +173,7 @@ flowchart LR
    - **G8 decomposition & quarantine**: `internet: true` allows WAN egress while RFC1918 / `internal_cidrs` / sibling subnets are rejected; the emitted reject set never overlaps the own subnet or any permitted egress (property-tested in `internal/network`).
    - **DNS Resolution on `internet: true` (T6-OVN)**: assert instance DNS resolution through the carved-out uplink resolver on grouped OVN networks.
    - **Host Gateway Port Protection (T7-OVN)**: assert that non-DNS ports (SSH `:22`, API `:8443`, web services) on the carved host gateway resolver `/32` are strictly rejected by G9 port guards.
-   - **Isolated Network DNS Leak-Seal (T8-OVN)**: assert that on `internet: false` OVN networks, port 53 access to the upstream uplink resolver is rejected (priority 400 override of daemon baseline).
+   - **Isolated Network DNS Leak-Seal (T8-OVN)**: assert that on `internet: false` OVN networks, port 53 access to the upstream uplink resolver is rejected.
    - **In-Network Resolver & Intra-Switch DNS (T9-OVN)**: assert that in-network DNS resolvers located within `S_V` remain accessible via G0 on `internet: false` networks without being blocked (R8).
    - **Immutability (Exit 3)**: in-place drift of `type`, `parent`, or `ipv4` is refused at plan time.
    - **Extension gating (Exit 4)**: planning refuses OVN vswitches when the provider lacks the `network_ovn` extension.
@@ -416,6 +416,6 @@ If a pre-release gate fails:
 4. **ETag Conflict Retries**:
    - If concurrent modifications cause HTTP 412 / ETag mismatch errors, ensure driver re-fetches latest state before applying mutations.
 5. **OVN DNS Resolution** (known risk area, Pillar 2):
-   - If instance DNS fails on a grouped OVN network, remember that the provider prioritizes rules by action (`drop > reject > allow`), so lxm's G8 rejects (e.g. `10.0.0.0/9`) out-rank both the G7 wildcard allow and the daemon's baseline DNS allow (priority 200 vs. port-group reject 400). A private uplink resolver (e.g. `10.0.3.1`) falls inside the reject set.
+   - If instance DNS fails on a grouped OVN network, remember that the provider prioritizes rules by action (`drop > reject > allow`), so lxm's G8 rejects (e.g. `10.0.0.0/9`) out-rank both the G7 wildcard allow and daemon default routing. A private uplink resolver (e.g. `10.0.3.1`) falls inside the reject set.
    - Verify with `getent hosts deb.debian.org` (or `incus exec <c> -- getent hosts ...`); check `network show <ovn>` for the advertised `dns.nameservers`.
    - Remediation: set `dns.nameservers` on the OVN network to non-RFC1918 resolvers, or carve the uplink subnet/DNS out of the reject set (compiler change), or declare the uplink as a permitted egress.

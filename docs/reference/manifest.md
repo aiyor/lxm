@@ -316,7 +316,7 @@ Duplicate interface names are rejected after merge, and `ipv4` must parse as an 
 
 ## Virtual switches (`vswitches`)
 
-Fleet-scoped declaration of LXD managed bridges that lxm creates, owns, and reconciles. Usually
+Fleet-scoped declaration of provider-managed virtual switches (Linux bridges or multi-node OVN overlay switches) that lxm creates, owns, and reconciles. Usually
 declared in `_base.yaml` and inherited by every leaf via `include`; identical declarations across
 loaded manifests are deduplicated, and conflicting ones fail with both file paths cited.
 
@@ -339,11 +339,25 @@ vswitches:
     mtu: 1442              # optional MTU override (maps to bridge.mtu)
 ```
 
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `name` | string | — (required) | `=~"^[a-z][a-z0-9-]{0,30}$"`. |
+| `type` | string | `"bridge"` | `"bridge"` \| `"ovn"`. `"bridge"` creates a local Linux bridge; `"ovn"` creates an Open Virtual Network overlay switch across cluster nodes. Immutable after create (exit 3). |
+| `parent` | string | — | Uplink parent network (e.g. `lxdbr0` / `incusbr0`). Required on `type: ovn` (immutable after create, exit 3); optional/ignored on `type: bridge`. |
+| `driver` | string | `"native"` | `"native" \| "openvswitch"`; bridge-only (forbidden on `type: ovn`); immutable after create (exit 3). |
+| `ipv4` | string | — (required) | CIDR whose address is the **first usable host** (network `.1`); prefix `/8`–`/29` (Go-validated). Immutable after create (exit 3). |
+| `ipv6` | string | `"none"` | v1 lock: only `"none"`. |
+| `nat` | bool | `true` | → `ipv4.nat`. Setting `nat: false` while `internet: true` emits a plan warning that wildcard egress runs without source NAT. |
+| `group` | string | — | Group membership; absence ⇒ managed for addressing only (no ACLs). |
+| `internet` | bool | `true` | Only meaningful with `group`. `internet: false` on OVN virtual switches emits port 53 reject rules targeting derived upstream resolvers to block outbound DNS. |
+| `mtu` | int | — | Optional MTU override (maps to `bridge.mtu` on OVN; must be ∈ [576, 65535]). |
+| `config` | map[string]string | — | Optional backend-specific passthrough options (managed keys take strict precedence). |
+
 Validation (Go-side, exit 3): `ipv4` must parse as a CIDR whose address is the first usable host
 (`10.10.50.1/16` is rejected — it is not the first host of `10.10.0.0/16`); prefix length must be
 `/8`–`/29`; `parent` is required for `type: ovn`; `driver` is bridge-only; names must be unique; subnets must not overlap; `internet: false` requires a `group`.
 
-An **ungrouped** vswitch is managed for addressing only — stock LXD open routing, no ACLs. Removing
+An **ungrouped** vswitch is managed for addressing only — stock open routing, no ACLs. Removing
 a `group` later detaches the ACL and leaves it unmanaged. Removing a vswitch from the manifests
 stops managing it; lxm never deletes networks.
 
@@ -351,7 +365,7 @@ stops managing it; lxm never deletes networks.
 
 ## Network policy (`network_policy`)
 
-Fleet-scoped, group-based traffic policy compiled deterministically into LXD network ACLs (`lxm-
+Fleet-scoped, group-based traffic policy compiled deterministically into network ACLs (`lxm-
 <vswitch>` per grouped vswitch) with a `reject` default. Like `vswitches`, it is typically declared
 in `_base.yaml`, unioned (and deduplicated) across all loaded manifests.
 
@@ -372,6 +386,10 @@ network_policy:
   warning.
 * `internal_cidrs` adds operator-declared networks to the **internal set** that `internet: true`
   groups may not reach — this is the remedy for the [non-RFC1918 host-address caveat](../howto/configure-networking.md#internal_cidrs--declaring-more-internal-space).
+* On **OVN virtual switches**:
+  * Intra-switch overlay traffic is allowed via **G0** rules under default-reject.
+  * When `internet: true`, **G8** resolver `/32` carveouts allow DNS queries to internal/RFC1918 upstream resolvers derived in order (explicit `DNSResolvers` → vswitch `dns.nameservers` → parent `dns.nameservers` → parent `ipv4.address` gateway), while public resolvers (like `1.1.1.1`) pass through the internet wildcard without needing carveouts.
+  * When `internet: false`, explicit port 53 (UDP & TCP) reject rules are generated targeting derived upstream resolvers, while preserving in-subnet resolvers for intra-subnet DNS. If upstream resolvers cannot be derived, a plan warning is emitted prompting for `dns.nameservers`.
 
 See [Configuring Networking → Managed virtual switches & network segmentation](../howto/configure-networking.md#managed-virtual-switches--network-segmentation) for the full model,
 the `parent:` join pattern, and the caveats.
