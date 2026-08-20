@@ -295,7 +295,13 @@ func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRe
 	}
 
 	// Poll until network transitions from Pending to Created/active state
-	deadline := time.Now().Add(5 * time.Second)
+	timeout := 15 * time.Second
+	if dl, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(dl); remaining > 0 && remaining < timeout {
+			timeout = remaining
+		}
+	}
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
