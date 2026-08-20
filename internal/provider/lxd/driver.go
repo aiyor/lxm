@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	lxd_client "github.com/canonical/lxd/client"
@@ -262,30 +261,25 @@ func (d *Driver) GetNetwork(ctx context.Context, name string) (*provider.Network
 }
 
 func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRequest) error {
-	clustered, _ := d.IsClustered(ctx)
+	clustered, err := d.IsClustered(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check cluster state before creating network %q: %w", net.Name, err)
+	}
 	if clustered && net.Type != "ovn" {
-		members, err := d.GetClusterMembers(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to list cluster members for network %q staging: %w", net.Name, err)
-		}
-		for _, m := range members {
-			postErr := d.client.UseTarget(m.ServerName).CreateNetwork(api.NetworksPost{
-				Name: net.Name,
-				Type: net.Type,
-			})
-			if postErr != nil && !strings.Contains(strings.ToLower(postErr.Error()), "already exists") {
-				return fmt.Errorf("failed to stage network %q on cluster member %q: %w", net.Name, m.ServerName, postErr)
-			}
+		if err := d.stageNetworkOnMembers(ctx, net); err != nil {
+			return err
 		}
 	}
-	err := d.clusterClient().CreateNetwork(api.NetworksPost{
+
+	post := api.NetworksPost{
 		NetworkPut: api.NetworkPut{
 			Description: net.Description,
 			Config:      net.Config,
 		},
 		Name: net.Name,
 		Type: net.Type,
-	})
+	}
+	err = d.clusterClient().CreateNetwork(post)
 	if err != nil {
 		return err
 	}
@@ -320,6 +314,49 @@ func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRe
 			status = n.Status
 		}
 		return fmt.Errorf("network %q not ready after creation (status: %q, OVN chassis or uplink may be unresponsive)", net.Name, status)
+	}
+	return nil
+}
+
+// stageNetworkOnMembers creates the network on each cluster member before the
+// global create finalizes it, so every member hosts a fully configured bridge.
+// Members that already host the network are skipped, and a network that a
+// concurrent apply stages between our probe and create is accepted, making the
+// operation idempotent without relying on error-text matching.
+func (d *Driver) stageNetworkOnMembers(ctx context.Context, net provider.NetworkCreateRequest) error {
+	members, err := d.GetClusterMembers(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list cluster members for network %q staging: %w", net.Name, err)
+	}
+	post := api.NetworksPost{
+		NetworkPut: api.NetworkPut{
+			Description: net.Description,
+			Config:      net.Config,
+		},
+		Name: net.Name,
+		Type: net.Type,
+	}
+	for _, m := range members {
+		if err := stageNetworkOnMember(d.client.UseTarget(m.ServerName), net.Name, post); err != nil {
+			return fmt.Errorf("failed to stage network %q on cluster member %q: %w", net.Name, m.ServerName, err)
+		}
+	}
+	return nil
+}
+
+// stageNetworkOnMember stages the network on a single member unless it is
+// already present. If a concurrent apply creates it between the probe and our
+// create, the create failure is confirmed against the live member state and
+// treated as success.
+func stageNetworkOnMember(client lxd_client.InstanceServer, name string, post api.NetworksPost) error {
+	if _, _, err := client.GetNetwork(name); err == nil {
+		return nil // already staged on this member
+	}
+	if err := client.CreateNetwork(post); err != nil {
+		if _, _, getErr := client.GetNetwork(name); getErr == nil {
+			return nil // a concurrent apply won the race
+		}
+		return err
 	}
 	return nil
 }
