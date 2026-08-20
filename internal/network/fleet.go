@@ -11,8 +11,9 @@ import (
 // VSwitch is a resolved, validated managed virtual switch.
 type VSwitch struct {
 	config.VSwitchConfig
-	Subnet *net.IPNet // canonical network CIDR (e.g. 10.50.0.0/24)
-	File   string     // manifest file that declared it (conflict attribution)
+	Subnet       *net.IPNet // canonical network CIDR (e.g. 10.50.0.0/24)
+	File         string     // manifest file that declared it (conflict attribution)
+	DNSResolvers []string   // optional DNS resolver CIDRs (e.g. 10.171.13.1/32) carved out on OVN
 }
 
 // EffectiveType returns the vswitch type (default "bridge").
@@ -89,12 +90,27 @@ func vswitchEqual(a, b config.VSwitchConfig) bool {
 	}
 	return a.Name == b.Name &&
 		a.Type == b.Type &&
+		a.Parent == b.Parent &&
 		a.Driver == b.Driver &&
 		a.IPv4 == b.IPv4 &&
 		a.IPv6 == b.IPv6 &&
 		boolVal(a.NAT) == boolVal(b.NAT) &&
 		a.Group == b.Group &&
-		boolVal(a.Internet) == boolVal(b.Internet)
+		boolVal(a.Internet) == boolVal(b.Internet) &&
+		a.MTU == b.MTU &&
+		configMapsEqual(a.Config, b.Config)
+}
+
+func configMapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // boolVal reports the effective value of an optional bool, treating a nil

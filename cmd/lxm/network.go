@@ -10,6 +10,11 @@ import (
 	"github.com/aiyor/lxm/internal/provider"
 )
 
+// hasOVNSupport reports whether the provider daemon supports OVN virtual switches.
+func hasOVNSupport(svc provider.Driver) bool {
+	return svc.HasExtension("network_ovn") || svc.HasExtension("network_ovn_nat") || svc.HasExtension("network_ovn_acl")
+}
+
 // computeNetworkPlan performs the fleet-scoped network reconciliation for an
 // invocation: union of vswitches/network_policy across ALL loaded manifests
 // (selector-scope invariant §7.2), extension gating (§7.5), live-state diff,
@@ -26,17 +31,13 @@ func computeNetworkPlan(ctx context.Context, svc provider.Driver, loaded []*conf
 	warnings := append([]string{}, fleet.Warnings...)
 
 	hasGrouped := false
+	hasOVN := false
 	for _, vs := range fleet.VSwitches {
 		if vs.Group != "" {
 			hasGrouped = true
-			break
 		}
-	}
-
-	// Rule-count guard (§3.2): >256 reject rules per vswitch warns, proceeds.
-	for _, acl := range network.Compile(fleet) {
-		if n := network.RejectRuleCount(acl); n > 256 {
-			warnings = append(warnings, fmt.Sprintf("ACL %q has %d reject rules (>256); consider fewer inter-group carve-outs", acl.Name, n))
+		if vs.EffectiveType() == "ovn" {
+			hasOVN = true
 		}
 	}
 
@@ -49,8 +50,11 @@ func computeNetworkPlan(ctx context.Context, svc provider.Driver, loaded []*conf
 	// surface: even a vswitch-less fleet needs the live network set so the
 	// NIC unknown-parent check (§4) doesn't misfire on the stock lxdbr0 / incusbr0.
 	if svc != nil {
+		if hasOVN && !hasOVNSupport(svc) {
+			return nil, nil, &exitError{code: 4, err: fmt.Errorf("server lacks the network_ovn extension; OVN virtual switches cannot be created")}
+		}
 		if hasGrouped && !svc.HasExtension("network_acl") {
-			return nil, nil, &exitError{code: 4, err: fmt.Errorf("server lacks the network_acl extension; grouped vswitches cannot be policy-managed (needs provider with bridge network ACL support)")}
+			return nil, nil, &exitError{code: 4, err: fmt.Errorf("server lacks the network_acl extension; grouped vswitches cannot be policy-managed (needs provider with network ACL support)")}
 		}
 		// Live-state listing failures are fatal (exit 4): planning against
 		// an empty live set would propose create steps for existing objects

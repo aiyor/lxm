@@ -95,18 +95,18 @@ web-01  Running  true     web     ubuntu  10.171.13.120
 
 ## Managed virtual switches & network segmentation
 
-Beyond attaching NICs to LXD's default bridge, lxm can **create and own the bridges themselves**
+Beyond attaching NICs to the provider's default bridge, lxm can **create and own virtual switches (Linux bridges or multi-node OVN overlay switches)**
 and enforce **group-based traffic policy** between them. This is the `vswitches:` and
 `network_policy:` feature — declarative, deterministic network segmentation for container and VM
 fleets.
 
 The mental model:
 
-* A **vswitch** is a LXD managed bridge that lxm creates, owns, and reconciles (`vswitches:`).
+* A **vswitch** is a provider managed virtual switch (Linux bridge or OVN overlay switch) that lxm creates, owns, and reconciles (`vswitches:`).
 * A **network group** is a set of vswitches that share policy (the `group:` field on a vswitch).
 * A **network policy** (`network_policy:`) expresses which groups may talk to which other groups,
-  mutually or one-way. lxm compiles it into **LXD network ACLs** (one `lxm-<vswitch>` ACL per
-  grouped vswitch) and applies them with a `reject` default.
+  mutually or one-way. lxm compiles it into **network ACLs** (one `lxm-<vswitch>` ACL per
+  grouped vswitch) with prefix decomposition and applies them with a `reject` default.
 
 Both blocks are **fleet-scoped**: they are usually declared once in a `_base.yaml` and inherited by
 every leaf manifest (`include: [_base.yaml]`), then unioned across all loaded manifests.

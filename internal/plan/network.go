@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,7 +65,25 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 
 	np := &NetworkPlan{Steps: []NetworkStep{}, Warnings: []string{}}
 
+	// For OVN vswitches, auto-resolve parent DNS resolver /32 if not already populated.
+	for _, vs := range f.VSwitches {
+		if vs.EffectiveType() == "ovn" {
+			resolvers, warn := deriveDNSResolvers(vs, live)
+			if len(vs.DNSResolvers) == 0 && len(resolvers) > 0 {
+				vs.DNSResolvers = resolvers
+			}
+			if warn != "" {
+				np.Warnings = append(np.Warnings, warn)
+			}
+		}
+	}
+
 	compiled := network.Compile(f)
+	for _, acl := range compiled {
+		if n := network.RejectRuleCount(acl); n > 256 {
+			np.Warnings = append(np.Warnings, fmt.Sprintf("ACL %q has %d reject rules (>256); consider fewer inter-group carve-outs", acl.Name, n))
+		}
+	}
 	aclByName := make(map[string]*network.CompiledACL)
 	for _, acl := range compiled {
 		aclByName[acl.Name] = acl
@@ -270,18 +289,17 @@ func buildNetworksPost(vs *network.VSwitch) *provider.NetworkCreateRequest {
 	}
 
 	if netType == "ovn" {
-		if vs.EffectiveParent() != "" {
-			cfg["network"] = vs.EffectiveParent()
+		cfg := make(map[string]string)
+		for k, v := range vs.Config {
+			cfg[k] = v
 		}
-		if vs.IPv4 != "" {
-			cfg["ipv4.address"] = vs.IPv4
-		}
-		if vs.IPv6 != "" {
-			cfg["ipv6.address"] = vs.IPv6
-		} else {
-			cfg["ipv6.address"] = "none"
-		}
+		cfg["network"] = vs.EffectiveParent()
+		cfg["ipv4.address"] = vs.IPv4
+		cfg["ipv6.address"] = "none"
 		cfg["ipv4.nat"] = strconv.FormatBool(vs.EffectiveNAT())
+		if vs.MTU > 0 {
+			cfg["bridge.mtu"] = strconv.Itoa(vs.MTU)
+		}
 		cfg["dns.domain"] = "lxd"
 		cfg["user.lxm.managed"] = "true"
 		if vs.Group != "" {
@@ -304,6 +322,9 @@ func buildNetworksPost(vs *network.VSwitch) *provider.NetworkCreateRequest {
 	cfg["ipv6.address"] = "none"
 	cfg["dns.domain"] = "lxd"
 	cfg["user.lxm.managed"] = "true"
+	if vs.MTU > 0 {
+		cfg["bridge.mtu"] = strconv.Itoa(vs.MTU)
+	}
 
 	if vs.Group != "" {
 		cfg["security.acls"] = network.ACLName(vs.Name)
@@ -319,7 +340,7 @@ func buildNetworksPost(vs *network.VSwitch) *provider.NetworkCreateRequest {
 }
 
 // checkImmutableDrift returns a plan error when a live vswitch's immutable
-// keys (ipv4.address, driver) drift from the desired spec (§7.3).
+// keys (ipv4.address, driver, network parent) drift from the desired spec (§7.3).
 func checkImmutableDrift(vs *network.VSwitch, live *provider.Network) error {
 	if live.Type != "" && vs.EffectiveType() != "" && live.Type != vs.EffectiveType() {
 		return fmt.Errorf("vswitch %q: type change %q -> %q is immutable after create", vs.Name, live.Type, vs.EffectiveType())
@@ -338,6 +359,14 @@ func checkImmutableDrift(vs *network.VSwitch, live *provider.Network) error {
 		desiredDriver := vs.EffectiveDriver()
 		if liveDriver != desiredDriver {
 			return fmt.Errorf("vswitch %q: bridge.driver change %q -> %q is immutable after create (migrate to a new vswitch name)", vs.Name, liveDriver, desiredDriver)
+		}
+	}
+
+	if vs.EffectiveType() == "ovn" {
+		liveParent := live.Config["network"]
+		desiredParent := vs.EffectiveParent()
+		if liveParent != "" && desiredParent != "" && liveParent != desiredParent {
+			return fmt.Errorf("vswitch %q: uplink parent change %q -> %q requires migrating instances to a new vswitch name (uplink parent is immutable in lxm policy)", vs.Name, liveParent, desiredParent)
 		}
 	}
 	return nil
@@ -421,9 +450,17 @@ func desiredNetworkConfig(vs *network.VSwitch, live *provider.Network) map[strin
 	for k, v := range live.Config {
 		out[k] = v
 	}
+	for k, v := range vs.Config {
+		out[k] = v
+	}
 	if vs.EffectiveType() == "bridge" || vs.EffectiveType() == "" {
 		out["bridge.driver"] = vs.EffectiveDriver()
 		out["ipv4.dhcp"] = "true"
+	}
+	if vs.MTU > 0 {
+		out["bridge.mtu"] = strconv.Itoa(vs.MTU)
+	} else if live.Config["user.lxm.managed"] == "true" {
+		delete(out, "bridge.mtu")
 	}
 	out["ipv4.address"] = vs.IPv4
 	out["ipv4.nat"] = strconv.FormatBool(vs.EffectiveNAT())
@@ -527,4 +564,75 @@ func NetworkStepKindOrder(kind string) int {
 	default:
 		return 2
 	}
+}
+
+// deriveDNSResolvers extracts effective DNS resolver IPs for an OVN vswitch.
+// Resolves in order: explicit vs.DNSResolvers -> vs.Config["dns.nameservers"] ->
+// parentNet.Config["dns.nameservers"] -> parentNet.Config["ipv4.address"] (or volatile address if "auto").
+func deriveDNSResolvers(vs *network.VSwitch, live *NetworkLiveState) ([]string, string) {
+	if len(vs.DNSResolvers) > 0 {
+		return vs.DNSResolvers, ""
+	}
+	var resolvers []string
+	addIP := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || raw == "none" || raw == "auto" {
+			return
+		}
+		if ip, _, err := net.ParseCIDR(raw); err == nil && ip.To4() != nil {
+			resolvers = append(resolvers, ip.String()+"/32")
+			return
+		}
+		if ip := net.ParseIP(raw); ip != nil && ip.To4() != nil {
+			resolvers = append(resolvers, ip.String()+"/32")
+			return
+		}
+	}
+
+	if vs.Config != nil {
+		if ns, ok := vs.Config["dns.nameservers"]; ok && ns != "" {
+			for _, item := range strings.FieldsFunc(ns, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+				addIP(item)
+			}
+		}
+	}
+
+	if live != nil && live.Networks != nil {
+		parentName := vs.EffectiveParent()
+		if parentNet, ok := live.Networks[parentName]; ok && parentNet.Config != nil {
+			if ns, ok := parentNet.Config["dns.nameservers"]; ok && ns != "" {
+				for _, item := range strings.FieldsFunc(ns, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+					addIP(item)
+				}
+			}
+			if ipStr, ok := parentNet.Config["ipv4.address"]; ok && ipStr != "" && ipStr != "none" {
+				if ipStr == "auto" {
+					if volIP, ok := parentNet.Config["volatile.network.ipv4.address"]; ok && volIP != "" {
+						addIP(volIP)
+					}
+				} else {
+					addIP(ipStr)
+				}
+			}
+		}
+	}
+
+	var warn string
+	if len(resolvers) == 0 {
+		if vs.EffectiveInternet() {
+			warn = fmt.Sprintf("vswitch %q: unable to derive uplink DNS resolver; private DNS queries may be rejected by G8 policy", vs.Name)
+		} else {
+			warn = fmt.Sprintf("vswitch %q: internet: false on OVN but unable to derive uplink DNS resolver to seal daemon baseline DNS; specify dns.nameservers to install port 53 reject rules", vs.Name)
+		}
+	}
+
+	seen := make(map[string]bool)
+	var deduped []string
+	for _, r := range resolvers {
+		if !seen[r] {
+			seen[r] = true
+			deduped = append(deduped, r)
+		}
+	}
+	return deduped, warn
 }

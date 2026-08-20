@@ -568,7 +568,543 @@ func TestPlan_VSwitch_OVN_ImmutableDrift(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on immutable network type change from bridge to ovn, got nil")
 	}
-	if !strings.Contains(err.Error(), "type cannot be changed") && !strings.Contains(err.Error(), "immutable") {
-		t.Logf("got expected error on immutable drift: %v", err)
+	if !strings.Contains(err.Error(), "type change") && !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("unexpected error message: %v", err)
 	}
+}
+
+func TestPlan_VSwitch_OVN_ParentDrift_Error(t *testing.T) {
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "uplinkbr1", // Desired parent changed
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovnservices",
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	_, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"ovnbr0": {
+				Name: "ovnbr0",
+				Type: "ovn",
+				Config: map[string]string{
+					"user.lxm.managed": "true",
+					"network":          "uplinkbr0", // Live parent
+					"ipv4.address":     "10.60.0.1/24",
+				},
+			},
+		},
+		ACLs: map[string]*provider.NetworkACL{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "uplink parent change") {
+		t.Fatalf("expected immutable uplink parent drift error, got: %v", err)
+	}
+}
+
+func TestPlan_VSwitch_OVN_MTU_Update(t *testing.T) {
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "uplinkbr0",
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovnservices",
+				MTU:    1400,
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"ovnbr0": {
+				Name:        "ovnbr0",
+				Type:        "ovn",
+				Description: "lxm managed vswitch (group ovnservices)",
+				Config: map[string]string{
+					"user.lxm.managed": "true",
+					"network":          "uplinkbr0",
+					"ipv4.address":     "10.60.0.1/24",
+					"bridge.mtu":       "1442", // Live MTU
+					"security.acls":    "lxm-ovnbr0",
+				},
+			},
+		},
+		ACLs: map[string]*provider.NetworkACL{
+			"lxm-ovnbr0": {Name: "lxm-ovnbr0"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+
+	var foundUpdate bool
+	for _, s := range np.Steps {
+		if s.Kind == "update_vswitch" && s.Name == "ovnbr0" {
+			foundUpdate = true
+			if s.NetPut.Config["bridge.mtu"] != "1400" {
+				t.Errorf("expected updated bridge.mtu=1400, got %q", s.NetPut.Config["bridge.mtu"])
+			}
+		}
+	}
+	if !foundUpdate {
+		t.Fatalf("expected update_vswitch step for MTU change: %+v", np.Steps)
+	}
+}
+
+func TestPlan_VSwitch_Bridge_MTU(t *testing.T) {
+	bridgeCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name: "br0",
+				Type: "bridge",
+				IPv4: "10.30.0.1/24",
+				MTU:  1400,
+			},
+		},
+	}
+	f := testFleet(t, bridgeCfg)
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+
+	if len(np.Steps) != 1 || np.Steps[0].Kind != "create_vswitch" {
+		t.Fatalf("expected 1 create_vswitch step, got: %+v", np.Steps)
+	}
+	if np.Steps[0].NetPost.Config["bridge.mtu"] != "1400" {
+		t.Errorf("expected bridge.mtu=1400 on bridge create, got %q", np.Steps[0].NetPost.Config["bridge.mtu"])
+	}
+}
+
+func TestPlan_VSwitch_MTU_Removal_ClearsConfig(t *testing.T) {
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "uplinkbr0",
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovnservices",
+				// MTU omitted (0)
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"ovnbr0": {
+				Name:        "ovnbr0",
+				Type:        "ovn",
+				Description: "lxm managed vswitch (group ovnservices)",
+				Config: map[string]string{
+					"user.lxm.managed": "true",
+					"network":          "uplinkbr0",
+					"ipv4.address":     "10.60.0.1/24",
+					"bridge.mtu":       "1400", // Stale live MTU
+					"security.acls":    "lxm-ovnbr0",
+				},
+			},
+		},
+		ACLs: map[string]*provider.NetworkACL{
+			"lxm-ovnbr0": {Name: "lxm-ovnbr0"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+
+	var foundUpdate bool
+	for _, s := range np.Steps {
+		if s.Kind == "update_vswitch" && s.Name == "ovnbr0" {
+			foundUpdate = true
+			if _, exists := s.NetPut.Config["bridge.mtu"]; exists {
+				t.Errorf("expected bridge.mtu to be deleted from desired config, but found %q", s.NetPut.Config["bridge.mtu"])
+			}
+		}
+	}
+	if !foundUpdate {
+		t.Fatalf("expected update_vswitch step to clear stale MTU: %+v", np.Steps)
+	}
+}
+
+func TestPlan_VSwitch_OVN_AutoResolve_DNS(t *testing.T) {
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "lxdbr0",
+				IPv4:   "10.70.0.1/24",
+				Group:  "web",
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"lxdbr0": {
+				Name: "lxdbr0",
+				Type: "bridge",
+				Config: map[string]string{
+					"ipv4.address": "10.171.13.1/24",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+
+	// Verify that ACL was compiled with the DNS resolver port guards
+	if len(np.Steps) == 0 {
+		t.Fatalf("expected steps, got none")
+	}
+
+	for _, s := range np.Steps {
+		if s.Kind == "create_acl" && s.Name == "lxm-ovnbr0" {
+			hasTCPGuard := false
+			for _, r := range s.ACLPost.Egress {
+				if r.Destination == "10.171.13.1/32" && r.Protocol == "tcp" && r.DestinationPort == "1-52,54-65535" {
+					hasTCPGuard = true
+				}
+			}
+			if !hasTCPGuard {
+				t.Errorf("expected DNS port guard in created ACL for 10.171.13.1/32, got egress: %+v", s.ACLPost.Egress)
+			}
+		}
+	}
+}
+
+func TestPlan_VSwitch_Adopted_Preserves_Foreign_Bridge_MTU(t *testing.T) {
+	ovnCfg := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:  "br0",
+				Type:  "bridge",
+				IPv4:  "10.60.0.1/24",
+				Group: "services",
+				// MTU omitted (0)
+			},
+		},
+	}
+	f := testFleet(t, ovnCfg)
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"br0": {
+				Name:        "br0",
+				Type:        "bridge",
+				Description: "external adopted bridge",
+				Config: map[string]string{
+					// user.lxm.managed NOT true (adopted network)
+					"bridge.driver": "native",
+					"ipv4.address":  "10.60.0.1/24",
+					"ipv4.dhcp":     "true",
+					"ipv4.nat":      "true",
+					"ipv6.address":  "none",
+					"dns.domain":    "lxd",
+					"bridge.mtu":    "9000", // Foreign MTU
+					"security.acls": "lxm-br0",
+				},
+			},
+		},
+		ACLs: map[string]*provider.NetworkACL{
+			"lxm-br0": {Name: "lxm-br0"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ComputeNetworks: %v", err)
+	}
+
+	for _, s := range np.Steps {
+		if s.Kind == "update_vswitch" && s.Name == "br0" {
+			if s.NetPut.Config["bridge.mtu"] != "9000" {
+				t.Errorf("expected foreign bridge.mtu 9000 to be preserved, got %q", s.NetPut.Config["bridge.mtu"])
+			}
+		}
+	}
+}
+
+func TestPlan_VSwitch_OVN_DNS_Derivation_Nameservers_And_Volatile(t *testing.T) {
+	t.Run("derived from vswitch dns.nameservers config", func(t *testing.T) {
+		cfg := &config.Config{
+			Schema: "lxm/config/v2",
+			Base:   true,
+			VSwitches: []config.VSwitchConfig{
+				{
+					Name:   "ovnbr0",
+					Type:   "ovn",
+					Parent: "lxdbr0",
+					IPv4:   "10.70.0.1/24",
+					Group:  "web",
+					Config: map[string]string{
+						"dns.nameservers": "10.20.0.53, 10.20.0.54",
+					},
+				},
+			},
+		}
+		f := testFleet(t, cfg)
+		rec := plan.NewNetworkReconciler()
+		np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+			Networks: map[string]*provider.Network{
+				"lxdbr0": {
+					Name: "lxdbr0",
+					Type: "bridge",
+					Config: map[string]string{
+						"ipv4.address": "10.171.13.1/24",
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ComputeNetworks: %v", err)
+		}
+
+		for _, s := range np.Steps {
+			if s.Kind == "create_acl" && s.Name == "lxm-ovnbr0" {
+				has53 := false
+				has54 := false
+				for _, r := range s.ACLPost.Egress {
+					if r.Destination == "10.20.0.53/32" && r.Protocol == "tcp" {
+						has53 = true
+					}
+					if r.Destination == "10.20.0.54/32" && r.Protocol == "tcp" {
+						has54 = true
+					}
+				}
+				if !has53 || !has54 {
+					t.Errorf("expected DNS port guards for both nameservers, got: %+v", s.ACLPost.Egress)
+				}
+			}
+		}
+	})
+
+	t.Run("derived from parent volatile.network.ipv4.address when auto", func(t *testing.T) {
+		cfg := &config.Config{
+			Schema: "lxm/config/v2",
+			Base:   true,
+			VSwitches: []config.VSwitchConfig{
+				{
+					Name:   "ovnbr0",
+					Type:   "ovn",
+					Parent: "dynamicbr0",
+					IPv4:   "10.70.0.1/24",
+					Group:  "web",
+				},
+			},
+		}
+		f := testFleet(t, cfg)
+		rec := plan.NewNetworkReconciler()
+		np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+			Networks: map[string]*provider.Network{
+				"dynamicbr0": {
+					Name: "dynamicbr0",
+					Type: "bridge",
+					Config: map[string]string{
+						"ipv4.address":                  "auto",
+						"volatile.network.ipv4.address": "10.99.0.1/24",
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ComputeNetworks: %v", err)
+		}
+
+		for _, s := range np.Steps {
+			if s.Kind == "create_acl" && s.Name == "lxm-ovnbr0" {
+				hasGuard := false
+				for _, r := range s.ACLPost.Egress {
+					if r.Destination == "10.99.0.1/32" && r.Protocol == "tcp" {
+						hasGuard = true
+					}
+				}
+				if !hasGuard {
+					t.Errorf("expected DNS port guard for 10.99.0.1/32, got: %+v", s.ACLPost.Egress)
+				}
+			}
+		}
+	})
+
+	t.Run("internet:false warning when unable to derive uplink resolver", func(t *testing.T) {
+		fls := false
+		m := &config.Config{
+			Schema: "lxm/config/v2",
+			Base:   true,
+			VSwitches: []config.VSwitchConfig{
+				{
+					Name:     "ovn-isolated",
+					Type:     "ovn",
+					Parent:   "unknownbr0",
+					IPv4:     "10.80.0.1/24",
+					Group:    "isolated",
+					Internet: &fls,
+				},
+			},
+		}
+
+		f := testFleet(t, m)
+		rec := plan.NewNetworkReconciler()
+		np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+			Networks: map[string]*provider.Network{},
+		})
+		if err != nil {
+			t.Fatalf("ComputeNetworks: %v", err)
+		}
+
+		hasWarn := false
+		for _, w := range np.Warnings {
+			if strings.Contains(w, "internet: false on OVN but unable to derive uplink DNS resolver") {
+				hasWarn = true
+				break
+			}
+		}
+		if !hasWarn {
+			t.Errorf("expected warning for unresolvable uplink on internet:false OVN, got: %v", np.Warnings)
+		}
+	})
+
+	t.Run("ovn config passthrough preserves dns.nameservers and custom keys", func(t *testing.T) {
+		m := &config.Config{
+			Schema: "lxm/config/v2",
+			VSwitches: []config.VSwitchConfig{
+				{
+					Name:   "ovn-passthrough",
+					Type:   "ovn",
+					Parent: "lxdbr0",
+					IPv4:   "10.80.0.1/24",
+					Group:  "iso",
+					Config: map[string]string{
+						"dns.nameservers": "10.80.0.10,10.80.0.11",
+						"custom.key":      "custom-val",
+					},
+				},
+			},
+		}
+
+		f := testFleet(t, m)
+		rec := plan.NewNetworkReconciler()
+		np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+			Networks: map[string]*provider.Network{},
+		})
+		if err != nil {
+			t.Fatalf("ComputeNetworks: %v", err)
+		}
+
+		var createStep *plan.NetworkStep
+		for i := range np.Steps {
+			if np.Steps[i].Kind == "create_vswitch" && np.Steps[i].Name == "ovn-passthrough" {
+				createStep = &np.Steps[i]
+				break
+			}
+		}
+		if createStep == nil {
+			t.Fatal("expected create_vswitch step for ovn-passthrough")
+		}
+		if createStep.NetPost == nil || createStep.NetPost.Config == nil {
+			t.Fatal("expected non-nil NetPost.Config")
+		}
+
+		if got := createStep.NetPost.Config["dns.nameservers"]; got != "10.80.0.10,10.80.0.11" {
+			t.Errorf("expected dns.nameservers to be preserved, got %q", got)
+		}
+		if got := createStep.NetPost.Config["custom.key"]; got != "custom-val" {
+			t.Errorf("expected custom.key to be preserved, got %q", got)
+		}
+	})
+
+	t.Run("vswitch update reconciles config passthrough additively", func(t *testing.T) {
+		m := &config.Config{
+			Schema: "lxm/config/v2",
+			VSwitches: []config.VSwitchConfig{
+				{
+					Name:  "webbr0",
+					IPv4:  "10.70.0.1/24",
+					Group: "web",
+					Config: map[string]string{
+						"dns.nameservers": "10.80.0.10",
+						"custom.new":      "new-val",
+					},
+				},
+			},
+		}
+
+		f := testFleet(t, m)
+		rec := plan.NewNetworkReconciler()
+		np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+			Networks: map[string]*provider.Network{
+				"webbr0": {
+					Name:    "webbr0",
+					Type:    "bridge",
+					Managed: true,
+					Status:  "Created",
+					Config: map[string]string{
+						"ipv4.address":     "10.70.0.1/24",
+						"ipv4.nat":         "true",
+						"ipv6.address":     "none",
+						"dns.domain":       "lxd",
+						"user.lxm.managed": "true",
+						"security.acls":    "lxm-webbr0",
+						"dns.nameservers":  "1.1.1.1",
+						"custom.unmanaged": "keep-this",
+					},
+				},
+			},
+			ACLs: map[string]*provider.NetworkACL{
+				"lxm-webbr0": {
+					Name: "lxm-webbr0",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ComputeNetworks: %v", err)
+		}
+
+		var updateStep *plan.NetworkStep
+		for i := range np.Steps {
+			if np.Steps[i].Kind == "update_vswitch" && np.Steps[i].Name == "webbr0" {
+				updateStep = &np.Steps[i]
+				break
+			}
+		}
+		if updateStep == nil {
+			t.Fatal("expected update_vswitch step for webbr0")
+		}
+		if updateStep.NetPut == nil || updateStep.NetPut.Config == nil {
+			t.Fatal("expected non-nil NetPut.Config")
+		}
+
+		// Config in NetPut should have updated dns.nameservers, added custom.new, and kept custom.unmanaged
+		if got := updateStep.NetPut.Config["dns.nameservers"]; got != "10.80.0.10" {
+			t.Errorf("expected dns.nameservers to be updated to 10.80.0.10, got %q", got)
+		}
+		if got := updateStep.NetPut.Config["custom.new"]; got != "new-val" {
+			t.Errorf("expected custom.new to be new-val, got %q", got)
+		}
+		if got := updateStep.NetPut.Config["custom.unmanaged"]; got != "keep-this" {
+			t.Errorf("expected custom.unmanaged to be preserved, got %q", got)
+		}
+	})
 }

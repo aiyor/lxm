@@ -315,8 +315,12 @@ fi
 pass "Disk volume deletion verified (volume destroyed from storage pool)."
 
 info "6. Testing Network Policy Enforcement..."
-# Allowed: Web -> DB
-lxc exec e2e-lxd-web -- ping -c 2 -W 2 "${DB_IP}" >/dev/null || true # Ping may depend on ICMP rule, test route
+# Allowed: Web -> DB (must succeed — policy allows web -> db egress)
+if lxc exec e2e-lxd-web -- ping -c 2 -W 2 "${DB_IP}" >/dev/null 2>&1; then
+    pass "Policy allowed: Web -> DB traffic permitted as configured"
+else
+    fail "Policy failure: Web -> DB ping failed (should be allowed)"
+fi
 # Blocked: DB -> Web (must fail/be rejected by ACL)
 if lxc exec e2e-lxd-db -- ping -c 2 -W 2 "${WEB_IP}" >/dev/null 2>&1; then
     fail "Policy failure: DB was able to ping Web (should have been blocked)"

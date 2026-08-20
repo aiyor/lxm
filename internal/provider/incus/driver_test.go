@@ -2,15 +2,18 @@ package incus_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	incus_client "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
 
+	"github.com/aiyor/lxm/internal/provider"
 	"github.com/aiyor/lxm/internal/provider/incus"
 )
 
@@ -236,4 +239,202 @@ func TestIncusDriverMockServer(t *testing.T) {
 	if err != nil || len(projects) != 1 {
 		t.Errorf("unexpected projects: %+v (err=%v)", projects, err)
 	}
+}
+
+// clusterNetworkMock is a minimal in-memory Incus daemon for exercising the
+// CreateNetwork cluster-member staging path without a live cluster.
+type clusterNetworkMock struct {
+	clustered   bool
+	failMember  string
+	memberHas   map[string]bool
+	globalHas   bool
+	staged      []api.NetworksPost
+	globalPosts []api.NetworksPost
+}
+
+func newClusterNetworkMock(t *testing.T, clustered bool, failMember string) (*clusterNetworkMock, *httptest.Server) {
+	t.Helper()
+	m := &clusterNetworkMock{
+		clustered:  clustered,
+		failMember: failMember,
+		memberHas:  map[string]bool{},
+	}
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/1.0", func(w http.ResponseWriter, r *http.Request) {
+		clusteredJSON := "false"
+		if m.clustered {
+			clusteredJSON = "true"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":{"auth":"trusted","api_extensions":["clustering","network"],"environment":{"server_name":"mock","server_clustered":%s}}}`, clusteredJSON)
+	})
+
+	mux.HandleFunc("/1.0/cluster/members", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":[{"server_name":"node1","status":"Online"},{"server_name":"node2","status":"Online"}]}`)
+	})
+
+	mux.HandleFunc("/1.0/networks", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":[]}`)
+		case http.MethodPost:
+			var post api.NetworksPost
+			if err := json.NewDecoder(r.Body).Decode(&post); err != nil {
+				t.Errorf("decode networks post: %v", err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			target := r.URL.Query().Get("target")
+			if target != "" {
+				if target == m.failMember {
+					writeClusterMockError(w, http.StatusInternalServerError, "failed to stage network")
+					return
+				}
+				m.staged = append(m.staged, post)
+				m.memberHas[target] = true
+			} else {
+				m.globalPosts = append(m.globalPosts, post)
+				m.globalHas = true
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200}`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	mux.HandleFunc("/1.0/networks/", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/1.0/networks/")
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		has := m.globalHas
+		if target := r.URL.Query().Get("target"); target != "" {
+			has = m.memberHas[target]
+		}
+		if !has {
+			writeClusterMockError(w, http.StatusNotFound, "not found")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":{"name":%q,"type":"bridge","status":"Created","managed":true,"config":{}}}`, name)
+	})
+
+	srv := httptest.NewServer(mux)
+	return m, srv
+}
+
+func writeClusterMockError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	fmt.Fprintf(w, `{"type":"error","error":%q,"error_code":%d}`, msg, code)
+}
+
+func newIncusClusterTestDriver(t *testing.T, srv *httptest.Server) *incus.Driver {
+	t.Helper()
+	d, err := incus.NewRemoteDriver(srv.URL, &incus_client.ConnectionArgs{InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("NewRemoteDriver: %v", err)
+	}
+	return d
+}
+
+func TestIncusDriver_CreateNetwork_ClusterStaging(t *testing.T) {
+	ctx := context.Background()
+	req := provider.NetworkCreateRequest{
+		Name: "testbr0",
+		Type: "bridge",
+		Config: map[string]string{
+			"ipv4.address":     "10.30.0.1/24",
+			"user.lxm.managed": "true",
+		},
+	}
+	ovnReq := provider.NetworkCreateRequest{
+		Name:   "ovn0",
+		Type:   "ovn",
+		Config: map[string]string{"network": "incusbr0", "ipv4.address": "10.60.0.1/24"},
+	}
+
+	t.Run("stages every member with the full payload then creates globally", func(t *testing.T) {
+		m, srv := newClusterNetworkMock(t, true, "")
+		defer srv.Close()
+		d := newIncusClusterTestDriver(t, srv)
+		if err := d.CreateNetwork(ctx, req); err != nil {
+			t.Fatalf("CreateNetwork: %v", err)
+		}
+		if len(m.staged) != 2 {
+			t.Fatalf("expected 2 member staging creates, got %d", len(m.staged))
+		}
+		for _, s := range m.staged {
+			if s.Type != "bridge" || s.Config["ipv4.address"] != "10.30.0.1/24" || s.Config["user.lxm.managed"] != "true" {
+				t.Errorf("member staging payload incomplete: %+v", s)
+			}
+		}
+		if len(m.globalPosts) != 1 {
+			t.Fatalf("expected 1 global create, got %d", len(m.globalPosts))
+		}
+		if got := m.globalPosts[0].Config["ipv4.address"]; got != "10.30.0.1/24" {
+			t.Errorf("global create payload lost config: %+v", m.globalPosts[0])
+		}
+	})
+
+	t.Run("skips members that already host the network", func(t *testing.T) {
+		m, srv := newClusterNetworkMock(t, true, "")
+		m.memberHas["node1"] = true
+		defer srv.Close()
+		d := newIncusClusterTestDriver(t, srv)
+		if err := d.CreateNetwork(ctx, req); err != nil {
+			t.Fatalf("CreateNetwork: %v", err)
+		}
+		if len(m.staged) != 1 {
+			t.Fatalf("expected only node2 to be staged, got %d", len(m.staged))
+		}
+	})
+
+	t.Run("propagates member staging errors and aborts before the global create", func(t *testing.T) {
+		m, srv := newClusterNetworkMock(t, true, "node1")
+		defer srv.Close()
+		d := newIncusClusterTestDriver(t, srv)
+		err := d.CreateNetwork(ctx, req)
+		if err == nil || !strings.Contains(err.Error(), "node1") {
+			t.Fatalf("expected staging error mentioning node1, got: %v", err)
+		}
+		if len(m.globalPosts) != 0 {
+			t.Errorf("global create must not run after a staging failure, got %d", len(m.globalPosts))
+		}
+	})
+
+	t.Run("does not stage members for OVN networks", func(t *testing.T) {
+		m, srv := newClusterNetworkMock(t, true, "")
+		defer srv.Close()
+		d := newIncusClusterTestDriver(t, srv)
+		if err := d.CreateNetwork(ctx, ovnReq); err != nil {
+			t.Fatalf("CreateNetwork: %v", err)
+		}
+		if len(m.staged) != 0 {
+			t.Errorf("OVN networks must not be staged per-member, got %d", len(m.staged))
+		}
+		if len(m.globalPosts) != 1 {
+			t.Errorf("expected 1 global create, got %d", len(m.globalPosts))
+		}
+	})
+
+	t.Run("does not stage on a non-clustered server", func(t *testing.T) {
+		m, srv := newClusterNetworkMock(t, false, "")
+		defer srv.Close()
+		d := newIncusClusterTestDriver(t, srv)
+		if err := d.CreateNetwork(ctx, req); err != nil {
+			t.Fatalf("CreateNetwork: %v", err)
+		}
+		if len(m.staged) != 0 {
+			t.Errorf("single-node server must not stage members, got %d", len(m.staged))
+		}
+		if len(m.globalPosts) != 1 {
+			t.Errorf("expected 1 global create, got %d", len(m.globalPosts))
+		}
+	})
 }

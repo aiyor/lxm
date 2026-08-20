@@ -37,6 +37,7 @@ type cmdOptions struct {
 	prefix     string
 	inPlace    bool
 	skipRemote bool
+	jobs       int
 }
 
 type serviceGetter func() (provider.Driver, error)

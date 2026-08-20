@@ -80,6 +80,38 @@ recipes:
 		}
 	})
 
+	t.Run("OVN vswitches pass #LXM_AUTHORING", func(t *testing.T) {
+		ovnYAML := []byte(`
+schema: lxm/config/v2
+base: true
+image: images:debian/12/cloud
+user: debian
+wait:
+  agent: 3m
+vswitches:
+  - name: ovn-webbr0
+    type: ovn
+    parent: lxdbr0
+    ipv4: 10.70.0.1/24
+    nat: false
+    group: web
+  - name: ovn-dbbr0
+    type: ovn
+    parent: lxdbr0
+    ipv4: 10.75.0.1/24
+    nat: false
+    group: db
+network_policy:
+  allow:
+    - from: web
+      to: db
+      direction: egress
+`)
+		if err := v.ValidateAuthoring(ovnYAML); err != nil {
+			t.Errorf("expected OVN vswitches to pass #LXM_AUTHORING, got: %v", err)
+		}
+	})
+
 	t.Run("F2: scriptless recipe group rejected by #LXM_AUTHORING", func(t *testing.T) {
 		scriptlessYAML := []byte(`
 schema: lxm/config/v2

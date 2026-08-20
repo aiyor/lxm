@@ -255,3 +255,87 @@ func TestValidateNetworkPolicy_DuplicateInternalCIDRs_Dedup(t *testing.T) {
 		t.Fatalf("duplicate internal_cidrs must dedup silently, got: %v", err)
 	}
 }
+
+func TestValidateVSwitch_OVN_Valid(t *testing.T) {
+	c := &config.Config{
+		Name:  "box1",
+		Image: "ubuntu:24.04",
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "lxdbr0",
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovnservices",
+				MTU:    1442,
+				Config: map[string]string{"ovn.ingress_mode": "routed"},
+			},
+		},
+	}
+	if err := c.Validate(""); err != nil {
+		t.Fatalf("unexpected validation error on valid OVN vswitch: %v", err)
+	}
+}
+
+func TestValidateVSwitch_OVN_MissingParent_Error(t *testing.T) {
+	c := &config.Config{
+		Name:  "box1",
+		Image: "ubuntu:24.04",
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:  "ovnbr0",
+				Type:  "ovn",
+				IPv4:  "10.60.0.1/24",
+				Group: "ovnservices",
+			},
+		},
+	}
+	err := c.Validate("")
+	if err == nil || !strings.Contains(err.Error(), "parent uplink network is required") {
+		t.Fatalf("expected missing parent uplink error, got: %v", err)
+	}
+}
+
+func TestValidateVSwitch_OVN_DriverForbidden_Error(t *testing.T) {
+	c := &config.Config{
+		Name:  "box1",
+		Image: "ubuntu:24.04",
+		VSwitches: []config.VSwitchConfig{
+			{
+				Name:   "ovnbr0",
+				Type:   "ovn",
+				Parent: "lxdbr0",
+				Driver: "native",
+				IPv4:   "10.60.0.1/24",
+				Group:  "ovnservices",
+			},
+		},
+	}
+	err := c.Validate("")
+	if err == nil || !strings.Contains(err.Error(), "driver is not supported on type: ovn") {
+		t.Fatalf("expected driver forbidden error, got: %v", err)
+	}
+}
+
+func TestValidateVSwitch_OVN_InvalidMTU_Error(t *testing.T) {
+	for _, badMTU := range []int{-1, 100, 70000} {
+		c := &config.Config{
+			Name:  "box1",
+			Image: "ubuntu:24.04",
+			VSwitches: []config.VSwitchConfig{
+				{
+					Name:   "ovnbr0",
+					Type:   "ovn",
+					Parent: "lxdbr0",
+					IPv4:   "10.60.0.1/24",
+					Group:  "ovnservices",
+					MTU:    badMTU,
+				},
+			},
+		}
+		err := c.Validate("")
+		if err == nil || !strings.Contains(err.Error(), "mtu") {
+			t.Fatalf("expected MTU out of range error for MTU %d, got: %v", badMTU, err)
+		}
+	}
+}

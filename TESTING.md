@@ -1,6 +1,6 @@
 # LXM Testing Strategy & Verification Guide
 
-This document defines the comprehensive testing strategy for **LXM**. It establishes the required test workflows and pre-release gates to validate multi-provider support across **Canonical LXD**, **Incus**, and future **OVN** distributed networking.
+This document defines the comprehensive testing strategy for **LXM**. It establishes the required test workflows and pre-release gates to validate multi-provider support across **Canonical LXD**, **Incus**, and **OVN** distributed networking.
 
 ---
 
@@ -43,7 +43,7 @@ flowchart TD
 
 All core LXM features must be validated across the supported hypervisors and configuration permutations:
 
-| Capability Area | Canonical LXD (6.x+) | Incus (6.x+) | OVN (Future / Staging) | Verification Method |
+| Capability Area | Canonical LXD (6.x+) | Incus (6.x+) | OVN (Implemented) | Verification Method |
 | :--- | :--- | :--- | :--- | :--- |
 | **Container Creation & Update** | Supported | Supported | Supported | `lxm apply` + config mutation |
 | **VM (UEFI Secureboot)** | Supported (`boot.mode`) | Supported (`security.secureboot`) | Supported | VM boot + agent handshake |
@@ -53,12 +53,42 @@ All core LXM features must be validated across the supported hypervisors and con
 | **Managed Storage Disks** | Supported (`disks`) | Supported (`disks`) | Supported | Custom pool volume allocation |
 | **Disk Detach & Volume Delete** | Supported (`attach: false` / `status: absent`) | Supported | Supported | Device detachment & volume lifecycle |
 | **VSwitch (Bridge)** | Supported (`bridge`) | Supported (`bridge`) | N/A | Bridge creation & IPAM |
-| **VSwitch (OVN)** | Supported | Supported | Supported (`ovn`) | Uplink attach & L3 routing |
-| **Network ACLs / Policies** | Supported (`network_acl`) | Supported (`network_acl`) | Supported | Kernel packet drop & ping test |
+| **VSwitch (OVN)** | Supported | Supported | Supported (`ovn`) | `test-ovn-e2e.sh`, run per provider (§2.1) |
+| **Network ACLs / Policies** | Supported (`network_acl`) | Supported (`network_acl`) | Supported | Kernel / OVN packet drop & ping test |
 | **In-Guest Script Execution** | Supported | Supported | Supported | `lxm script` exit codes |
 | **Interactive Terminal Raw Mode** | Supported | Supported | Supported | `lxm shell` window resize / signals |
 | **Remote HTTPS / mTLS** | Supported | Supported | Supported | Token trust handoff & remote apply |
 | **Clustered Member Staging** | Supported | Supported | Supported | `lxm apply` on multi-node cluster |
+
+> **Per-provider OVN note**: OVN e2e coverage is only meaningful when the gate (`test-ovn-e2e.sh`)
+> has passed live against **each** daemon. A single run against whichever CLI happens to be present
+> does **not** satisfy the "LXD: Supported" / "Incus: Supported" claims above — run it once with
+> `PROVIDER_CLI=lxc` (LXD) and once with `PROVIDER_CLI=incus` (Incus), or via the `test-ovn-lxd` /
+> `test-ovn-incus` Make targets (§4).
+
+### 2.1 Feature → E2E Gate Registry & Coverage Rule
+
+Every major feature must ship a dedicated end-to-end gate, be recorded in this registry, and be
+wired into the Pre-Release procedures (§4). A feature may **not** be considered "verified" until its
+gate has passed live against **each** supported provider it touches.
+
+| Major Feature | Unit / Golden / Property Tests | E2E Gate | Providers | Wired into |
+| :-- | :-- | :-- | :-- | :-- |
+| Managed virtual switches & segmentation (`bridge`) | `internal/network`, `internal/plan`, `internal/config` | `simulation/scripts/test-lxd-e2e.sh` | LXD; Incus lab | §4 Step 2 / Step 3 |
+| Dual-provider engine (Incus) | `internal/provider/{fake,incus,lxd}` | `simulation/scripts/test-incus-e2e.sh`; `simulation/incus` Makefile (`test-local` / `test-remote` / `test-cluster-placement`) | Incus | §4 Step 3 |
+| OVN virtual switches & microsegmentation (`type: ovn`) | `internal/network` (G0/G8 golden + decomposition property), `internal/plan` (immutable drift), `internal/config` (parent/driver/MTU) | `simulation/scripts/test-ovn-e2e.sh` | LXD **and** Incus (run per provider) | §4 Step 2 / Step 3 |
+| VM data disks (`disks:`) | `internal/config`, `internal/apply` | `test-lxd-e2e.sh` (disk lifecycle steps) | LXD | §4 Step 2 |
+| Declarative deletion & `--prune` | `internal/plan`, `internal/apply` | **(gap — no E2E gate yet)** | — | Pillar 1 §3 scenario 4 |
+| Cloud images (`image_remotes`) | `internal/config/image.go` | **(gap — no E2E gate yet)** | — | — |
+
+**Coverage rule.**
+- *Major feature* (new provider backend, new network type, new resource lifecycle) ⇒ a dedicated
+  E2E script wired into Step 2/3 and a registry row above, verified live against every affected
+  provider before the feature is marked done.
+- *Minor change* (bug fix, CLI flag, validation tweak, edge case) ⇒ targeted unit / golden /
+  property tests in the touched package, plus the relevant edge-case scenario in the affected Pillar
+  below. The full E2E suite is not required for minor changes, but the touched area must have its
+  edge cases exercised.
 
 ---
 
@@ -135,9 +165,20 @@ flowchart LR
    - **Blocked Direction (DB $\rightarrow$ Web)**: Verify packet drop or ICMP destination port unreachable when `db` attempts to initiate connections to `web`.
    - **Intra-Group Isolation**: Verify instances within the same group can communicate by default.
    - **RFC1918 Egress Carve-Outs**: Verify egress to internet (`0.0.0.0/0`) is allowed while private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) are blocked when not explicitly allowed.
-3. **OVN Overlay Networks**:
-   - Create OVN network with parent uplink bridge.
-   - Verify OVN router and switch allocation.
+3. **OVN Overlay Networks (`type: ovn`)** — executed by `simulation/scripts/test-ovn-e2e.sh`, run against **both** LXD and Incus:
+   - **Provisioning**: create OVN networks with mandatory `parent` uplink binding; verify `type: ovn` and router/switch allocation; verify `mtu:` maps to `bridge.mtu` (Geneve 1442 default) and reconciles on drift.
+   - **G0 intra-switch (T3-OVN)**: instances on the same OVN switch (same subnet) communicate unhindered under `security.acls.default.*.action: reject` — the crux of the OVN compiler.
+   - **Cross-subnet forward (T1-OVN)**: policy `web → db` permits the forward flow; replies ride conntrack (stateful).
+   - **Reverse isolation (T2-OVN)**: `db → web` initiation is rejected; must be asserted with a hard failure on violation.
+   - **G8 decomposition & quarantine**: `internet: true` allows WAN egress while RFC1918 / `internal_cidrs` / sibling subnets are rejected; the emitted reject set never overlaps the own subnet or any permitted egress (property-tested in `internal/network`).
+   - **DNS Resolution on `internet: true` (T6-OVN)**: assert instance DNS resolution through the carved-out uplink resolver on grouped OVN networks.
+   - **Host Gateway Port Protection (T7-OVN)**: assert that non-DNS ports (SSH `:22`, API `:8443`, web services) on the carved host gateway resolver `/32` are strictly rejected by G9 port guards.
+   - **Isolated Network DNS Leak-Seal (T8-OVN)**: assert that on `internet: false` OVN networks, port 53 access to the upstream uplink resolver is rejected (priority 400 override of daemon baseline).
+   - **In-Network Resolver & Intra-Switch DNS (T9-OVN)**: assert that in-network DNS resolvers located within `S_V` remain accessible via G0 on `internet: false` networks without being blocked (R8).
+   - **Immutability (Exit 3)**: in-place drift of `type`, `parent`, or `ipv4` is refused at plan time.
+   - **Extension gating (Exit 4)**: planning refuses OVN vswitches when the provider lacks the `network_ovn` extension.
+   - **Zero-drift (T5-OVN)**: a re-plan immediately after apply reports 0 steps.
+   - **Cluster (T4-OVN)**: cross-node Geneve connectivity on a multi-node cluster — **known gap**, not yet covered by the single-node script; must be added before OVN can be declared cluster-verified.
 
 ---
 
@@ -237,9 +278,16 @@ Execute the end-to-end verification against the local Canonical LXD daemon:
 # 1. Run doctor diagnostics
 ./bin/lxm doctor
 
-# 2. Execute automated LXD E2E test
+# 2. Execute automated LXD E2E test (bridge networks, containers/VMs, mounts, disks, ACLs)
 ./simulation/scripts/test-lxd-e2e.sh
+
+# 3. Execute automated OVN E2E test against the LXD host
+PROVIDER_CLI=lxc ./simulation/scripts/test-ovn-e2e.sh
 ```
+
+> OVN on LXD requires the daemon to expose the `network_ovn` + `network_acl` extensions (the script
+> skips gracefully if the host lacks OVN support). Run the OVN gate again against Incus in Step 3 —
+> a single-provider pass does not satisfy the matrix's "Supported" claims for both daemons.
 
 *Manual LXD Test Steps:*
 ```bash
@@ -296,9 +344,19 @@ EOF
 ./bin/lxm script lxd-test-web -- uname -a
 ./bin/lxm script lxd-test-db -- uname -a
 
-# Verify policy enforcement (DB cannot ping Web)
+# Verify policy enforcement (DB must NOT be able to reach Web — assert both directions)
 WEB_IP=$(lxc list "^lxd-test-web$" --format json | jq -r '.[0].state.network.eth0.addresses[] | select(.family=="inet").address')
-lxc exec lxd-test-db -- ping -c 2 -W 2 "$WEB_IP" || echo "PASS: Traffic blocked as expected"
+DB_IP=$(lxc list "^lxd-test-db$" --format json | jq -r '.[0].state.network.enp5s0.addresses[] | select(.family=="inet").address')
+if ! lxc exec lxd-test-web -- ping -c 2 -W 2 "$DB_IP" >/dev/null 2>&1; then
+    echo "FAIL: Web -> DB traffic was blocked (policy allows web -> db)"
+    exit 1
+fi
+echo "PASS: Web -> DB allowed as configured"
+if lxc exec lxd-test-db -- ping -c 2 -W 2 "$WEB_IP" >/dev/null 2>&1; then
+    echo "FAIL: DB -> Web traffic was NOT blocked"
+    exit 1
+fi
+echo "PASS: DB -> Web blocked as configured"
 
 # Verify idempotency
 ./bin/lxm plan .scratch/test_lxd  # Must return: 0 to create, 0 to update, 0 to recreate, 0 to delete
@@ -328,7 +386,16 @@ make -C simulation/incus test-local
 # 3. Test remote HTTPS mTLS communication from host to Incus Lab VM
 make -C simulation/incus test-remote
 
-# 4. Verify in-guest script execution, snapshots, and idempotency
+# 4. Execute the automated OVN E2E suite inside the Incus Lab VM
+#    (rebuilds the in-VM lxm binary, then runs test-ovn-e2e.sh; skips if the
+#    inner Incus lacks the network_ovn extension)
+make -C simulation/incus test-ovn
+
+# 5. Multi-node cluster verification (2-node Incus cluster: Geneve overlays, placement)
+make -C simulation/incus cluster-2node
+make -C simulation/incus test-cluster-placement
+
+# 6. Verify in-guest script execution, snapshots, and idempotency
 lxc exec lxm-incus-lab -- su - lxm -c 'lxm plan /opt/lxm-src/simulation/incus/vm/lab/single-node'
 ```
 
@@ -348,3 +415,7 @@ If a pre-release gate fails:
    - If VM agent handshake times out, verify KVM acceleration (`/dev/kvm` read/write permissions) and guest `incus-agent` or `lxd-agent` services.
 4. **ETag Conflict Retries**:
    - If concurrent modifications cause HTTP 412 / ETag mismatch errors, ensure driver re-fetches latest state before applying mutations.
+5. **OVN DNS Resolution** (known risk area, Pillar 2):
+   - If instance DNS fails on a grouped OVN network, remember that the provider prioritizes rules by action (`drop > reject > allow`), so lxm's G8 rejects (e.g. `10.0.0.0/9`) out-rank both the G7 wildcard allow and the daemon's baseline DNS allow (priority 200 vs. port-group reject 400). A private uplink resolver (e.g. `10.0.3.1`) falls inside the reject set.
+   - Verify with `getent hosts deb.debian.org` (or `incus exec <c> -- getent hosts ...`); check `network show <ovn>` for the advertised `dns.nameservers`.
+   - Remediation: set `dns.nameservers` on the OVN network to non-RFC1918 resolvers, or carve the uplink subnet/DNS out of the reject set (compiler change), or declare the uplink as a permitted egress.

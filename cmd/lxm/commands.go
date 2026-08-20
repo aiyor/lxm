@@ -193,8 +193,12 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			lastComputedPlan = combinedPlan
 
 			executor := apply.NewExecutor(svc)
+			concurrency := opts.jobs
+			if concurrency <= 0 {
+				concurrency = 5
+			}
 			report, applyErr := executor.Apply(ctx, combinedPlan, apply.ApplyOpts{
-				Jobs:         5,
+				Jobs:         concurrency,
 				DryRun:       opts.dryRun,
 				Force:        opts.force,
 				Prune:        opts.prune,
@@ -238,6 +242,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 	cmd.Flags().StringVar(&opts.renameTo, "rename-to", "", "Rename container (single-file target only)")
 	cmd.Flags().BoolVar(&opts.prune, "prune", false, "Garbage-collect orphaned managed containers (deletes containers with user.lxm.managed=true missing from target dir)")
 	cmd.Flags().BoolVar(&opts.noStart, "no-start", false, "Do not start stopped containers after apply")
+	cmd.Flags().IntVarP(&opts.jobs, "jobs", "j", 5, "Number of concurrent container operations")
 	return cmd
 }
 
@@ -1599,6 +1604,55 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				} else {
 					warnings = append(warnings, "provider server lacks the network_acl extension; network_policy (vswitches groups) is unavailable")
 					checks = append(checks, "[WARN] provider network_acl extension")
+				}
+
+				if hasOVNSupport(svc) {
+					checks = append(checks, "[OK] provider network_ovn extension")
+
+					// Functional throwaway OVN switch probe to verify OVS/OVN database connectivity (Design §9.3)
+					uplinkParent := ""
+					if nets, err := svc.GetNetworks(ctx); err == nil {
+						for _, n := range nets {
+							if n.Type == "bridge" && n.Config["ipv4.address"] != "" && n.Config["ipv4.address"] != "none" {
+								uplinkParent = n.Name
+								break
+							}
+						}
+					}
+					if uplinkParent != "" {
+						probeOVN := fmt.Sprintf("lxm-probe-ovn-%d", os.Getpid())
+						_ = svc.DeleteNetwork(ctx, probeOVN)
+						err := svc.CreateNetwork(ctx, provider.NetworkCreateRequest{
+							Name: probeOVN,
+							Type: "ovn",
+							Config: map[string]string{
+								"network":      uplinkParent,
+								"ipv4.address": "10.254.254.1/24",
+								"ipv6.address": "none",
+							},
+						})
+						if err == nil {
+							n, _, getErr := svc.GetNetwork(ctx, probeOVN)
+							if getErr != nil {
+								err = fmt.Errorf("network remained in pending state: %w", getErr)
+							} else if n == nil || n.Status == "Pending" {
+								err = errors.New("network remained in pending state")
+							}
+						}
+						delErr := svc.DeleteNetwork(ctx, probeOVN)
+						switch {
+						case err != nil:
+							warnings = append(warnings, fmt.Sprintf("OVN throwaway network probe create failed: %v", err))
+							checks = append(checks, "[WARN] provider OVN chassis capability (probe failed)")
+						case delErr != nil:
+							warnings = append(warnings, fmt.Sprintf("OVN throwaway network probe delete failed: %v", delErr))
+							checks = append(checks, "[WARN] provider OVN chassis capability (delete failed)")
+						default:
+							checks = append(checks, "[OK] provider OVN network capability (probe create/delete)")
+						}
+					}
+				} else {
+					checks = append(checks, "[INFO] provider network_ovn extension not present (OVN vswitches unavailable)")
 				}
 			} else {
 				checks = append(checks, "[SKIP] Remote LXD socket check skipped")

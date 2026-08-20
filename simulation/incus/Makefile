@@ -47,6 +47,13 @@ test-cluster-placement:
 test-remote: $(LXM_BIN)
 	LXM_BIN="$(LXM_BIN)" $(SRC)/simulation/incus/scripts/test-remote-https.sh $(VM)
 
+# 7b. OVN E2E suite inside the Lab VM: rebuild the in-VM lxm binary, then run
+#     test-ovn-e2e.sh against the inner Incus daemon. Skips gracefully if the
+#     inner Incus lacks the network_ovn extension.
+test-ovn:
+	lxc exec $(VM) -- /bin/bash -c "export PATH=\$$PATH:/usr/local/go/bin; cd /opt/lxm-src && go build -buildvcs=false -o /usr/local/bin/lxm ./cmd/lxm"
+	lxc exec $(VM) -- /bin/bash /opt/lxm-src/simulation/scripts/test-ovn-e2e.sh
+
 # 8. Run full verification suite
 verify: $(LXM_BIN)
 	$(LXM_BIN) run $(VM) -- $(SRC)/simulation/incus/scripts/verify-incus.sh
