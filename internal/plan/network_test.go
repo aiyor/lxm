@@ -1034,4 +1034,77 @@ func TestPlan_VSwitch_OVN_DNS_Derivation_Nameservers_And_Volatile(t *testing.T) 
 			t.Errorf("expected custom.key to be preserved, got %q", got)
 		}
 	})
+
+	t.Run("vswitch update reconciles config passthrough additively", func(t *testing.T) {
+		m := &config.Config{
+			Schema: "lxm/config/v2",
+			VSwitches: []config.VSwitchConfig{
+				{
+					Name:  "webbr0",
+					IPv4:  "10.70.0.1/24",
+					Group: "web",
+					Config: map[string]string{
+						"dns.nameservers": "10.80.0.10",
+						"custom.new":      "new-val",
+					},
+				},
+			},
+		}
+
+		f := testFleet(t, m)
+		rec := plan.NewNetworkReconciler()
+		np, err := rec.ComputeNetworks(f, &plan.NetworkLiveState{
+			Networks: map[string]*provider.Network{
+				"webbr0": {
+					Name:    "webbr0",
+					Type:    "bridge",
+					Managed: true,
+					Status:  "Created",
+					Config: map[string]string{
+						"ipv4.address":     "10.70.0.1/24",
+						"ipv4.nat":         "true",
+						"ipv6.address":     "none",
+						"dns.domain":       "lxd",
+						"user.lxm.managed": "true",
+						"security.acls":    "lxm-webbr0",
+						"dns.nameservers":  "1.1.1.1",
+						"custom.unmanaged": "keep-this",
+					},
+				},
+			},
+			ACLs: map[string]*provider.NetworkACL{
+				"lxm-webbr0": {
+					Name: "lxm-webbr0",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ComputeNetworks: %v", err)
+		}
+
+		var updateStep *plan.NetworkStep
+		for i := range np.Steps {
+			if np.Steps[i].Kind == "update_vswitch" && np.Steps[i].Name == "webbr0" {
+				updateStep = &np.Steps[i]
+				break
+			}
+		}
+		if updateStep == nil {
+			t.Fatal("expected update_vswitch step for webbr0")
+		}
+		if updateStep.NetPut == nil || updateStep.NetPut.Config == nil {
+			t.Fatal("expected non-nil NetPut.Config")
+		}
+
+		// Config in NetPut should have updated dns.nameservers, added custom.new, and kept custom.unmanaged
+		if got := updateStep.NetPut.Config["dns.nameservers"]; got != "10.80.0.10" {
+			t.Errorf("expected dns.nameservers to be updated to 10.80.0.10, got %q", got)
+		}
+		if got := updateStep.NetPut.Config["custom.new"]; got != "new-val" {
+			t.Errorf("expected custom.new to be new-val, got %q", got)
+		}
+		if got := updateStep.NetPut.Config["custom.unmanaged"]; got != "keep-this" {
+			t.Errorf("expected custom.unmanaged to be preserved, got %q", got)
+		}
+	})
 }

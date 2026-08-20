@@ -310,7 +310,17 @@ info "Step 12: Gate T8-OVN - Testing isolated network DNS leak-seal (uplink DNS 
 if "${PROVIDER_CLI}" exec e2e-ovn-iso-2 -- python3 -c "import socket; s = socket.create_connection(('${UPLINK_GW}', 53), timeout=2)" 2>/dev/null; then
     fail "Security violation: isolated container was able to connect to uplink resolver on TCP port 53"
 fi
-pass "Gate T8-OVN: Uplink resolver port 53 access strictly rejected on isolated network"
+if "${PROVIDER_CLI}" exec e2e-ovn-iso-2 -- python3 -c "
+import socket
+q = b'\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03iso\x05local\x00\x00\x01\x00\x01'
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(2)
+s.sendto(q, ('${UPLINK_GW}', 53))
+resp, _ = s.recvfrom(512)
+" 2>/dev/null; then
+    fail "Security violation: isolated container received response from uplink resolver on UDP port 53"
+fi
+pass "Gate T8-OVN: Uplink resolver port 53 access strictly rejected on isolated network (TCP and UDP)"
 
 info "Step 13: Gate T9-OVN - Testing in-network DNS resolver & intra-switch access on isolated network..."
 "${PROVIDER_CLI}" exec e2e-ovn-iso-1 -- systemctl stop systemd-resolved 2>/dev/null || true
@@ -329,6 +339,15 @@ def udp_dns():
         resp += b'\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x0a\x50\x00\x0a'
         sock.sendto(resp, addr)
 
+def recv_exact(conn, n):
+    buf = b''
+    while len(buf) < n:
+        chunk = conn.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
 def tcp_dns():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -337,12 +356,15 @@ def tcp_dns():
     while True:
         conn, _ = sock.accept()
         try:
-            lb = conn.recv(2)
+            lb = recv_exact(conn, 2)
             if not lb:
                 conn.close()
                 continue
             l = int.from_bytes(lb, 'big')
-            data = conn.recv(l)
+            data = recv_exact(conn, l)
+            if not data or len(data) < 12:
+                conn.close()
+                continue
             resp_body = data[:2] + b'\x81\x80' + data[4:6] + b'\x00\x01\x00\x00\x00\x00' + data[12:]
             resp_body += b'\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x0a\x50\x00\x0a'
             resp = len(resp_body).to_bytes(2, 'big') + resp_body

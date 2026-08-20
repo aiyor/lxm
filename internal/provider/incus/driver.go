@@ -312,8 +312,12 @@ func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRe
 	if getErr != nil {
 		return fmt.Errorf("failed to verify network %q creation: %w", net.Name, getErr)
 	}
-	if n != nil && (n.Status == "Pending" || n.Status == "") {
-		return fmt.Errorf("network %q not ready after creation (status: %q, OVN chassis or uplink may be unresponsive)", net.Name, n.Status)
+	if n == nil || n.Status == "Pending" || n.Status == "" {
+		status := "<nil>"
+		if n != nil {
+			status = n.Status
+		}
+		return fmt.Errorf("network %q not ready after creation (status: %q, OVN chassis or uplink may be unresponsive)", net.Name, status)
 	}
 	return nil
 }

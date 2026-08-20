@@ -131,7 +131,7 @@ network_policy:
 | `group` | string | — | Optional group membership. Absence ⇒ managed for addressing only (no ACLs). Removing `group` later detaches the ACL (§8.2). |
 | `internet` | bool | `true` | Only meaningful with `group`. `true` ⇒ egress to the internet allowed. `false` ⇒ fully internal group (internet-bound egress rejected). |
 | `mtu` | int | — | Optional MTU override (maps to `bridge.mtu` on OVN; must be ∈ [576, 65535]). |
-| `config` | map[string]string | — | Optional backend-specific passthrough options (managed keys take strict precedence). |
+| `config` | map[string]string | — | Optional backend-specific passthrough options (managed keys take strict precedence). Passthrough keys are reconciled additively on create and update: keys declared in `config` set or update live provider network options, while omitted keys are preserved (to delete an unmanaged passthrough key, use `lxc/incus network unset`). On adopted networks, manifest passthrough keys overwrite existing live values. |
 
 Fixed, non-configurable (locked for determinism): `ipv4.dhcp: true`, `dns.domain: lxd`, no
 `ipv4.routes`.
