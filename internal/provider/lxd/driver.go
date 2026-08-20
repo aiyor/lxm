@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	lxd_client "github.com/canonical/lxd/client"
@@ -264,12 +265,16 @@ func (d *Driver) CreateNetwork(ctx context.Context, net provider.NetworkCreateRe
 	clustered, _ := d.IsClustered(ctx)
 	if clustered && net.Type != "ovn" {
 		members, err := d.GetClusterMembers(ctx)
-		if err == nil && len(members) > 0 {
-			for _, m := range members {
-				_ = d.client.UseTarget(m.ServerName).CreateNetwork(api.NetworksPost{
-					Name: net.Name,
-					Type: net.Type,
-				})
+		if err != nil {
+			return fmt.Errorf("failed to list cluster members for network %q staging: %w", net.Name, err)
+		}
+		for _, m := range members {
+			postErr := d.client.UseTarget(m.ServerName).CreateNetwork(api.NetworksPost{
+				Name: net.Name,
+				Type: net.Type,
+			})
+			if postErr != nil && !strings.Contains(strings.ToLower(postErr.Error()), "already exists") {
+				return fmt.Errorf("failed to stage network %q on cluster member %q: %w", net.Name, m.ServerName, postErr)
 			}
 		}
 	}
