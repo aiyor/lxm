@@ -210,7 +210,7 @@ func ExecuteRecipeScriptContext(ctx context.Context, svc provider.InstanceServic
 	var lastRes provider.ExecResult
 	var lastErr error
 
-	for i := 0; i < attempts; i++ {
+	for range attempts {
 		select {
 		case <-ctx.Done():
 			return provider.ExecResult{ExitCode: 1, Stderr: "recipe execution cancelled by user interrupt"}, hash, ctx.Err()

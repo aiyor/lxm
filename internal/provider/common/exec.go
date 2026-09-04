@@ -32,7 +32,7 @@ func WaitOpContext(ctx context.Context, op Operation) error {
 }
 
 // ExtractExecExitCode safely extracts the return code from operation metadata without panicking on nil metadata.
-func ExtractExecExitCode(metadata map[string]interface{}, waitErr error) (int, error) {
+func ExtractExecExitCode(metadata map[string]any, waitErr error) (int, error) {
 	exitCode := -1
 	if metadata != nil {
 		if returnVal, ok := metadata["return"]; ok && returnVal != nil {

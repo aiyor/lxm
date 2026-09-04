@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -42,7 +41,7 @@ disks:
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetArgs([]string{"disk", "gc", "--dry-run", manifestDir})
 
 	if err := rootCmd.Execute(); err != nil {
@@ -92,7 +91,7 @@ disks:
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetArgs([]string{"disk", "gc", "--force", manifestDir})
 
 	if err := rootCmd.Execute(); err != nil {
@@ -152,7 +151,7 @@ vswitches:
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetArgs([]string{"vswitch", "gc", "--force", manifestDir})
 
 	if err := rootCmd.Execute(); err != nil {
@@ -190,7 +189,7 @@ func TestDiskGC_LoadError_FailsClosed(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetArgs([]string{"disk", "gc", "--force", manifestDir})
 
 	err := rootCmd.Execute()
@@ -225,7 +224,7 @@ user: ubuntu
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetArgs([]string{"disk", "gc", "--force", manifestDir})
 
 	if err := rootCmd.Execute(); err != nil {
@@ -260,7 +259,7 @@ user: ubuntu
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetIn(strings.NewReader("yes\n"))
 	rootCmd.SetArgs([]string{"disk", "gc", manifestDir})
 

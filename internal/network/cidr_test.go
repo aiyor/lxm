@@ -3,7 +3,7 @@ package network
 import (
 	"net"
 	"reflect"
-	"sort"
+	"slices"
 	"testing"
 )
 
@@ -44,8 +44,8 @@ func TestSubtractCIDRs_Golden_108Minus105024(t *testing.T) {
 	for _, p := range got {
 		gotStrs = append(gotStrs, p.String())
 	}
-	sort.Strings(gotStrs)
-	sort.Strings(want)
+	slices.Sort(gotStrs)
+	slices.Sort(want)
 	if !reflect.DeepEqual(gotStrs, want) {
 		t.Fatalf("decomposition mismatch:\ngot  %v\nwant %v", gotStrs, want)
 	}

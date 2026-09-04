@@ -1,7 +1,6 @@
 package lxd_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,7 +88,7 @@ func TestClassifyLXDError(t *testing.T) {
 }
 
 func TestLXDDriverMockServer(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	mux := http.NewServeMux()
 
 	// Server info /1.0
@@ -289,12 +288,8 @@ func newClusterNetworkMock(t *testing.T, clustered bool, failMember string) (*cl
 		}
 	})
 
-	mux.HandleFunc("/1.0/networks/", func(w http.ResponseWriter, r *http.Request) {
-		name := strings.TrimPrefix(r.URL.Path, "/1.0/networks/")
-		if r.Method != http.MethodGet {
-			http.NotFound(w, r)
-			return
-		}
+	mux.HandleFunc("GET /1.0/networks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
 		has := m.globalHas
 		if target := r.URL.Query().Get("target"); target != "" {
 			has = m.memberHas[target]
@@ -327,7 +322,7 @@ func newLXDClusterTestDriver(t *testing.T, srv *httptest.Server) *lxd.Driver {
 }
 
 func TestLXDDriver_CreateNetwork_ClusterStaging(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	req := provider.NetworkCreateRequest{
 		Name: "testbr0",
 		Type: "bridge",

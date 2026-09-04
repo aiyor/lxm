@@ -2,11 +2,13 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -556,10 +558,10 @@ func (conf *Config) validateCommon(configBaseDir string) error {
 		if strings.HasPrefix(m.Source, "~/") || m.Source == "~" {
 			home, err := os.UserHomeDir()
 			if err == nil {
-				if m.Source == "~" {
-					m.Source = home
+				if rest, ok := strings.CutPrefix(m.Source, "~/"); ok {
+					m.Source = filepath.Join(home, rest)
 				} else {
-					m.Source = filepath.Join(home, m.Source[2:])
+					m.Source = home
 				}
 			}
 		}
@@ -693,7 +695,7 @@ func (conf *Config) ResolveCloudInit(configBaseDir string) (string, error) {
 		configBaseDir = conf.ConfigBaseDir
 	}
 
-	var merged map[string]interface{}
+	var merged map[string]any
 
 	for _, inc := range conf.CloudInitInclude {
 		incPath := inc
@@ -734,7 +736,7 @@ func (conf *Config) ResolveCloudInit(configBaseDir string) (string, error) {
 		if conf.User == "" {
 			return "", nil
 		}
-		merged = make(map[string]interface{})
+		merged = make(map[string]any)
 	}
 
 	if conf.User != "" {
@@ -750,16 +752,16 @@ func (conf *Config) ResolveCloudInit(configBaseDir string) (string, error) {
 	return result, nil
 }
 
-func injectUserConfig(conf *Config, merged map[string]interface{}) {
+func injectUserConfig(conf *Config, merged map[string]any) {
 	user := conf.User
-	userEntry := map[string]interface{}{
+	userEntry := map[string]any{
 		"name":   user,
 		"groups": "sudo",
 		"shell":  "/bin/bash",
 	}
 
 	if conf.Sudo {
-		userEntry["sudo"] = []interface{}{"ALL=(ALL) NOPASSWD:ALL"}
+		userEntry["sudo"] = []any{"ALL=(ALL) NOPASSWD:ALL"}
 	}
 
 	if len(conf.SSHKeys) > 0 {
@@ -771,25 +773,25 @@ func injectUserConfig(conf *Config, merged map[string]interface{}) {
 	}
 
 	if existing, ok := merged["users"]; ok {
-		if existingList, ok := existing.([]interface{}); ok {
+		if existingList, ok := existing.([]any); ok {
 			merged["users"] = append(existingList, userEntry)
 		}
 	} else {
-		merged["users"] = []interface{}{"default", userEntry}
+		merged["users"] = []any{"default", userEntry}
 	}
 
-	envFile := map[string]interface{}{
+	envFile := map[string]any{
 		"path":        "/etc/profile.d/lxm-env.sh",
 		"permissions": "0644",
 		"content":     fmt.Sprintf("export LXM_USER=%s\n", user),
 	}
 
 	if existing, ok := merged["write_files"]; ok {
-		if existingList, ok := existing.([]interface{}); ok {
+		if existingList, ok := existing.([]any); ok {
 			merged["write_files"] = append(existingList, envFile)
 		}
 	} else {
-		merged["write_files"] = []interface{}{envFile}
+		merged["write_files"] = []any{envFile}
 	}
 }
 
@@ -832,7 +834,7 @@ func DiscoverHostPrivateKeys() []string {
 	var keys []string
 	for _, f := range files {
 		if strings.HasSuffix(f.Name(), ".pub") {
-			privKey := strings.TrimSuffix(f.Name(), ".pub")
+			privKey, _ := strings.CutSuffix(f.Name(), ".pub")
 			privPath := filepath.Join(sshDir, privKey)
 			if _, err := os.Stat(privPath); err == nil {
 				keys = append(keys, privPath)
@@ -842,10 +844,10 @@ func DiscoverHostPrivateKeys() []string {
 	return keys
 }
 
-func mergeYAMLData(dst *map[string]interface{}, srcData []byte) error {
+func mergeYAMLData(dst *map[string]any, srcData []byte) error {
 	strData := strings.TrimPrefix(string(srcData), "#cloud-config")
 
-	var src map[string]interface{}
+	var src map[string]any
 	if err := yaml.Unmarshal([]byte(strData), &src); err != nil {
 		return err
 	}
@@ -856,21 +858,21 @@ func mergeYAMLData(dst *map[string]interface{}, srcData []byte) error {
 	}
 
 	mergedVal := deepMerge(*dst, src)
-	if merged, ok := mergedVal.(map[string]interface{}); ok {
+	if merged, ok := mergedVal.(map[string]any); ok {
 		*dst = merged
 		return nil
 	}
 	return fmt.Errorf("unexpected merged config type %T", mergedVal)
 }
 
-func deepMerge(dst, src interface{}) interface{} {
+func deepMerge(dst, src any) any {
 	switch dstTyped := dst.(type) {
-	case map[string]interface{}:
-		srcTyped, ok := src.(map[string]interface{})
+	case map[string]any:
+		srcTyped, ok := src.(map[string]any)
 		if !ok {
 			return src
 		}
-		out := make(map[string]interface{})
+		out := make(map[string]any)
 		for k, v := range dstTyped {
 			out[k] = v
 		}
@@ -882,8 +884,8 @@ func deepMerge(dst, src interface{}) interface{} {
 			}
 		}
 		return out
-	case []interface{}:
-		srcTyped, ok := src.([]interface{})
+	case []any:
+		srcTyped, ok := src.([]any)
 		if !ok {
 			return src
 		}
@@ -896,7 +898,7 @@ func deepMerge(dst, src interface{}) interface{} {
 	}
 }
 
-func isZeroValue(v interface{}) bool {
+func isZeroValue(v any) bool {
 	if v == nil {
 		return true
 	}
@@ -907,7 +909,7 @@ func isZeroValue(v interface{}) bool {
 	return rv.IsZero()
 }
 
-func isPresent(c *Config, fieldName string, val interface{}) bool {
+func isPresent(c *Config, fieldName string, val any) bool {
 	if c == nil {
 		return false
 	}
@@ -1103,13 +1105,11 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 	}
 
 	if len(base.Remotes) > 0 || len(overlay.Remotes) > 0 {
-		res.Remotes = make(map[string]RemoteConfig, len(base.Remotes)+len(overlay.Remotes))
-		for k, v := range base.Remotes {
-			res.Remotes[k] = v
+		res.Remotes = maps.Clone(base.Remotes)
+		if res.Remotes == nil {
+			res.Remotes = make(map[string]RemoteConfig, len(overlay.Remotes))
 		}
-		for k, v := range overlay.Remotes {
-			res.Remotes[k] = v
-		}
+		maps.Copy(res.Remotes, overlay.Remotes)
 	}
 
 	if isPresent(overlay, "image", overlay.Image) {
@@ -1216,13 +1216,11 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 	// the remotes it overrides and inherits the rest. Fleet-wide dedup +
 	// conflict resolution happen at the fleet union (EffectiveImageRemotes).
 	if len(base.ImageRemotes) > 0 || len(overlay.ImageRemotes) > 0 {
-		res.ImageRemotes = make(map[string]string, len(base.ImageRemotes)+len(overlay.ImageRemotes))
-		for k, v := range base.ImageRemotes {
-			res.ImageRemotes[k] = v
+		res.ImageRemotes = maps.Clone(base.ImageRemotes)
+		if res.ImageRemotes == nil {
+			res.ImageRemotes = make(map[string]string, len(overlay.ImageRemotes))
 		}
-		for k, v := range overlay.ImageRemotes {
-			res.ImageRemotes[k] = v
-		}
+		maps.Copy(res.ImageRemotes, overlay.ImageRemotes)
 	}
 
 	res.CloudInitInclude = append(append([]string(nil), base.CloudInitInclude...), overlay.CloudInitInclude...)
@@ -1326,8 +1324,8 @@ func copyNetworkPolicy(p *NetworkPolicy) *NetworkPolicy {
 		return nil
 	}
 	cp := &NetworkPolicy{
-		InternalCIDRs: append([]string(nil), p.InternalCIDRs...),
-		Allow:         append([]NetworkPolicyRule(nil), p.Allow...),
+		InternalCIDRs: slices.Clone(p.InternalCIDRs),
+		Allow:         slices.Clone(p.Allow),
 	}
 	return cp
 }
@@ -1337,12 +1335,12 @@ func copyNetworkPolicy(p *NetworkPolicy) *NetworkPolicy {
 // disks are appended (STORAGE-SPEC §3.8 / feat_removal §1.6).
 func mergeDisksByName(base, overlay []DiskConfig) []DiskConfig {
 	if len(base) == 0 {
-		return append([]DiskConfig(nil), overlay...)
+		return slices.Clone(overlay)
 	}
 	if len(overlay) == 0 {
-		return append([]DiskConfig(nil), base...)
+		return slices.Clone(base)
 	}
-	res := append([]DiskConfig(nil), base...)
+	res := slices.Clone(base)
 	indexByName := make(map[string]int, len(res))
 	for i, d := range res {
 		indexByName[d.Name] = i
@@ -1596,10 +1594,10 @@ func loadConfigRecursive(configFile string, visited map[string]bool) (*Config, e
 		m := &raw.Mounts[i]
 		if strings.HasPrefix(m.Source, "~/") || m.Source == "~" {
 			if home, err := os.UserHomeDir(); err == nil {
-				if m.Source == "~" {
-					m.Source = home
+				if rest, ok := strings.CutPrefix(m.Source, "~/"); ok {
+					m.Source = filepath.Join(home, rest)
 				} else {
-					m.Source = filepath.Join(home, m.Source[2:])
+					m.Source = home
 				}
 			}
 		}
@@ -1833,10 +1831,5 @@ func HasIncludeInYAMLFile(filePath string, includePath string) (bool, error) {
 		return false, fmt.Errorf("parsing YAML: %w", err)
 	}
 
-	for _, inc := range raw.Include {
-		if inc == includePath {
-			return true, nil
-		}
-	}
-	return false, nil
+	return slices.Contains(raw.Include, includePath), nil
 }

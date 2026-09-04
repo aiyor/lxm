@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"log/slog"
 	"os"
 	"strings"
@@ -18,7 +17,7 @@ func TestRemoteCLI_Lifecycle(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("LXM_CONFIG_DIR", tmpDir)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mockGetter := func() (provider.Driver, error) {
 		return fake.New(), nil

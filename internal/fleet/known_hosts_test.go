@@ -79,7 +79,7 @@ func TestKnownHostsManager_Concurrency(t *testing.T) {
 
 	// Pre-populate shared file with host key entries
 	var initial []string
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		initial = append(initial, fmt.Sprintf("container-%d ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI12345678901234567890123456789012345678901%d\n", i, i))
 	}
 	if err := os.WriteFile(khFile, []byte(strings.Join(initial, "")), 0600); err != nil {
@@ -89,12 +89,10 @@ func TestKnownHostsManager_Concurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	workers := 20
 
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			name := fmt.Sprintf("container-%d", idx%10)
-			if idx%2 == 0 {
+	for i := range workers {
+		wg.Go(func() {
+			name := fmt.Sprintf("container-%d", i%10)
+			if i%2 == 0 {
 				_ = mgr.PurgeContainerKey(name)
 			} else {
 				_ = mgr.withLock(func() error {
@@ -103,11 +101,11 @@ func TestKnownHostsManager_Concurrency(t *testing.T) {
 						return err
 					}
 					defer f.Close()
-					_, err = fmt.Fprintf(f, "%s ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI12345678901234567890123456789012345678901%d\n", name, idx)
+					_, err = fmt.Fprintf(f, "%s ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI12345678901234567890123456789012345678901%d\n", name, i)
 					return err
 				})
 			}
-		}(i)
+		})
 	}
 
 	wg.Wait()

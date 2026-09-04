@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -63,7 +62,7 @@ networks:
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("unmarshal envelope: %v", err)
 	}
-	netSteps, ok := env.Plan.NetworkSteps.([]interface{})
+	netSteps, ok := env.Plan.NetworkSteps.([]any)
 	if !ok || len(netSteps) == 0 {
 		t.Fatalf("expected network_steps in plan envelope, got %T", env.Plan.NetworkSteps)
 	}
@@ -97,7 +96,7 @@ networks:
 	if _, ok := driver.NetworkACLs["lxm-vmbr0"]; !ok {
 		t.Fatalf("lxm-vmbr0 ACL not created")
 	}
-	if _, _, err := driver.GetInstance(context.Background(), "web-a"); err != nil {
+	if _, _, err := driver.GetInstance(t.Context(), "web-a"); err != nil {
 		t.Fatalf("web-a instance not created: %v", err)
 	}
 

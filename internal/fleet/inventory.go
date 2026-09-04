@@ -65,7 +65,7 @@ func GetInventory(ctx context.Context, svc provider.Driver) (*FleetInventory, er
 
 		// Groups
 		if grpStr := status.Config["user.lxm.groups"]; grpStr != "" {
-			for _, g := range strings.Split(grpStr, ",") {
+			for g := range strings.SplitSeq(grpStr, ",") {
 				if clean := strings.TrimSpace(g); clean != "" {
 					status.Groups = append(status.Groups, clean)
 				}
@@ -83,10 +83,10 @@ func GetInventory(ctx context.Context, svc provider.Driver) (*FleetInventory, er
 
 		// Recipe hashes
 		for k, v := range status.Config {
-			if strings.HasPrefix(k, "user.lxm.recipe.") && strings.HasSuffix(k, ".hash") {
-				recipeName := strings.TrimPrefix(k, "user.lxm.recipe.")
-				recipeName = strings.TrimSuffix(recipeName, ".hash")
-				status.RecipeHashes[recipeName] = v
+			if recipeName, ok := strings.CutPrefix(k, "user.lxm.recipe."); ok {
+				if recipeName, ok = strings.CutSuffix(recipeName, ".hash"); ok {
+					status.RecipeHashes[recipeName] = v
+				}
 			}
 		}
 

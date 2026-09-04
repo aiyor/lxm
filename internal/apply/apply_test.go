@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestExecutor_DryRun(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -54,7 +54,7 @@ func TestExecutor_DryRun(t *testing.T) {
 }
 
 func TestExecutor_SingleFilePrune_Fails(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -72,7 +72,7 @@ func TestExecutor_SingleFilePrune_Fails(t *testing.T) {
 }
 
 func TestExecutor_ETagMismatch_Fails(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
@@ -98,7 +98,7 @@ func TestExecutor_ETagMismatch_Fails(t *testing.T) {
 }
 
 func TestExecutor_RealLXD412PUT_Retryable(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
@@ -129,7 +129,7 @@ func TestExecutor_RealLXD412PUT_Retryable(t *testing.T) {
 }
 
 func TestExecutor_RebuildSnapshotGate(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
@@ -158,7 +158,7 @@ func TestExecutor_RebuildSnapshotGate(t *testing.T) {
 }
 
 func TestExecutor_RecreateFallbackGate(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
@@ -187,7 +187,7 @@ func TestExecutor_RecreateFallbackGate(t *testing.T) {
 }
 
 func TestExecutor_Actions_CreateUpdateDeleteStartStop(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -238,7 +238,7 @@ func TestExecutor_Actions_CreateUpdateDeleteStartStop(t *testing.T) {
 }
 
 func TestExecutor_DeleteRunningContainer_StopsFirst(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-running"})
 	if err := driver.UpdateInstanceState(ctx, "box-running", "start", false); err != nil {
@@ -265,7 +265,7 @@ func TestExecutor_DeleteRunningContainer_StopsFirst(t *testing.T) {
 }
 
 func TestExecutor_DeleteStoppedContainer_SkipsStop(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-stopped"})
 	if driver.Instances["box-stopped"].StatusCode != 102 {
@@ -296,7 +296,7 @@ func TestExecutor_DeleteStoppedContainer_SkipsStop(t *testing.T) {
 }
 
 func TestExecutor_RecreateFallback_StoppedContainer(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-recreate"})
 	if driver.Instances["box-recreate"].StatusCode != 102 {
@@ -322,7 +322,7 @@ func TestExecutor_RecreateFallback_StoppedContainer(t *testing.T) {
 }
 
 func TestExecutor_RecreateFallback_RunningContainer(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-recreate-running"})
 	if err := driver.UpdateInstanceState(ctx, "box-recreate-running", "start", false); err != nil {
@@ -362,7 +362,7 @@ func TestExecutor_RecreateFallback_RunningContainer(t *testing.T) {
 }
 
 func TestExecutor_DeleteMissingContainer_IsNoop(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 	pDelete := &plan.Plan{
@@ -375,7 +375,7 @@ func TestExecutor_DeleteMissingContainer_IsNoop(t *testing.T) {
 }
 
 func TestExecutor_ErrorPrecedence(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.CreateInstanceFunc = func(req provider.InstanceCreateRequest) error {
 		return errors.New("lxd api failure")
@@ -393,7 +393,7 @@ func TestExecutor_ErrorPrecedence(t *testing.T) {
 }
 
 func TestExecutor_CreateStartsContainer_Idempotent(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -412,7 +412,7 @@ func TestExecutor_CreateStartsContainer_Idempotent(t *testing.T) {
 }
 
 func TestExecutor_CreateStoppedContainer_RemainsStopped_Idempotent(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -431,7 +431,7 @@ func TestExecutor_CreateStoppedContainer_RemainsStopped_Idempotent(t *testing.T)
 }
 
 func TestExecutor_RecreateFallback_StoppedContainer_RemainsStopped(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box3"})
 
@@ -454,7 +454,7 @@ func TestExecutor_RecreateFallback_StoppedContainer_RemainsStopped(t *testing.T)
 }
 
 func TestExecutor_RebuildNative_Passes(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box4"})
 
@@ -473,7 +473,7 @@ func TestExecutor_RebuildNative_Passes(t *testing.T) {
 }
 
 func TestReconcilerToExecutor_Integration_PowerTransitions(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box5",
@@ -524,7 +524,7 @@ func TestReconcilerToExecutor_Integration_PowerTransitions(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicyTimeout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "waitbox"})
 	exec := apply.NewExecutor(driver)
@@ -550,7 +550,7 @@ func TestExecutor_WaitPolicyTimeout(t *testing.T) {
 }
 
 func TestExecutor_RecipeExecutionAndSnapshot(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	tmpDir := t.TempDir()
 	shFile := "setup.sh"
 	if err := writeTestScript(tmpDir, shFile, "#!/bin/bash\necho hello"); err != nil {
@@ -598,10 +598,10 @@ func TestExecutor_RecipeExecutionAndSnapshot(t *testing.T) {
 
 func TestExecutor_ContextCancellation(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "cancelbox"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "cancelbox"})
 
 	exec := apply.NewExecutor(driver)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // Cancel immediately
 
 	p := &plan.Plan{
@@ -633,7 +633,7 @@ func TestExecutor_DryRun_NoRecipesExecuted(t *testing.T) {
 		t.Fatalf("writing setup.sh: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "drybox"})
 
@@ -679,7 +679,7 @@ func TestExecutor_DryRun_NoRecipesExecuted(t *testing.T) {
 func TestExecutor_NilPlan(t *testing.T) {
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
-	_, err := exec.Apply(context.Background(), nil, apply.ApplyOpts{})
+	_, err := exec.Apply(t.Context(), nil, apply.ApplyOpts{})
 	if err == nil {
 		t.Errorf("expected error when applying nil plan")
 	}
@@ -689,14 +689,14 @@ func TestExecutor_SingleFilePruneRestriction(t *testing.T) {
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{Steps: []plan.Step{}}
-	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{IsSingleFile: true, Prune: true})
+	rep, err := exec.Apply(t.Context(), p, apply.ApplyOpts{IsSingleFile: true, Prune: true})
 	if err == nil || rep.ExitCode != 2 {
 		t.Errorf("expected exit code 2 when pruning with single file target")
 	}
 }
 
 func TestExecutor_WaitPolicy_StopStepNonWaiting(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "stopbox"})
 	driver.Instances["stopbox"].Status = "Running"
@@ -730,7 +730,7 @@ func TestExecutor_WaitPolicy_StopStepNonWaiting(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_NonCloudInitImage(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "alpinebox"})
 	driver.Instances["alpinebox"].Status = "Running"
@@ -767,7 +767,7 @@ func TestExecutor_WaitPolicy_NonCloudInitImage(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_SoftWaitWarning(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "softbox"})
 	driver.Instances["softbox"].Status = "Running"
@@ -800,7 +800,7 @@ func TestExecutor_WaitPolicy_SoftWaitWarning(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_ContextCancelledMidWait(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "cancelbox"})
 	driver.Instances["cancelbox"].Status = "Running"
@@ -841,7 +841,7 @@ func TestExecutor_WaitPolicy_ContextCancelledMidWait(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_TransportError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "transportbox"})
 	driver.Instances["transportbox"].Status = "Running"
@@ -873,7 +873,7 @@ func TestExecutor_WaitPolicy_TransportError(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_NetworkSuccess(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "netbox"})
 	driver.Instances["netbox"].Status = "Running"
@@ -904,7 +904,7 @@ func TestExecutor_WaitPolicy_NetworkSuccess(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_NetworkTimeout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "netfailbox"})
 	driver.Instances["netfailbox"].Status = "Running"
@@ -935,7 +935,7 @@ func TestExecutor_WaitPolicy_NetworkTimeout(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_NonHostnameImage(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "nohostnamebox"})
 	driver.Instances["nohostnamebox"].Status = "Running"
@@ -969,7 +969,7 @@ func TestExecutor_WaitPolicy_NonHostnameImage(t *testing.T) {
 }
 
 func TestExecutor_InterruptDuringOperation_ReturnsInternalError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "opcancelbox"})
 	driver.Instances["opcancelbox"].Status = "Running"
@@ -997,7 +997,7 @@ func TestExecutor_InterruptDuringOperation_ReturnsInternalError(t *testing.T) {
 }
 
 func TestExecutor_InterruptDuringRecipeScript_ReturnsInternalError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "recipecancelbox"})
 	driver.Instances["recipecancelbox"].Status = "Running"
@@ -1055,7 +1055,7 @@ func TestIsTransientAgentError(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_VMAgentHandshake(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 
 	attempts := 0
@@ -1094,7 +1094,7 @@ func TestExecutor_WaitPolicy_VMAgentHandshake(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_VMAgentTimeout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 
 	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
@@ -1125,7 +1125,7 @@ func TestExecutor_WaitPolicy_VMAgentTimeout(t *testing.T) {
 }
 
 func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopBeforePUT(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "running-vm",
@@ -1179,7 +1179,7 @@ func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopBeforePUT(t *testing.T) 
 }
 
 func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopPowerTransition(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "running-vm-stop",

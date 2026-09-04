@@ -23,18 +23,18 @@ func (m *mockOp) Wait() error {
 
 func TestWaitOpContext(t *testing.T) {
 	// Nil op
-	if err := common.WaitOpContext(context.Background(), nil); err != nil {
+	if err := common.WaitOpContext(t.Context(), nil); err != nil {
 		t.Errorf("expected nil for nil op, got %v", err)
 	}
 
 	// Normal completion
 	op := &mockOp{err: nil}
-	if err := common.WaitOpContext(context.Background(), op); err != nil {
+	if err := common.WaitOpContext(t.Context(), op); err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
 
 	// Context cancellation
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
 	defer cancel()
 	slowOp := &mockOp{waitDelay: 100 * time.Millisecond}
 	if err := common.WaitOpContext(ctx, slowOp); !errors.Is(err, context.DeadlineExceeded) {
@@ -50,21 +50,21 @@ func TestExtractExecExitCode(t *testing.T) {
 	}
 
 	// Normal exit code 0
-	meta0 := map[string]interface{}{"return": float64(0)}
+	meta0 := map[string]any{"return": float64(0)}
 	code, err = common.ExtractExecExitCode(meta0, nil)
 	if code != 0 || err != nil {
 		t.Errorf("expected 0 and nil error, got %d, %v", code, err)
 	}
 
 	// Non-zero exit code 127
-	meta127 := map[string]interface{}{"return": float64(127)}
+	meta127 := map[string]any{"return": float64(127)}
 	code, err = common.ExtractExecExitCode(meta127, nil)
 	if code != 127 || err != nil {
 		t.Errorf("expected 127 and nil error, got %d, %v", code, err)
 	}
 
 	// Integer return code 2
-	metaInt := map[string]interface{}{"return": 2}
+	metaInt := map[string]any{"return": 2}
 	code, err = common.ExtractExecExitCode(metaInt, nil)
 	if code != 2 || err != nil {
 		t.Errorf("expected 2 and nil error, got %d, %v", code, err)

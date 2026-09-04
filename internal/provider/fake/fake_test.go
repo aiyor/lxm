@@ -1,7 +1,6 @@
 package fake_test
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -10,7 +9,7 @@ import (
 )
 
 func TestFakeDriver_Operations(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 
 	// 1. Instance Lifecycle
@@ -104,7 +103,7 @@ func TestFakeDriver_Operations(t *testing.T) {
 }
 
 func TestFakeDriver_CreateNetwork_Types(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 
 	// 1. Create bridge network

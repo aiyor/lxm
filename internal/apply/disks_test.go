@@ -1,7 +1,6 @@
 package apply_test
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -32,7 +31,7 @@ func volumeOpPlan(ops []plan.VolumeOp) *plan.Plan {
 }
 
 func TestApply_DryRun_NoVolumeMutation(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -57,7 +56,7 @@ func TestApply_DryRun_NoVolumeMutation(t *testing.T) {
 }
 
 func TestApply_VolumeOps_CreatedBeforeInstance(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -85,7 +84,7 @@ func TestApply_VolumeOps_CreatedBeforeInstance(t *testing.T) {
 }
 
 func TestApply_VolumeOps_CreateIdempotent_NoGrow(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	if err := driver.CreateStoragePoolVolume(ctx, "default", provider.StorageVolumeCreateRequest{
 		Name: "db-vm-data", Type: "custom", ContentType: "filesystem",
@@ -112,7 +111,7 @@ func TestApply_VolumeOps_CreateIdempotent_NoGrow(t *testing.T) {
 }
 
 func TestApply_VolumeOps_CreateGrowIfSmaller(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	if err := driver.CreateStoragePoolVolume(ctx, "default", provider.StorageVolumeCreateRequest{
 		Name: "db-vm-data", Type: "custom", ContentType: "filesystem",
@@ -139,7 +138,7 @@ func TestApply_VolumeOps_CreateGrowIfSmaller(t *testing.T) {
 }
 
 func TestApply_VolumeOps_Grow(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	if err := driver.CreateStoragePoolVolume(ctx, "default", provider.StorageVolumeCreateRequest{
 		Name: "db-vm-wal", Type: "custom", ContentType: "block",
@@ -166,7 +165,7 @@ func TestApply_VolumeOps_Grow(t *testing.T) {
 }
 
 func TestApply_VolumeOps_ContentTypeConflict(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	if err := driver.CreateStoragePoolVolume(ctx, "default", provider.StorageVolumeCreateRequest{
 		Name: "db-vm-data", Type: "custom", ContentType: "block",
@@ -192,7 +191,7 @@ func TestApply_VolumeOps_ContentTypeConflict(t *testing.T) {
 }
 
 func TestApply_VolumeOps_GrowMissingVolume_Fails(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 

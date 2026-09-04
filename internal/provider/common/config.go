@@ -1,6 +1,10 @@
 package common
 
-import "github.com/aiyor/lxm/internal/provider"
+import (
+	"maps"
+
+	"github.com/aiyor/lxm/internal/provider"
+)
 
 // TranslateBootModeToDaemon translates lxm VM boot.mode into daemon security.secureboot and security.csm.
 // It is strictly gated on instType == InstanceTypeVM to protect container configs from mutation.
@@ -8,10 +12,7 @@ func TranslateBootModeToDaemon(instType provider.InstanceType, cfg map[string]st
 	if cfg == nil {
 		return nil
 	}
-	out := make(map[string]string, len(cfg))
-	for k, v := range cfg {
-		out[k] = v
-	}
+	out := maps.Clone(cfg)
 	if instType != provider.InstanceTypeVM && instType != "virtual-machine" {
 		return out
 	}
@@ -38,10 +39,7 @@ func TranslateDaemonToBootMode(instType provider.InstanceType, cfg map[string]st
 	if cfg == nil {
 		return nil
 	}
-	out := make(map[string]string, len(cfg))
-	for k, v := range cfg {
-		out[k] = v
-	}
+	out := maps.Clone(cfg)
 	if instType != provider.InstanceTypeVM && instType != "virtual-machine" {
 		return out
 	}

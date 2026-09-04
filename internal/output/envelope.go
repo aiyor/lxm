@@ -23,8 +23,8 @@ type Envelope struct {
 // PlanSummary represents the plan summary structure within the envelope.
 type PlanSummary struct {
 	Summary      map[string]int `json:"summary"`
-	Steps        interface{}    `json:"steps,omitempty"`
-	NetworkSteps interface{}    `json:"network_steps,omitempty"`
+	Steps        any            `json:"steps,omitempty"`
+	NetworkSteps any            `json:"network_steps,omitempty"`
 }
 
 // ResultItem represents an individual container operation result.
@@ -33,7 +33,7 @@ type ResultItem struct {
 	Action     string `json:"action,omitempty"`
 	Changed    bool   `json:"changed"`
 	OK         bool   `json:"ok"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitzero"`
 }
 
 // NetworkResult represents an individual network-step operation result.
@@ -42,7 +42,7 @@ type NetworkResult struct {
 	Kind       string `json:"kind"`
 	Changed    bool   `json:"changed"`
 	OK         bool   `json:"ok"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitzero"`
 	Error      string `json:"error,omitempty"`
 }
 

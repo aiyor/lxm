@@ -16,8 +16,7 @@ func TestPlanComputeError_ExitCodeMapping(t *testing.T) {
 	if err := planComputeError(mve); err == nil {
 		t.Fatal("expected error")
 	} else {
-		var ee *exitError
-		if !errors.As(err, &ee) || ee.code != 4 {
+		if ee, ok := errors.AsType[*exitError](err); !ok || ee.code != 4 {
 			t.Errorf("expected exit 4 for MissingVolumeError, got %+v", err)
 		}
 	}
@@ -27,8 +26,7 @@ func TestPlanComputeError_ExitCodeMapping(t *testing.T) {
 	if err := planComputeError(generic); err == nil {
 		t.Fatal("expected error")
 	} else {
-		var ee *exitError
-		if !errors.As(err, &ee) || ee.code != 3 {
+		if ee, ok := errors.AsType[*exitError](err); !ok || ee.code != 3 {
 			t.Errorf("expected exit 3 for generic error, got %+v", err)
 		}
 	}
@@ -64,8 +62,7 @@ func TestCheckDiskExtensions_BlockModeGate(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when extension missing for block disk")
 	}
-	var ee *exitError
-	if !errors.As(err, &ee) || ee.code != 4 {
+	if ee, ok := errors.AsType[*exitError](err); !ok || ee.code != 4 {
 		t.Errorf("expected exit 4, got %+v", err)
 	}
 
@@ -95,8 +92,7 @@ func TestCheckDiskExtensions_IOBusGate(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected disk_io_bus gate failure for nvme")
 	}
-	var ee *exitError
-	if !errors.As(err, &ee) || ee.code != 4 {
+	if ee, ok := errors.AsType[*exitError](err); !ok || ee.code != 4 {
 		t.Errorf("expected exit 4, got %+v", err)
 	}
 

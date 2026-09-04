@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -228,14 +229,12 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 
 	// Phase 2: instance steps (creates, updates, rebuilds, device detachments).
 	for _, step := range p.Steps {
-		wg.Add(1)
-		go func(s plan.Step) {
-			defer wg.Done()
+		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
 			startTs := time.Now()
-			res, errInfo, warnMsg := e.executeStep(ctx, s, opts)
+			res, errInfo, warnMsg := e.executeStep(ctx, step, opts)
 			res.DurationMS = time.Since(startTs).Milliseconds()
 
 			mu.Lock()
@@ -250,7 +249,7 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 				code := errorCodeToExit(errInfo.Code)
 				worstExitCode = selectWorstExitCode(worstExitCode, code)
 			}
-		}(step)
+		})
 	}
 
 	wg.Wait()
@@ -477,9 +476,9 @@ func (e *defaultExecutor) growIfNeeded(ctx context.Context, op plan.VolumeOp) er
 	if desiredBytes <= liveBytes {
 		return nil
 	}
-	put := provider.StorageVolumeUpdateRequest{Config: make(map[string]string, len(vol.Config)+1)}
-	for k, v := range vol.Config {
-		put.Config[k] = v
+	put := provider.StorageVolumeUpdateRequest{Config: maps.Clone(vol.Config)}
+	if put.Config == nil {
+		put.Config = make(map[string]string)
 	}
 	put.Config["size"] = op.Size
 	return e.driver.UpdateStoragePoolVolume(ctx, op.Pool, "custom", op.Name, put, etag)
@@ -519,15 +518,15 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 	select {
 	case <-ctx.Done():
 		return ContainerResult{
-				Container: step.Container,
-				Action:    step.Action,
-				OK:        false,
-				Error:     "operation cancelled by user interrupt",
-			}, &ErrorInfo{
-				Code:      "INTERNAL_ERROR",
-				Container: step.Container,
-				Message:   "operation cancelled by user interrupt",
-			}, ""
+			Container: step.Container,
+			Action:    step.Action,
+			OK:        false,
+			Error:     "operation cancelled by user interrupt",
+		}, &ErrorInfo{
+			Code:      "INTERNAL_ERROR",
+			Container: step.Container,
+			Message:   "operation cancelled by user interrupt",
+		}, ""
 	default:
 	}
 
@@ -941,14 +940,14 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 				return nil, fmt.Sprintf("cloud-init wait status exited %d on container %q (soft wait)", out.res.ExitCode, step.Container)
 			}
 		case <-waitCtx.Done():
-			if ctx.Err() != nil || waitCtx.Err() == context.Canceled {
+			if ctx.Err() != nil || errors.Is(waitCtx.Err(), context.Canceled) {
 				return &ErrorInfo{
 					Code:      "INTERNAL_ERROR",
 					Container: step.Container,
 					Message:   "wait policy cancelled by user interrupt",
 				}, ""
 			}
-			if waitCtx.Err() == context.DeadlineExceeded {
+			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
 				if required {
 					return &ErrorInfo{
 						Code:      "WAIT_TIMEOUT",

@@ -69,7 +69,7 @@ func (m *Manager) runPostCreate(conf *config.Config, configBaseDir string, shoul
 	if shouldWait {
 		if err := m.WaitForCloudInit(context.Background(), conf.Name, 10*time.Minute); err != nil {
 			m.logger.Warn("Cloud-init wait failed", "error", err)
-			return fmt.Errorf("%w: %w", ErrWaitTimeout, err)
+			return errors.Join(ErrWaitTimeout, err)
 		}
 	}
 	if err := m.ExecuteRecipes(conf, configBaseDir); err != nil {

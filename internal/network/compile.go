@@ -1,9 +1,11 @@
 package network
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
 	"net"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/aiyor/lxm/internal/provider"
@@ -149,17 +151,15 @@ func Compile(f *Fleet) []*CompiledACL {
 		}
 
 		acl.Rules = dedupRules(acl.Rules)
-		sort.SliceStable(acl.Rules, func(i, j int) bool {
-			return ruleLess(acl.Rules[i], acl.Rules[j])
-		})
+		slices.SortStableFunc(acl.Rules, ruleLessInt)
 	}
 
 	out := make([]*CompiledACL, 0, len(aclIndex))
 	for _, acl := range aclIndex {
 		out = append(out, acl)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].Name < out[j].Name
+	slices.SortFunc(out, func(a, b *CompiledACL) int {
+		return cmp.Compare(a.Name, b.Name)
 	})
 	return out
 }
@@ -190,11 +190,7 @@ func PermittedEgress(f *Fleet, vs *VSwitch) []string {
 			}
 		}
 	}
-	out := make([]string, 0, len(set))
-	for s := range set {
-		out = append(out, s)
-	}
-	sort.Strings(out)
+	out := slices.Sorted(maps.Keys(set))
 	return out
 }
 
@@ -248,11 +244,7 @@ func compileRejectRules(f *Fleet, vs *VSwitch) []Rule {
 		}
 	}
 
-	rejects := make([]string, 0, len(rejectSet))
-	for r := range rejectSet {
-		rejects = append(rejects, r)
-	}
-	sort.Strings(rejects)
+	rejects := slices.Sorted(maps.Keys(rejectSet))
 
 	var rules []Rule
 	// For OVN vswitches with carved DNS resolvers, emit port-guard reject rules
@@ -330,27 +322,27 @@ func cidrCoveredBySlice(list []string, cidr string) bool {
 	return false
 }
 
-// ruleLess orders rules by (direction, action, source, destination, protocol, destination_port, icmp_type).
-func ruleLess(a, b Rule) bool {
-	if a.Direction != b.Direction {
-		return a.Direction < b.Direction
+// ruleLessInt orders rules by (direction, action, source, destination, protocol, destination_port, icmp_type).
+func ruleLessInt(a, b Rule) int {
+	if c := cmp.Compare(a.Direction, b.Direction); c != 0 {
+		return c
 	}
-	if a.Action != b.Action {
-		return a.Action < b.Action
+	if c := cmp.Compare(a.Action, b.Action); c != 0 {
+		return c
 	}
-	if a.Source != b.Source {
-		return a.Source < b.Source
+	if c := cmp.Compare(a.Source, b.Source); c != 0 {
+		return c
 	}
-	if a.Destination != b.Destination {
-		return a.Destination < b.Destination
+	if c := cmp.Compare(a.Destination, b.Destination); c != 0 {
+		return c
 	}
-	if a.Protocol != b.Protocol {
-		return a.Protocol < b.Protocol
+	if c := cmp.Compare(a.Protocol, b.Protocol); c != 0 {
+		return c
 	}
-	if a.DestinationPort != b.DestinationPort {
-		return a.DestinationPort < b.DestinationPort
+	if c := cmp.Compare(a.DestinationPort, b.DestinationPort); c != 0 {
+		return c
 	}
-	return a.ICMPType < b.ICMPType
+	return cmp.Compare(a.ICMPType, b.ICMPType)
 }
 
 // ACLToAPIRules converts compiled rules into network ACL rule payloads,
@@ -390,8 +382,8 @@ func RulesEqual(a, b []provider.NetworkACLRule) bool {
 		sa[i] = key(a[i])
 		sb[i] = key(b[i])
 	}
-	sort.Strings(sa)
-	sort.Strings(sb)
+	slices.Sort(sa)
+	slices.Sort(sb)
 	for i := range sa {
 		if sa[i] != sb[i] {
 			return false

@@ -2,8 +2,9 @@ package network
 
 import (
 	"fmt"
+	"maps"
 	"net"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
@@ -61,11 +62,7 @@ func CheckInstances(configs []*config.Config, f *Fleet, liveNetworks map[string]
 		}
 
 		if len(groupsSeen) > 1 {
-			groups := make([]string, 0, len(groupsSeen))
-			for g := range groupsSeen {
-				groups = append(groups, g)
-			}
-			sort.Strings(groups)
+			groups := slices.Sorted(maps.Keys(groupsSeen))
 			warnings = append(warnings, fmt.Sprintf("instance %q NICs span network groups [%s]; guest routing may bypass network_policy",
 				conf.Name, strings.Join(groups, ", ")))
 		}

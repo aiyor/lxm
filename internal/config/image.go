@@ -1,10 +1,11 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"net"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -16,18 +17,17 @@ import (
 // it for v2, and the guard treats it as local for no-schema (v1-compat)
 // manifests so it can never produce a degenerate remote fetch.
 func SplitImageRef(image string) (remote, alias string, isRemote bool) {
-	idx := strings.IndexByte(image, ':')
-	if idx < 0 {
+	remote, alias, ok := strings.Cut(image, ":")
+	if !ok {
 		return "", image, false
 	}
-	alias = image[idx+1:]
 	if alias == "" {
 		return "", image, false
 	}
-	if strings.IndexByte(alias, ':') >= 0 {
+	if strings.Contains(alias, ":") {
 		return "", image, false
 	}
-	return image[:idx], alias, true
+	return remote, alias, true
 }
 
 // ImageLocalRef returns the local LXD image identity that must exist in the
@@ -156,8 +156,10 @@ func EffectiveImageRemotesForProvider(providerType string, configs []*Config) (m
 	baseRemotes := BuiltinImageRemotesForProvider(providerType)
 
 	// Deterministic conflict attribution: process manifests in file order.
-	sorted := append([]*Config(nil), configs...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].ConfigFile < sorted[j].ConfigFile })
+	sorted := slices.Clone(configs)
+	slices.SortStableFunc(sorted, func(a, b *Config) int {
+		return cmp.Compare(a.ConfigFile, b.ConfigFile)
+	})
 
 	declared := make(map[string]string) // remote name -> canonical URL
 	attrib := make(map[string]string)   // remote name -> first declaring file

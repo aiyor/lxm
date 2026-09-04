@@ -3,9 +3,10 @@
 package network
 
 import (
+	"cmp"
 	"fmt"
 	"net"
-	"sort"
+	"slices"
 )
 
 // ParseSubnet parses a vswitch-style "gateway/prefix" string and returns the
@@ -104,7 +105,7 @@ func CanonicalizeCIDRs(cidrs []string) ([]string, error) {
 	for _, n := range kept {
 		out = append(out, n.String())
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out, nil
 }
 
@@ -166,8 +167,8 @@ func SubtractCIDRs(supernet *net.IPNet, carveOuts []*net.IPNet) []*net.IPNet {
 	}
 
 	walk(supernet.IP.To4(), ones)
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].String() < out[j].String()
+	slices.SortFunc(out, func(a, b *net.IPNet) int {
+		return cmp.Compare(a.String(), b.String())
 	})
 	return out
 }

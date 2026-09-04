@@ -142,7 +142,7 @@ func TestRun_ApplyNoStartFlag(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("apply --no-start returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
-	inst, _, err := driver.GetInstance(context.Background(), "dev-box")
+	inst, _, err := driver.GetInstance(t.Context(), "dev-box")
 	if err != nil {
 		t.Fatalf("dev-box container should exist in driver server, got: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestRun_ApplyETagDrift_JSONRetryable(t *testing.T) {
 	// rebuilt error entries from the single exit error with retryable
 	// hardcoded to false.
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "dev-box"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "dev-box"})
 	driver.UpdateInstanceFunc = func(name string, put provider.InstanceUpdateRequest, etag string) error {
 		return fmt.Errorf("ETag does not match: stale vs fresh. The configuration has been modified since this change began. Please retrieve the updated configuration before proceeding.")
 	}
@@ -209,7 +209,7 @@ func TestRun_ApplyInterrupt_EnvelopeKeepsInternalError(t *testing.T) {
 	// INTERNAL_ERROR entry, never with the report's per-container
 	// PROVIDER_ERROR/retryable entries (SPEC_RESULT code-to-exit mapping).
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "dev-box"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "dev-box"})
 	driver.UpdateInstanceFunc = func(name string, put provider.InstanceUpdateRequest, etag string) error {
 		return fmt.Errorf("ETag does not match: stale vs fresh. The configuration has been modified since this change began. Please retrieve the updated configuration before proceeding.")
 	}
@@ -218,7 +218,7 @@ func TestRun_ApplyInterrupt_EnvelopeKeepsInternalError(t *testing.T) {
 	cfgFile := filepath.Join(tmpDir, "dev.yaml")
 	_ = os.WriteFile(cfgFile, []byte("name: dev-box\nimage: ubuntu:22.04\nstatus: present\nuser: ubuntu\n"), 0644)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // pre-canceled: simulates an interrupt
 
 	var stdout, stderr bytes.Buffer
@@ -265,7 +265,7 @@ func TestRun_ApplyInterrupt_EnvelopeKeepsInternalError(t *testing.T) {
 
 func TestRun_RunEnvVars(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "dev-box"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "dev-box"})
 
 	tmpDir := t.TempDir()
 	scriptFile := filepath.Join(tmpDir, "test.sh")
@@ -290,7 +290,7 @@ func TestRun_ApplyNameSelectorAndRenameTo(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("apply with --name and --rename-to returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
-		if _, _, err := driver.GetInstance(context.Background(), "renamed-box"); err != nil {
+		if _, _, err := driver.GetInstance(t.Context(), "renamed-box"); err != nil {
 			t.Errorf("container renamed-box should have been created")
 		}
 	})
@@ -314,7 +314,7 @@ func TestRun_ApplyNameSelectorAndRenameTo(t *testing.T) {
 
 func TestRun_SSHInterspersedFlags(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	var stdout, stderr bytes.Buffer
 	// Test passing SSH flag -o after container name box1 with --dry-run
@@ -333,7 +333,7 @@ func TestRun_SSHInterspersedFlags(t *testing.T) {
 // -o StrictHostKeyChecking=no) must not gain the alias.
 func TestRun_SSHStrictInvocation_HostKeyAlias(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	// Strict verification path.
 	var stdout, stderr bytes.Buffer
@@ -382,7 +382,7 @@ func TestRun_SSHStrictInvocation_HostKeyAlias(t *testing.T) {
 // failed strict verification).
 func TestRun_SSHUserOverridesEffective(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	t.Run("user -o StrictHostKeyChecking=no replaces lxm default", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
@@ -507,7 +507,7 @@ func TestRun_SSHUserOverridesEffective(t *testing.T) {
 
 func TestRun_ListJSONFormat(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"list", "--format", "json"}, &stdout, &stderr, driver)
@@ -648,7 +648,7 @@ status: present
 		t.Fatalf("run(apply) returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
 
-	inst, _, err := driver.GetInstance(context.Background(), "dev-box")
+	inst, _, err := driver.GetInstance(t.Context(), "dev-box")
 	if err != nil {
 		t.Fatalf("expected instance dev-box created in driver server, got err: %v", err)
 	}
@@ -673,10 +673,10 @@ func TestRun_GroupFiltersSpaceAndEquals(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run(apply --group dev) returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
-	if _, _, err := driver.GetInstance(context.Background(), "dev-box"); err != nil {
+	if _, _, err := driver.GetInstance(t.Context(), "dev-box"); err != nil {
 		t.Errorf("dev-box should be created")
 	}
-	if _, _, err := driver.GetInstance(context.Background(), "prod-box"); err == nil {
+	if _, _, err := driver.GetInstance(t.Context(), "prod-box"); err == nil {
 		t.Errorf("prod-box should not be created under --group dev")
 	}
 
@@ -687,7 +687,7 @@ func TestRun_GroupFiltersSpaceAndEquals(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run(apply --group=prod) returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
-	if _, _, err := driver.GetInstance(context.Background(), "prod-box"); err != nil {
+	if _, _, err := driver.GetInstance(t.Context(), "prod-box"); err != nil {
 		t.Errorf("prod-box should be created under --group=prod")
 	}
 }
@@ -735,7 +735,7 @@ func TestRun_Plan(t *testing.T) {
 
 func TestRun_ScriptAndRunAs(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	tmpDir := t.TempDir()
 	scriptFile := filepath.Join(tmpDir, "setup.sh")
@@ -762,7 +762,7 @@ func TestRun_ScriptAndRunAs(t *testing.T) {
 
 func TestRun_SnapshotAndRollback(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	t.Run("create_snapshot", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
@@ -1014,7 +1014,7 @@ func TestRun_FormatJSON_Errors(t *testing.T) {
 
 func TestRun_FormatJSON_InteractiveCarveOut(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	t.Run("shell rejects --format json", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
@@ -1072,7 +1072,7 @@ func TestRun_FormatJSON_SingleDocument(t *testing.T) {
 
 	t.Run("status --format json single document", func(t *testing.T) {
 		driver := fake.New()
-		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+		_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 		var stdout, stderr bytes.Buffer
 		code := run([]string{"status", "box1", "--format", "json"}, &stdout, &stderr, driver)
@@ -1137,7 +1137,7 @@ func TestRun_FormatJSON_SingleDocument(t *testing.T) {
 
 func TestRun_SSH_RemoteCommandJSON_NotCarvedOut(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--dry-run", "ssh", "box1", "json"}, &stdout, &stderr, driver)
@@ -1159,7 +1159,7 @@ func TestRun_InvalidFormatFlag(t *testing.T) {
 }
 
 func TestRun_SignalInterrupt(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // Pre-cancelled context
 
 	var stdout, stderr bytes.Buffer
@@ -1411,7 +1411,7 @@ func TestRun_Prune_OrphanGC(t *testing.T) {
 	driver := fake.New()
 
 	// Pre-create orphan container with user.lxm.managed=true in driver LXD
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
 		Name: "orphan-box",
 		Config: map[string]string{
 			"user.lxm.managed": "true",
@@ -1419,7 +1419,7 @@ func TestRun_Prune_OrphanGC(t *testing.T) {
 			"user.lxm.user":    "ubuntu",
 		},
 	})
-	driver.UpdateInstanceState(context.Background(), "orphan-box", "start", false)
+	driver.UpdateInstanceState(t.Context(), "orphan-box", "start", false)
 
 	tmpDir := t.TempDir()
 	keeperPath := filepath.Join(tmpDir, "keeper.yaml")
@@ -1460,7 +1460,7 @@ groups: [dev]
 		if code != 0 {
 			t.Fatalf("apply --prune returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
-		inst, _, err := driver.GetInstance(context.Background(), "orphan-box")
+		inst, _, err := driver.GetInstance(t.Context(), "orphan-box")
 		if err == nil && inst != nil {
 			t.Errorf("expected orphan-box to be deleted by apply --prune, but it still exists")
 		}
@@ -1472,7 +1472,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	t.Setenv("LXM_KNOWN_HOSTS_FILE", khFile)
 
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
 		Name: "secure-box",
 		Config: map[string]string{
 			"user.lxm.user":    "ubuntu",
@@ -1493,7 +1493,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	})
 
 	t.Run("B2: stopped container with no IPv4 returns exit code 6", func(t *testing.T) {
-		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
+		_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
 			Name:   "stopped-box",
 			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})
@@ -1574,7 +1574,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	})
 
 	t.Run("R5: keyscan failure on unreachable IP returns exit code 6", func(t *testing.T) {
-		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
+		_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
 			Name:   "unreachable-box",
 			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})
@@ -1593,7 +1593,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	})
 
 	t.Run("R9: IP resolution from running instance State.Network", func(t *testing.T) {
-		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
+		_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
 			Name:   "running-box",
 			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})

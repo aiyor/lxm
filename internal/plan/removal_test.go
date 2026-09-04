@@ -190,18 +190,14 @@ func TestPlan_VSwitchStatusAbsent_EmitsDeleteStep(t *testing.T) {
 	fleet := &network.Fleet{
 		VSwitches: []*network.VSwitch{
 			{
-				VSwitchConfig: config.VSwitchConfig{
-					Name:   "legacybr0",
-					Status: "absent",
-				},
+				Name:   "legacybr0",
+				Status: "absent",
 			},
 		},
 		ByName: map[string]*network.VSwitch{
 			"legacybr0": {
-				VSwitchConfig: config.VSwitchConfig{
-					Name:   "legacybr0",
-					Status: "absent",
-				},
+				Name:   "legacybr0",
+				Status: "absent",
 			},
 		},
 	}
@@ -250,18 +246,14 @@ func TestPlan_VSwitchStatusAbsent_InUseCheckFails(t *testing.T) {
 	fleet := &network.Fleet{
 		VSwitches: []*network.VSwitch{
 			{
-				VSwitchConfig: config.VSwitchConfig{
-					Name:   "dmzbr0",
-					Status: "absent",
-				},
+				Name:   "dmzbr0",
+				Status: "absent",
 			},
 		},
 		ByName: map[string]*network.VSwitch{
 			"dmzbr0": {
-				VSwitchConfig: config.VSwitchConfig{
-					Name:   "dmzbr0",
-					Status: "absent",
-				},
+				Name:   "dmzbr0",
+				Status: "absent",
 			},
 		},
 	}
@@ -404,18 +396,14 @@ func TestPlan_VSwitchStatusAbsent_LiveNetworkInUse_FailsPlan(t *testing.T) {
 	fleet := &network.Fleet{
 		VSwitches: []*network.VSwitch{
 			{
-				VSwitchConfig: config.VSwitchConfig{
-					Name:   "legacybr0",
-					Status: "absent",
-				},
+				Name:   "legacybr0",
+				Status: "absent",
 			},
 		},
 		ByName: map[string]*network.VSwitch{
 			"legacybr0": {
-				VSwitchConfig: config.VSwitchConfig{
-					Name:   "legacybr0",
-					Status: "absent",
-				},
+				Name:   "legacybr0",
+				Status: "absent",
 			},
 		},
 	}

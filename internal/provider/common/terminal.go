@@ -66,9 +66,7 @@ func RunInteractiveTerminal(runner func(width, height int, controlChan <-chan Co
 		defer signal.Stop(sigChan)
 
 		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				select {
 				case sig := <-sigChan:
@@ -113,7 +111,7 @@ func RunInteractiveTerminal(runner func(width, height int, controlChan <-chan Co
 					return
 				}
 			}
-		}()
+		})
 		defer wg.Wait()
 	}
 
