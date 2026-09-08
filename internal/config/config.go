@@ -680,6 +680,15 @@ func ValidatePostMerge(conf *Config) error {
 		return fmt.Errorf("invalid provider %q: must be 'incus', 'lxd', or 'auto'", conf.Provider)
 	}
 
+	// Validate manifest-declared remotes applicability and mutual exclusivity.
+	// Validation is layered across:
+	// 1. CUE (#RemoteObjAuthoring): structural schema constraint forbidding
+	//    server_certificate and server_fingerprint when insecure: true.
+	// 2. Go (ValidatePostMerge): semantic manifest validation catching invalid
+	//    provider names, UNIX socket pinning, and insecure mutual exclusivity.
+	//    (Cryptographic checks like PEM parsing, fingerprint matching, and HTTPS
+	//    scheme probe are deferred to runtime ResolveDriver).
+	// 3. Runtime (ResolveDriver): TLS probe, fingerprint verification, and SDK connect.
 	for name, rem := range conf.Remotes {
 		if rem.Address == "" {
 			return fmt.Errorf("remote %q: address is required", name)
@@ -693,7 +702,7 @@ func ValidatePostMerge(conf *Config) error {
 			return fmt.Errorf("remote %q: server_certificate and server_fingerprint cannot be used with a UNIX socket endpoint", name)
 		}
 		if rem.Insecure && (rem.ServerCertificate != "" || rem.ServerFingerprint != "") {
-			return fmt.Errorf("remote %q: contradictory configuration: insecure: true cannot be combined with certificate or fingerprint pinning", name)
+			return fmt.Errorf("remote %q: contradictory configuration: insecure: true cannot be combined with certificate or fingerprint pinning (remove server_certificate/server_fingerprint from manifest remotes)", name)
 		}
 	}
 

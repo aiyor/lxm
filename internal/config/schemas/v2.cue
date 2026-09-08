@@ -46,9 +46,9 @@ import (
 	server_fingerprint?: string
 
 	if insecure != _|_ {
-		if insecure {
-			server_certificate: _|_
-			server_fingerprint: _|_
+		if insecure == true {
+			server_certificate?: _|_
+			server_fingerprint?: _|_
 		}
 	}
 })
