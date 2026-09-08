@@ -77,7 +77,7 @@ func Compile(f *Fleet) []*CompiledACL {
 
 		// G1/G2 — intra-group (R2): all peers share the group.
 		for _, peer := range f.ByGroup[vs.Group] {
-			if peer.Name == vs.Name {
+			if peer.Name == vs.Name || peer.Status == "absent" || peer.Subnet == nil {
 				continue
 			}
 			peerNet := peer.Subnet.String()
@@ -93,7 +93,7 @@ func Compile(f *Fleet) []*CompiledACL {
 				continue
 			}
 			for _, peer := range f.ByGroup[rule.To] {
-				if peer.Name == vs.Name {
+				if peer.Name == vs.Name || peer.Status == "absent" || peer.Subnet == nil {
 					continue
 				}
 				peerNet := peer.Subnet.String()
@@ -112,7 +112,7 @@ func Compile(f *Fleet) []*CompiledACL {
 				continue
 			}
 			for _, peer := range f.ByGroup[rule.From] {
-				if peer.Name == vs.Name {
+				if peer.Name == vs.Name || peer.Status == "absent" || peer.Subnet == nil {
 					continue
 				}
 				peerNet := peer.Subnet.String()
@@ -170,21 +170,21 @@ func Compile(f *Fleet) []*CompiledACL {
 func PermittedEgress(f *Fleet, vs *VSwitch) []string {
 	set := make(map[string]bool)
 	for _, peer := range f.ByGroup[vs.Group] {
-		if peer.Name != vs.Name {
+		if peer.Name != vs.Name && peer.Status != "absent" && peer.Subnet != nil {
 			set[peer.Subnet.String()] = true
 		}
 	}
 	for _, rule := range f.Allow {
 		if rule.From == vs.Group {
 			for _, peer := range f.ByGroup[rule.To] {
-				if peer.Name != vs.Name {
+				if peer.Name != vs.Name && peer.Status != "absent" && peer.Subnet != nil {
 					set[peer.Subnet.String()] = true
 				}
 			}
 		}
 		if rule.To == vs.Group && rule.Direction == "both" {
 			for _, peer := range f.ByGroup[rule.From] {
-				if peer.Name != vs.Name {
+				if peer.Name != vs.Name && peer.Status != "absent" && peer.Subnet != nil {
 					set[peer.Subnet.String()] = true
 				}
 			}

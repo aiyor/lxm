@@ -171,11 +171,13 @@ type ReplaceDirective struct {
 
 // RemoteConfig models remote daemon connection metadata declared in a manifest.
 type RemoteConfig struct {
-	Address  string `yaml:"address"`
-	Provider string `yaml:"provider,omitempty"`
-	Project  string `yaml:"project,omitempty"`
-	Insecure bool   `yaml:"insecure,omitempty"`
-	Protocol string `yaml:"protocol,omitempty"`
+	Address           string `yaml:"address"`
+	Provider          string `yaml:"provider,omitempty"`
+	Project           string `yaml:"project,omitempty"`
+	Insecure          bool   `yaml:"insecure,omitempty"`
+	Protocol          string `yaml:"protocol,omitempty"`
+	ServerCertificate string `yaml:"server_certificate,omitempty"`
+	ServerFingerprint string `yaml:"server_fingerprint,omitempty"`
 }
 
 // Config defines the desired state for an instance.

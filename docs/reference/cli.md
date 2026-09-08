@@ -460,7 +460,10 @@ Usage:
 
 **Arguments:** exactly two — a config directory and the include file to add.
 
-**Exit codes:** `0` always. This command is registered as a **stub** and currently performs no operation.
+**Exit codes:**
+* `0`: Success (include added or already present across target manifests).
+* `3`: Configuration / argument error.
+* `4`: File read / write error.
 
 ---
 

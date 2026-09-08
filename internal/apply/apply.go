@@ -1103,17 +1103,37 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 			runAs = step.Recipes[i].RunAs
 		}
 
-		// B6: Recipe sudo opt-in
+		// B6 / N6: Recipe sudo opt-in
+		var sudoerCleanup string
 		if rMeta.Sudo && runAs != "root" && runAs != "" {
-			sudoerRule := fmt.Sprintf("%s ALL=(ALL) NOPASSWD:ALL\n", runAs)
-			sudoerPath := fmt.Sprintf("/etc/sudoers.d/99-lxm-recipe-%s", rMeta.Name)
-			if rMeta.Name == "" {
-				sudoerPath = "/etc/sudoers.d/99-lxm-recipe"
+			if !isValidUsername(runAs) {
+				return &ErrorInfo{
+					Code:      "CONFIG_ERROR",
+					Container: step.Container,
+					Message:   fmt.Sprintf("invalid recipe run_as username %q", runAs),
+				}
 			}
-			if err := e.driver.CreateInstanceFile(ctx, step.Container, sudoerPath, strings.NewReader(sudoerRule), 0440, 0, 0); err == nil {
-				defer func(path string) {
-					_ = e.driver.DeleteInstanceFile(ctx, step.Container, path)
-				}(sudoerPath)
+
+			sudoerRule := fmt.Sprintf("%s ALL=(ALL) NOPASSWD:ALL\n", runAs)
+			sudoerPath := fmt.Sprintf("/etc/sudoers.d/99-lxm-recipe-%s", sanitizeSafeFilename(rMeta.Name))
+			if err := e.driver.CreateInstanceFile(ctx, step.Container, sudoerPath, strings.NewReader(sudoerRule), 0440, 0, 0); err != nil {
+				return &ErrorInfo{
+					Code:      "PROVIDER_ERROR",
+					Container: step.Container,
+					Message:   fmt.Sprintf("injecting recipe sudoers drop-in %s: %v", sudoerPath, err),
+				}
+			}
+			sudoerCleanup = sudoerPath
+
+			// Run visudo -c -f <path> to validate syntax inside container if visudo is present
+			visudoRes, visudoErr := e.driver.ExecInstance(ctx, step.Container, []string{"visudo", "-c", "-f", sudoerPath}, 0, nil)
+			if visudoErr == nil && visudoRes.ExitCode != 0 && visudoRes.ExitCode != 127 && !strings.Contains(visudoRes.Stderr, "not found") {
+				_ = e.driver.DeleteInstanceFile(ctx, step.Container, sudoerPath)
+				return &ErrorInfo{
+					Code:      "CONFIG_ERROR",
+					Container: step.Container,
+					Message:   fmt.Sprintf("visudo validation failed for recipe %q: %s", rMeta.Name, strings.TrimSpace(visudoRes.Stderr)),
+				}
 			}
 		}
 
@@ -1122,15 +1142,17 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 			scripts = []string{step.Recipes[i].Path}
 		}
 
+		var recipeErr *ErrorInfo
 		for _, scriptFile := range scripts {
 			execRes, _, execErr := recipe.ExecuteRecipeScriptContext(ctx, e.driver, step.Container, scriptFile, step.ConfigBaseDir, runAs, rMeta.Env, rMeta.Retries)
 			if execErr != nil || execRes.ExitCode != 0 {
 				if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) || ctx.Err() != nil {
-					return &ErrorInfo{
+					recipeErr = &ErrorInfo{
 						Code:      "INTERNAL_ERROR",
 						Container: step.Container,
 						Message:   "recipe execution cancelled by user interrupt",
 					}
+					break
 				}
 				errMsg := execRes.Stderr
 				if errMsg == "" {
@@ -1140,12 +1162,20 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 						errMsg = fmt.Sprintf("recipe script %q failed with exit code %d", scriptFile, execRes.ExitCode)
 					}
 				}
-				return &ErrorInfo{
+				recipeErr = &ErrorInfo{
 					Code:      "EXEC_FAILED",
 					Container: step.Container,
 					Message:   errMsg,
 				}
+				break
 			}
+		}
+
+		if sudoerCleanup != "" {
+			_ = e.driver.DeleteInstanceFile(ctx, step.Container, sudoerCleanup)
+		}
+		if recipeErr != nil {
+			return recipeErr
 		}
 
 		// Update metadata hash (H2 safety write check)
@@ -1185,4 +1215,40 @@ func errorCodeToExit(code string) int {
 
 func exitToErrorCode(code int) string {
 	return output.ExitCodeToErrorCode(code)
+}
+
+func isValidUsername(user string) bool {
+	if len(user) == 0 || len(user) > 32 {
+		return false
+	}
+	for i, r := range user {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' {
+			continue
+		}
+		if (r >= '0' && r <= '9') || r == '-' {
+			if i == 0 {
+				return false
+			}
+			continue
+		}
+		if r == '$' && i == len(user)-1 {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func sanitizeSafeFilename(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	res := b.String()
+	if res == "" {
+		return "unnamed"
+	}
+	return res
 }

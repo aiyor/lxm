@@ -212,3 +212,76 @@ func TestComputeRecipeHash_MultiScript(t *testing.T) {
 	}
 }
 
+func TestComputeRecipeHash_MetadataChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	s1 := filepath.Join(tmpDir, "step1.sh")
+	if err := os.WriteFile(s1, []byte("echo hello"), 0755); err != nil {
+		t.Fatalf("writing s1: %v", err)
+	}
+
+	base := &RecipeMetadata{
+		Name:    "test",
+		Scripts: []string{"step1.sh"},
+		RunAs:   "user1",
+		Sudo:    false,
+		Env:     map[string]string{"K1": "V1"},
+		Retries: 0,
+	}
+
+	baseHash, err := ComputeRecipeHash(base, tmpDir)
+	if err != nil {
+		t.Fatalf("ComputeRecipeHash base error: %v", err)
+	}
+
+	// 1. sudo change produces different hash
+	withSudo := *base
+	withSudo.Sudo = true
+	sudoHash, err := ComputeRecipeHash(&withSudo, tmpDir)
+	if err != nil || sudoHash == baseHash {
+		t.Errorf("expected different hash for sudo change, got %q (base: %q)", sudoHash, baseHash)
+	}
+
+	// 2. env change produces different hash
+	withEnv := *base
+	withEnv.Env = map[string]string{"K1": "V2"}
+	envHash, err := ComputeRecipeHash(&withEnv, tmpDir)
+	if err != nil || envHash == baseHash {
+		t.Errorf("expected different hash for env change, got %q (base: %q)", envHash, baseHash)
+	}
+
+	// 3. run_as change produces different hash
+	withRunAs := *base
+	withRunAs.RunAs = "user2"
+	runAsHash, err := ComputeRecipeHash(&withRunAs, tmpDir)
+	if err != nil || runAsHash == baseHash {
+		t.Errorf("expected different hash for run_as change, got %q (base: %q)", runAsHash, baseHash)
+	}
+
+	// 4. retries change produces different hash
+	withRetries := *base
+	withRetries.Retries = 3
+	retriesHash, err := ComputeRecipeHash(&withRetries, tmpDir)
+	if err != nil || retriesHash == baseHash {
+		t.Errorf("expected different hash for retries change, got %q (base: %q)", retriesHash, baseHash)
+	}
+
+	// 5. snapshot change produces different hash
+	noSnap := false
+	withSnap := *base
+	withSnap.Snapshot = &noSnap
+	snapHash, err := ComputeRecipeHash(&withSnap, tmpDir)
+	if err != nil || snapHash == baseHash {
+		t.Errorf("expected different hash for snapshot change, got %q (base: %q)", snapHash, baseHash)
+	}
+
+	// 6. env order insensitivity
+	envOrder1 := *base
+	envOrder1.Env = map[string]string{"A": "1", "B": "2", "C": "3"}
+	envOrder2 := *base
+	envOrder2.Env = map[string]string{"C": "3", "A": "1", "B": "2"}
+	hEnv1, _ := ComputeRecipeHash(&envOrder1, tmpDir)
+	hEnv2, _ := ComputeRecipeHash(&envOrder2, tmpDir)
+	if hEnv1 != hEnv2 {
+		t.Errorf("expected identical hash regardless of env map iteration order, got %q != %q", hEnv1, hEnv2)
+	}
+}

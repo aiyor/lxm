@@ -20,6 +20,12 @@ import (
 //  3. Multi-NIC group-span warning (R10) — NICs on vswitches from ≥2 distinct
 //     groups may bypass network_policy via guest routing.
 func CheckInstances(configs []*config.Config, f *Fleet, liveNetworks map[string]bool) ([]string, error) {
+	return CheckInstancesWithProvider(configs, f, liveNetworks, "")
+}
+
+// CheckInstancesWithProvider is like CheckInstances but defaults NIC parent
+// to incusbr0 when the resolved provider is incus.
+func CheckInstancesWithProvider(configs []*config.Config, f *Fleet, liveNetworks map[string]bool, prov string) ([]string, error) {
 	var warnings []string
 
 	for _, conf := range configs {
@@ -35,6 +41,10 @@ func CheckInstances(configs []*config.Config, f *Fleet, liveNetworks map[string]
 			parent := nic.Parent
 			if parent == "" {
 				if conf != nil && conf.Provider == "incus" {
+					parent = "incusbr0"
+				} else if conf != nil && conf.Provider == "lxd" {
+					parent = "lxdbr0"
+				} else if prov == "incus" {
 					parent = "incusbr0"
 				} else {
 					parent = "lxdbr0"

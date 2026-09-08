@@ -191,3 +191,31 @@ func TestUnion_AbsentVSwitch_NoPanicOrInvalidCIDR(t *testing.T) {
 	}
 }
 
+func TestCheckInstancesWithProvider_IncusDefaultBridge(t *testing.T) {
+	conf := &config.Config{
+		Name: "web",
+		Networks: []config.NetworkConfig{
+			{Name: "eth0"}, // no parent specified, no provider on config
+		},
+	}
+	f := &Fleet{ByName: map[string]*VSwitch{}}
+	liveNets := map[string]bool{"incusbr0": true}
+
+	// When provider is incus, default parent is incusbr0 -> present in liveNets -> 0 warnings
+	warns, err := CheckInstancesWithProvider([]*config.Config{conf}, f, liveNets, "incus")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warns) != 0 {
+		t.Errorf("expected 0 warnings on incus, got: %v", warns)
+	}
+
+	// When provider is not incus, default parent is lxdbr0 -> missing from liveNets -> warning
+	warnsLXD, err := CheckInstancesWithProvider([]*config.Config{conf}, f, liveNets, "lxd")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnsLXD) == 0 || !strings.Contains(warnsLXD[0], "lxdbr0") {
+		t.Errorf("expected warning mentioning lxdbr0 on lxd, got: %v", warnsLXD)
+	}
+}

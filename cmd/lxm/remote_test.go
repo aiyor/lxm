@@ -144,8 +144,10 @@ func TestResolveFleetService(t *testing.T) {
 		Remote: "custom-remote",
 		Remotes: map[string]config.RemoteConfig{
 			"custom-remote": {
-				Address:  "https://10.0.0.50:8443",
-				Provider: "incus",
+				Address:           "https://10.0.0.50:8443",
+				Provider:          "incus",
+				ServerCertificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----",
+				ServerFingerprint: "abcdef0123456789",
 			},
 		},
 	}
@@ -156,6 +158,12 @@ func TestResolveFleetService(t *testing.T) {
 		entry, ok := opts.ManifestRemotes["custom-remote"]
 		if !ok || entry.Address != "https://10.0.0.50:8443" || entry.Provider != provider.ProviderTypeIncus {
 			t.Errorf("manifest remotes not populated properly: %+v", opts.ManifestRemotes)
+		}
+		if entry.ServerCertificate != "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----" {
+			t.Errorf("server certificate mismatch: got %q", entry.ServerCertificate)
+		}
+		if entry.ServerFingerprint != "abcdef0123456789" {
+			t.Errorf("server fingerprint mismatch: got %q", entry.ServerFingerprint)
 		}
 		return override, nil
 	})

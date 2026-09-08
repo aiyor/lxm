@@ -200,6 +200,9 @@ func newDiskCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			if opts.format != "json" {
 				fmt.Fprintf(stdout, "Successfully deleted %d volume(s).\n", deleted)
 			}
+			if deleted < len(orphans) {
+				return &exitError{code: 4, err: fmt.Errorf("failed to delete %d of %d volume(s)", len(orphans)-deleted, len(orphans))}
+			}
 			return nil
 		},
 	}
@@ -356,6 +359,9 @@ func newVSwitchCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 
 			if opts.format != "json" {
 				fmt.Fprintf(stdout, "Successfully deleted %d network ACL(s).\n", deleted)
+			}
+			if deleted < len(orphans) {
+				return &exitError{code: 4, err: fmt.Errorf("failed to delete %d of %d network ACL(s)", len(orphans)-deleted, len(orphans))}
 			}
 			return nil
 		},

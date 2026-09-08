@@ -1213,9 +1213,9 @@ if file, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0); err == nil {
 }
 ```
 
-### 7.4 Legacy `internal/lxm` Package Status
-- The `internal/lxm` package is confirmed as legacy/unreferenced by the Cobra CLI (`cmd/lxm` exclusively wires `internal/plan` and `internal/apply`).
-- All active VM features and mount shift logic are implemented exclusively in `internal/config`, `internal/plan`, `internal/apply`, `internal/fleet`, and `internal/lxd`.
+### 7.4 Refactored Modular Architecture Status
+- The legacy monolithic `internal/lxm` package has been fully superseded and removed.
+- All active VM features and mount shift logic are implemented exclusively in `internal/config`, `internal/plan`, `internal/apply`, `internal/fleet`, and `internal/provider`.
 
 ---
 

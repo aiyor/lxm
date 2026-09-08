@@ -140,11 +140,18 @@ type Reconciler interface {
 	Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume, imageAliases map[string]bool, imageRemotes map[string]string, hasRebuildExt bool) (*Plan, error)
 }
 
-type defaultReconciler struct{}
+type defaultReconciler struct {
+	provider string
+}
 
 // NewReconciler returns a new default Reconciler.
 func NewReconciler() Reconciler {
 	return &defaultReconciler{}
+}
+
+// NewReconcilerWithProvider returns a new default Reconciler configured with a provider.
+func NewReconcilerWithProvider(provider string) Reconciler {
+	return &defaultReconciler{provider: provider}
 }
 
 func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume, imageAliases map[string]bool, imageRemotes map[string]string, hasRebuildExt bool) (*Plan, error) {
@@ -213,7 +220,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 			step.PowerTransition = "stop"
 		}
 
-		postPayload, err := buildInstancesPost(manifest)
+		postPayload, err := buildInstancesPost(manifest, r.provider)
 		if err != nil {
 			return nil, fmt.Errorf("building create payload: %w", err)
 		}
@@ -252,7 +259,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 
 	// 3. Instance exists — compare live state against desired state
 	step.ETag = liveInst.ETag
-	diffs, requiresRecreate, volumeOps, err := computeDiffs(manifest, liveInst, volumes)
+	diffs, requiresRecreate, volumeOps, err := computeDiffs(manifest, liveInst, volumes, r.provider)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +289,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		step.RebuildPost = &provider.InstanceRebuildRequest{
 			Source: resolvedInstanceSource(manifest.Image, manifest.Type),
 		}
-		postPayload, err := buildInstancesPost(manifest)
+		postPayload, err := buildInstancesPost(manifest, r.provider)
 		if err != nil {
 			return nil, fmt.Errorf("building recreate payload: %w", err)
 		}
@@ -338,7 +345,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		step.Changed = true
 		step.Diff = diffs
 		step.Wait = manifest.WaitPolicy.Required
-		putPayload, err := buildInstancePut(manifest, liveInst)
+		putPayload, err := buildInstancePut(manifest, liveInst, r.provider)
 		if err != nil {
 			return nil, fmt.Errorf("building update payload: %w", err)
 		}
@@ -394,7 +401,44 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 	return plan, nil
 }
 
-func buildInstancesPost(manifest *config.Config) (*provider.InstanceCreateRequest, error) {
+func defaultBridgeForProvider(manifest *config.Config, prov string) string {
+	if manifest != nil && manifest.Provider == "incus" {
+		return "incusbr0"
+	}
+	if manifest != nil && manifest.Provider == "lxd" {
+		return "lxdbr0"
+	}
+	if prov == "incus" {
+		return "incusbr0"
+	}
+	return "lxdbr0"
+}
+
+func normalizeNetworks(nets []config.NetworkConfig, manifest *config.Config, prov string) []config.NetworkConfig {
+	if len(nets) == 0 {
+		return nil
+	}
+	res := make([]config.NetworkConfig, len(nets))
+	for i, n := range nets {
+		res[i] = n
+		if res[i].Name == "" {
+			res[i].Name = "eth0"
+		}
+		if res[i].Parent == "" {
+			res[i].Parent = defaultBridgeForProvider(manifest, prov)
+		}
+	}
+	slices.SortFunc(res, func(a, b config.NetworkConfig) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+	return res
+}
+
+func buildInstancesPost(manifest *config.Config, prov ...string) (*provider.InstanceCreateRequest, error) {
+	p := ""
+	if len(prov) > 0 {
+		p = prov[0]
+	}
 	instType := provider.InstanceTypeContainer
 	if manifest.Type == "virtual-machine" {
 		instType = provider.InstanceTypeVM
@@ -492,11 +536,7 @@ func buildInstancesPost(manifest *config.Config) (*provider.InstanceCreateReques
 		}
 		parent := n.Parent
 		if parent == "" {
-			if manifest != nil && manifest.Provider == "incus" {
-				parent = "incusbr0"
-			} else {
-				parent = "lxdbr0"
-			}
+			parent = defaultBridgeForProvider(manifest, p)
 		}
 		props := map[string]string{
 			"type":    "nic",
@@ -584,7 +624,11 @@ func imageFetchEnabled() bool {
 	return v != "0" && !strings.EqualFold(v, "false")
 }
 
-func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*provider.InstanceUpdateRequest, error) {
+func buildInstancePut(manifest *config.Config, live *InstanceSnapshot, prov ...string) (*provider.InstanceUpdateRequest, error) {
+	p := ""
+	if len(prov) > 0 {
+		p = prov[0]
+	}
 	instType := provider.InstanceType(manifest.Type)
 	if instType == "" {
 		instType = provider.InstanceTypeContainer
@@ -726,11 +770,7 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*provide
 		}
 		parent := n.Parent
 		if parent == "" {
-			if manifest != nil && manifest.Provider == "incus" {
-				parent = "incusbr0"
-			} else {
-				parent = "lxdbr0"
-			}
+			parent = defaultBridgeForProvider(manifest, p)
 		}
 		props := map[string]string{
 			"type":    "nic",
@@ -836,7 +876,11 @@ func areMountsEqual(manifestMounts, liveMounts []config.Mount) bool {
 	return true
 }
 
-func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume) ([]FieldDiff, bool, []VolumeOp, error) {
+func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume, prov ...string) ([]FieldDiff, bool, []VolumeOp, error) {
+	p := ""
+	if len(prov) > 0 {
+		p = prov[0]
+	}
 	var diffs []FieldDiff
 	requiresRecreate := false
 	var volumeOps []VolumeOp
@@ -973,7 +1017,8 @@ func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[s
 	}
 
 	liveNetworks := getLiveNetworks(live)
-	if !reflect.DeepEqual(manifest.Networks, liveNetworks) {
+	normManifestNets := normalizeNetworks(manifest.Networks, manifest, p)
+	if !reflect.DeepEqual(normManifestNets, liveNetworks) {
 		diffs = append(diffs, FieldDiff{
 			Field: "networks",
 			Old:   liveNetworks,

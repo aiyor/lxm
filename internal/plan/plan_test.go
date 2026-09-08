@@ -138,7 +138,7 @@ func TestReconciler_Compute_Update_UserGroupsMountsNetworks(t *testing.T) {
 
 // B2/B3: mount devices must carry shift=true (idmapping) and NIC devices must
 // carry nictype=bridged on both create and update payloads, matching the
-// SPEC_MANIFEST contract and the legacy internal/lxm device helpers.
+// SPEC_MANIFEST contract.
 func TestReconciler_Compute_MountAndNicDeviceProps(t *testing.T) {
 	rec := plan.NewReconciler()
 
@@ -1264,5 +1264,80 @@ func TestReconciler_Compute_VM_HugepagesAndRawQEMU_DiffAndRestart(t *testing.T) 
 	}
 	if !hasRawQEMUDiff {
 		t.Errorf("expected diff for raw.qemu, got diffs: %+v", step.Diff)
+	}
+}
+
+func TestReconciler_Compute_ProviderAwareDefaultBridge(t *testing.T) {
+	conf := &config.Config{
+		Name:  "box1",
+		Image: "ubuntu:24.04",
+		Networks: []config.NetworkConfig{
+			{Name: "eth0"}, // no parent specified, no provider specified
+		},
+	}
+
+	// 1. Incus reconciler defaults to incusbr0 on create
+	recIncus := plan.NewReconcilerWithProvider("incus")
+	pIncus, err := recIncus.Compute(conf, nil, nil, nil, config.BuiltinImageRemotes(), false)
+	if err != nil {
+		t.Fatalf("Compute failed: %v", err)
+	}
+	devIncus := pIncus.Steps[0].InstancesPost.Devices["eth0"]
+	if devIncus["network"] != "incusbr0" {
+		t.Errorf("expected network incusbr0 on incus provider, got %q", devIncus["network"])
+	}
+
+	// 2. Default/LXD reconciler defaults to lxdbr0 on create
+	recLXD := plan.NewReconciler()
+	pLXD, err := recLXD.Compute(conf, nil, nil, nil, config.BuiltinImageRemotes(), false)
+	if err != nil {
+		t.Fatalf("Compute failed: %v", err)
+	}
+	devLXD := pLXD.Steps[0].InstancesPost.Devices["eth0"]
+	if devLXD["network"] != "lxdbr0" {
+		t.Errorf("expected network lxdbr0 on lxd provider, got %q", devLXD["network"])
+	}
+
+	// 3. Explicit manifest provider overrides reconciler provider
+	confExplicitLXD := &config.Config{
+		Name:     "box1",
+		Image:    "ubuntu:24.04",
+		Provider: "lxd",
+		Networks: []config.NetworkConfig{
+			{Name: "eth0"},
+		},
+	}
+	pExplicit, err := recIncus.Compute(confExplicitLXD, nil, nil, nil, config.BuiltinImageRemotes(), false)
+	if err != nil {
+		t.Fatalf("Compute failed: %v", err)
+	}
+	devExplicit := pExplicit.Steps[0].InstancesPost.Devices["eth0"]
+	if devExplicit["network"] != "lxdbr0" {
+		t.Errorf("expected explicit lxd manifest to override incus reconciler, got %q", devExplicit["network"])
+	}
+
+	// 4. Update on Incus with live having incusbr0 produces no spurious network diff
+	live := map[string]*plan.InstanceSnapshot{
+		"box1": {
+			Name:   "box1",
+			Status: "Running",
+			Config: map[string]string{
+				"image.os":      "ubuntu",
+				"image.release": "24.04",
+			},
+			Devices: map[string]map[string]string{
+				"root": {"type": "disk", "path": "/", "pool": "default"},
+				"eth0": {"type": "nic", "network": "incusbr0"},
+			},
+		},
+	}
+	pUpdate, err := recIncus.Compute(conf, live, nil, nil, config.BuiltinImageRemotes(), false)
+	if err != nil {
+		t.Fatalf("Compute failed: %v", err)
+	}
+	for _, d := range pUpdate.Steps[0].Diff {
+		if d.Field == "networks" {
+			t.Errorf("unexpected networks diff on Incus: %+v", d)
+		}
 	}
 }

@@ -208,7 +208,7 @@ The `lxm` CLI binary registers the following subcommands:
 | `diff` | `lxm diff <config-file> <container>` | Preview plan for a single container against a config file. |
 | `disk` | `lxm disk gc [file\|dir]` | Garbage-collect managed storage volumes. |
 | `doctor` | `lxm doctor [dir] [--skip-remote]` | Audit host environment, provider (LXD/Incus) daemon, and fleet health. |
-| `include` | `lxm include <config_dir> <include_file>` | Add an include directive to all configs (stub). |
+| `include` | `lxm include <config_dir> <include_file>` | Add an include directive to all configs in directory. |
 | `init` | `lxm init [path] [--force]` | Initialize `_base.yaml` and `config/dev.yaml` structure. |
 | `list` | `lxm list [--name N] [--format]` | List fleet containers, IPs, groups, and status. |
 | `plan` | `lxm plan <file\|dir> [flags]` | Preview deterministic reconciliation plan. |

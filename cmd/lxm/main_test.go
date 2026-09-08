@@ -924,6 +924,31 @@ include:
 			t.Errorf("expected 2 result items, got %d", len(env.Results))
 		}
 	})
+
+	t.Run("include skips unrelated non-lxm YAML", func(t *testing.T) {
+		mkdocsPath := filepath.Join(tmpDir, "mkdocs.yml")
+		mkdocsContent := `site_name: test-docs
+nav:
+  - Home: index.md
+`
+		if err := os.WriteFile(mkdocsPath, []byte(mkdocsContent), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", tmpDir, "_another.yaml"}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("include failed with code %d: %s", code, stderr.String())
+		}
+
+		data, err := os.ReadFile(mkdocsPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != mkdocsContent {
+			t.Errorf("mkdocs.yml was modified: %s", string(data))
+		}
+	})
 }
 
 func TestHasAnyGroup(t *testing.T) {
@@ -1735,4 +1760,24 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 			t.Fatalf("ssh --format json returned %d, want 2. Stderr: %s", code, stderr.String())
 		}
 	})
+}
+
+func TestFetchLiveSnapshots_PopulatesLiveETag(t *testing.T) {
+	driver := fake.New()
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
+		Name: "web-box",
+	})
+	driver.Instances["web-box"].ETag = "etag-12345"
+
+	snaps, _, err := fetchLiveSnapshots(t.Context(), driver, nil)
+	if err != nil {
+		t.Fatalf("fetchLiveSnapshots error: %v", err)
+	}
+	snap, ok := snaps["web-box"]
+	if !ok {
+		t.Fatalf("expected snapshot for web-box")
+	}
+	if snap.ETag != "etag-12345" {
+		t.Errorf("snap.ETag = %q, want etag-12345", snap.ETag)
+	}
 }

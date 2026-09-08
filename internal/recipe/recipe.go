@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"cuelang.org/go/cue"
@@ -168,7 +169,7 @@ func ComputeScriptHash(scriptPath string, baseDir string) (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
-// ComputeRecipeHash computes the combined SHA256 content hash of all scripts in a recipe.
+// ComputeRecipeHash computes the combined SHA256 content hash of all scripts and metadata in a recipe.
 func ComputeRecipeHash(rMeta *RecipeMetadata, baseDir string) (string, error) {
 	if rMeta == nil {
 		return "", fmt.Errorf("recipe metadata cannot be nil")
@@ -176,9 +177,6 @@ func ComputeRecipeHash(rMeta *RecipeMetadata, baseDir string) (string, error) {
 	scripts := rMeta.Scripts
 	if len(scripts) == 0 {
 		scripts = []string{rMeta.Path}
-	}
-	if len(scripts) == 1 {
-		return ComputeScriptHash(scripts[0], baseDir)
 	}
 
 	h := sha256.New()
@@ -192,8 +190,28 @@ func ComputeRecipeHash(rMeta *RecipeMetadata, baseDir string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("reading script file %q: %w", target, err)
 		}
+		fmt.Fprintf(h, "script:%s\n", s)
 		h.Write(data)
+		h.Write([]byte{0})
 	}
+
+	// Incorporate recipe execution metadata (N10)
+	fmt.Fprintf(h, "run_as:%s\n", rMeta.GetRunAs())
+	fmt.Fprintf(h, "sudo:%t\n", rMeta.Sudo)
+	fmt.Fprintf(h, "snapshot:%t\n", rMeta.IsSnapshotEnabled())
+	fmt.Fprintf(h, "retries:%d\n", rMeta.Retries)
+
+	if len(rMeta.Env) > 0 {
+		keys := make([]string, 0, len(rMeta.Env))
+		for k := range rMeta.Env {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		for _, k := range keys {
+			fmt.Fprintf(h, "env:%s=%s\n", k, rMeta.Env[k])
+		}
+	}
+
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 

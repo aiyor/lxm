@@ -1113,3 +1113,52 @@ func TestPlan_VSwitch_OVN_DNS_Derivation_Nameservers_And_Volatile(t *testing.T) 
 		}
 	})
 }
+
+func TestComputeNetworks_AbsentVSwitchInSameGroup_NoNilCIDRRules(t *testing.T) {
+	// An active OVN vswitch needing DNS auto-derivation sharing a group with an absent vswitch
+	conf := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{Name: "ovn-active", Type: "ovn", IPv4: "10.70.0.1/24", Group: "shared-grp"},
+			{Name: "ovn-absent", Status: "absent", Group: "shared-grp"},
+		},
+	}
+	f, err := network.Union([]*config.Config{conf})
+	if err != nil {
+		t.Fatalf("Union error: %v", err)
+	}
+
+	live := &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"incusbr0": {
+				Name: "incusbr0",
+				Config: map[string]string{
+					"ipv4.address": "10.0.3.1/24",
+				},
+			},
+		},
+		ACLs: map[string]*provider.NetworkACL{},
+	}
+
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, live)
+	if err != nil {
+		t.Fatalf("ComputeNetworks error: %v", err)
+	}
+
+	for _, step := range np.Steps {
+		if step.ACLPut != nil {
+			for _, rule := range step.ACLPut.Egress {
+				if strings.Contains(rule.Source, "<nil>") || strings.Contains(rule.Destination, "<nil>") {
+					t.Fatalf("found <nil> in egress ACL rule: %+v", rule)
+				}
+			}
+			for _, rule := range step.ACLPut.Ingress {
+				if strings.Contains(rule.Source, "<nil>") || strings.Contains(rule.Destination, "<nil>") {
+					t.Fatalf("found <nil> in ingress ACL rule: %+v", rule)
+				}
+			}
+		}
+	}
+}

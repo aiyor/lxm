@@ -98,7 +98,7 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 		}
 		fCopy.ByGroup = make(map[string][]*network.VSwitch, len(f.ByGroup))
 		for _, vs := range vswitchesToCompile {
-			if vs.Group != "" {
+			if vs.Status != "absent" && vs.Group != "" {
 				fCopy.ByGroup[vs.Group] = append(fCopy.ByGroup[vs.Group], vs)
 			}
 		}

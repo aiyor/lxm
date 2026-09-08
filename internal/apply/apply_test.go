@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -663,8 +665,9 @@ func TestExecutor_RecipeSudo(t *testing.T) {
 	s1 := filepath.Join(tmpDir, "install.sh")
 	_ = os.WriteFile(s1, []byte("#!/bin/bash\nsudo apt update"), 0755)
 
-	recipeYAML := filepath.Join(tmpDir, "recipe.yaml")
-	_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+	t.Run("safe creation and cleanup", func(t *testing.T) {
+		recipeYAML := filepath.Join(tmpDir, "recipe.yaml")
+		_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
 name: sudo-test
 run_as: dev
 sudo: true
@@ -672,34 +675,162 @@ scripts:
   - install.sh
 `), 0644)
 
-	driver := fake.New()
-	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
-	driver.Instances["sudobox"].Status = "Running"
-	driver.Instances["sudobox"].StatusCode = 103
+		driver := fake.New()
+		_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
+		driver.Instances["sudobox"].Status = "Running"
+		driver.Instances["sudobox"].StatusCode = 103
 
-	exec := apply.NewExecutor(driver)
-	p := &plan.Plan{
-		Steps: []plan.Step{
-			{
-				Container:     "sudobox",
-				Action:        "noop",
-				ConfigBaseDir: tmpDir,
-				Recipes: []plan.RecipeStep{
-					{Path: "recipe.yaml", RunAs: "dev"},
+		var createdPath string
+		var createdContent string
+		driver.CreateInstanceFileFunc = func(name, path string, content io.Reader, mode int, uid, gid int64) error {
+			createdPath = path
+			data, _ := io.ReadAll(content)
+			createdContent = string(data)
+			return nil
+		}
+
+		exec := apply.NewExecutor(driver)
+		p := &plan.Plan{
+			Steps: []plan.Step{
+				{
+					Container:     "sudobox",
+					Action:        "noop",
+					ConfigBaseDir: tmpDir,
+					Recipes: []plan.RecipeStep{
+						{Path: "recipe.yaml", RunAs: "dev"},
+					},
 				},
 			},
-		},
-	}
+		}
 
-	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
-	if err != nil || rep.ExitCode != 0 {
-		t.Fatalf("apply failed: %v", err)
-	}
+		rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
+		if err != nil || rep.ExitCode != 0 {
+			t.Fatalf("apply failed: %v, exit: %d", err, rep.ExitCode)
+		}
+		if createdPath != "/etc/sudoers.d/99-lxm-recipe-sudo-test" {
+			t.Errorf("expected sudoers path /etc/sudoers.d/99-lxm-recipe-sudo-test, got %q", createdPath)
+		}
+		if !strings.Contains(createdContent, "dev ALL=(ALL) NOPASSWD:ALL") {
+			t.Errorf("expected sudo rule for dev, got: %q", createdContent)
+		}
+	})
 
-	// Sudoers drop-in should have been created and cleaned up
-	if _, exists := driver.Files["sudobox"]["/etc/sudoers.d/99-lxm-recipe-sudo-test"]; exists {
-		t.Errorf("expected sudoers drop-in to be cleaned up after execution")
-	}
+	t.Run("path sanitization prevents directory traversal", func(t *testing.T) {
+		recipeYAML := filepath.Join(tmpDir, "traversal.yaml")
+		_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: ../../tmp/evil
+run_as: dev
+sudo: true
+scripts:
+  - install.sh
+`), 0644)
+
+		driver := fake.New()
+		_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
+		driver.Instances["sudobox"].Status = "Running"
+		driver.Instances["sudobox"].StatusCode = 103
+
+		var createdPath string
+		driver.CreateInstanceFileFunc = func(name, path string, content io.Reader, mode int, uid, gid int64) error {
+			createdPath = path
+			return nil
+		}
+
+		exec := apply.NewExecutor(driver)
+		p := &plan.Plan{
+			Steps: []plan.Step{
+				{
+					Container:     "sudobox",
+					Action:        "noop",
+					ConfigBaseDir: tmpDir,
+					Recipes: []plan.RecipeStep{
+						{Path: "traversal.yaml", RunAs: "dev"},
+					},
+				},
+			},
+		}
+
+		rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
+		if err != nil || rep.ExitCode != 0 {
+			t.Fatalf("apply failed: %v", err)
+		}
+		if strings.Contains(createdPath, "..") || !strings.HasPrefix(createdPath, "/etc/sudoers.d/99-lxm-recipe-") {
+			t.Errorf("path was not sanitized: %q", createdPath)
+		}
+	})
+
+	t.Run("invalid username fails with CONFIG_ERROR", func(t *testing.T) {
+		recipeYAML := filepath.Join(tmpDir, "baduser.yaml")
+		_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: baduser
+run_as: "bad user\nevil"
+sudo: true
+scripts:
+  - install.sh
+`), 0644)
+
+		driver := fake.New()
+		_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
+		driver.Instances["sudobox"].Status = "Running"
+		driver.Instances["sudobox"].StatusCode = 103
+
+		exec := apply.NewExecutor(driver)
+		p := &plan.Plan{
+			Steps: []plan.Step{
+				{
+					Container:     "sudobox",
+					Action:        "noop",
+					ConfigBaseDir: tmpDir,
+					Recipes: []plan.RecipeStep{
+						{Path: "baduser.yaml", RunAs: "bad user\nevil"},
+					},
+				},
+			},
+		}
+
+		rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
+		if rep.ExitCode != 3 {
+			t.Errorf("expected exit code 3 (CONFIG_ERROR) for invalid username, got %d", rep.ExitCode)
+		}
+	})
+
+	t.Run("file creation failure fails closed with PROVIDER_ERROR", func(t *testing.T) {
+		recipeYAML := filepath.Join(tmpDir, "failwrite.yaml")
+		_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: failwrite
+run_as: dev
+sudo: true
+scripts:
+  - install.sh
+`), 0644)
+
+		driver := fake.New()
+		_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
+		driver.Instances["sudobox"].Status = "Running"
+		driver.Instances["sudobox"].StatusCode = 103
+		driver.CreateInstanceFileFunc = func(name, path string, content io.Reader, mode int, uid, gid int64) error {
+			return errors.New("read-only filesystem")
+		}
+
+		exec := apply.NewExecutor(driver)
+		p := &plan.Plan{
+			Steps: []plan.Step{
+				{
+					Container:     "sudobox",
+					Action:        "noop",
+					ConfigBaseDir: tmpDir,
+					Recipes: []plan.RecipeStep{
+						{Path: "failwrite.yaml", RunAs: "dev"},
+					},
+				},
+			},
+		}
+
+		rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
+		if rep.ExitCode != 4 {
+			t.Errorf("expected exit code 4 (PROVIDER_ERROR) when sudoers injection fails, got %d", rep.ExitCode)
+		}
+	})
 }
 
 func TestExecutor_ContextCancellation(t *testing.T) {

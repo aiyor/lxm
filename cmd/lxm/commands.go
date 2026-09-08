@@ -137,7 +137,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				return &exitError{code: 4, err: fmt.Errorf("listing local image aliases: %w", err)}
 			}
 
-			reconciler := plan.NewReconciler()
+			reconciler := plan.NewReconcilerWithProvider(resolveProviderType(opts, svc, loaded))
 			hasRebuild := svc.HasExtension("instances_rebuild")
 
 			combinedPlan := &plan.Plan{
@@ -324,13 +324,14 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				hasRebuild = svc.HasExtension("instances_rebuild")
 			}
 
-			reconciler := plan.NewReconciler()
+			provType := resolveProviderType(opts, svc, loaded)
+			reconciler := plan.NewReconcilerWithProvider(provType)
 			combinedPlan := &plan.Plan{
 				Schema: "lxm/plan/v1",
 				Steps:  []plan.Step{},
 			}
 
-			imageRemotes, err := config.EffectiveImageRemotesForProvider(resolveProviderType(opts, svc, loaded), loaded)
+			imageRemotes, err := config.EffectiveImageRemotesForProvider(provType, loaded)
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
@@ -443,8 +444,9 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				hasRebuild = svc.HasExtension("instances_rebuild")
 			}
 
-			reconciler := plan.NewReconciler()
-			imageRemotes, err := config.EffectiveImageRemotesForProvider(resolveProviderType(opts, svc, []*config.Config{conf}), []*config.Config{conf})
+			provType := resolveProviderType(opts, svc, []*config.Config{conf})
+			reconciler := plan.NewReconcilerWithProvider(provType)
+			imageRemotes, err := config.EffectiveImageRemotesForProvider(provType, []*config.Config{conf})
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
@@ -1513,37 +1515,54 @@ func newIncludeCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 				return &exitError{code: 3, err: fmt.Errorf("reading directory %q: %w", configDir, err)}
 			}
 
-			var modified []string
-			var resItems []output.ResultItem
-
+			var manifestFiles []string
 			for _, file := range files {
 				cleanFile := filepath.Clean(file)
 				cleanInc := filepath.Clean(includeFile)
 				if cleanFile == cleanInc || filepath.Base(file) == filepath.Base(includeFile) {
 					continue
 				}
+				probe, err := probeManifestFile(file)
+				if err != nil {
+					continue
+				}
+				// Skip unrelated YAML (e.g. mkdocs.yml, Taskfile.yml): only process lxm manifests
+				if probe.Schema == "" && probe.Name == "" && probe.Image == "" && !probe.Base {
+					continue
+				}
+				manifestFiles = append(manifestFiles, file)
+			}
 
-				var changed bool
-				if opts.dryRun {
-					has, err := config.HasIncludeInYAMLFile(file, includeFile)
+			type pendingOp struct {
+				file    string
+				changed bool
+			}
+			var ops []pendingOp
+			for _, file := range manifestFiles {
+				has, err := config.HasIncludeInYAMLFile(file, includeFile)
+				if err != nil {
+					return &exitError{code: 3, err: fmt.Errorf("validating %q: %w", file, err)}
+				}
+				ops = append(ops, pendingOp{file: file, changed: !has})
+			}
+
+			var modified []string
+			var resItems []output.ResultItem
+
+			for _, op := range ops {
+				if !opts.dryRun && op.changed {
+					_, err := config.AddIncludeToYAMLFile(op.file, includeFile)
 					if err != nil {
-						return &exitError{code: 3, err: fmt.Errorf("reading %q: %w", file, err)}
-					}
-					changed = !has
-				} else {
-					var err error
-					changed, err = config.AddIncludeToYAMLFile(file, includeFile)
-					if err != nil {
-						return &exitError{code: 3, err: fmt.Errorf("updating %q: %w", file, err)}
+						return &exitError{code: 3, err: fmt.Errorf("updating %q: %w", op.file, err)}
 					}
 				}
-				if changed {
-					modified = append(modified, file)
+				if op.changed {
+					modified = append(modified, op.file)
 				}
 				resItems = append(resItems, output.ResultItem{
-					Container: filepath.Base(file),
+					Container: filepath.Base(op.file),
 					Action:    "include",
-					Changed:   changed,
+					Changed:   op.changed,
 					OK:        true,
 				})
 			}
@@ -1909,6 +1928,13 @@ func fetchLiveSnapshots(ctx context.Context, svc provider.Driver, configs []*con
 		if instType == "" {
 			instType = "container"
 		}
+		etag := full.ETag
+		if etag == "" {
+			_, liveETag, err := svc.GetInstance(ctx, instName)
+			if err == nil {
+				etag = liveETag
+			}
+		}
 		result[instName] = &plan.InstanceSnapshot{
 			Name:            full.Name,
 			Type:            instType,
@@ -1921,7 +1947,7 @@ func fetchLiveSnapshots(ctx context.Context, svc provider.Driver, configs []*con
 			ExpandedDevices: full.ExpandedDevices,
 			Profiles:        full.Profiles,
 			Ephemeral:       full.Ephemeral,
-			ETag:            full.ETag,
+			ETag:            etag,
 			HasSnapshots:    len(full.Snapshots) > 0,
 		}
 	}
@@ -1987,11 +2013,13 @@ func collectManifestRemotes(configs []*config.Config) map[string]remote.RemoteEn
 		}
 		for name, r := range c.Remotes {
 			remotes[name] = remote.RemoteEntry{
-				Address:  r.Address,
-				Provider: provider.ProviderType(r.Provider),
-				Project:  r.Project,
-				Protocol: r.Protocol,
-				Insecure: r.Insecure,
+				Address:           r.Address,
+				Provider:          provider.ProviderType(r.Provider),
+				Project:           r.Project,
+				Protocol:          r.Protocol,
+				Insecure:          r.Insecure,
+				ServerCertificate: r.ServerCertificate,
+				ServerFingerprint: r.ServerFingerprint,
 			}
 		}
 	}

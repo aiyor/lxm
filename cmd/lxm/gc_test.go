@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -339,6 +340,35 @@ user: ubuntu
 		}
 		if _, exists := driver.Volumes["default"]["db-vm-orphan"]; exists {
 			t.Errorf("expected volume deleted")
+		}
+	})
+
+	t.Run("deletion failure returns exit code 4 and ok=false in envelope", func(t *testing.T) {
+		driver.AddVolume("default", "db-vm-orphan", "filesystem", map[string]string{
+			"user.lxm.managed":  "true",
+			"user.lxm.instance": "db-vm",
+			"user.lxm.disk":     "orphan",
+			"size":              "50GiB",
+		})
+		driver.DeleteStoragePoolVolumeFunc = func(pool, volType, name string) error {
+			return errors.New("simulated disk deletion error")
+		}
+		defer func() { driver.DeleteStoragePoolVolumeFunc = nil }()
+
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"disk", "gc", "--force", "--format", "json", manifestDir}, &stdout, &stderr, driver)
+		if code != 4 {
+			t.Fatalf("run returned %d, want 4. Stderr: %s", code, stderr.String())
+		}
+		var env output.Envelope
+		if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshaling json envelope: %v. Output: %s", err, stdout.String())
+		}
+		if env.OK || env.ExitCode != 4 {
+			t.Errorf("expected env.OK=false and env.ExitCode=4, got OK=%v ExitCode=%d", env.OK, env.ExitCode)
+		}
+		if len(env.Results) != 1 || env.Results[0].OK {
+			t.Errorf("expected 1 failed result item, got: %+v", env.Results)
 		}
 	})
 }
