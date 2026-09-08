@@ -1492,14 +1492,82 @@ groups: [dev]
 }
 
 func newIncludeCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, logger *slog.Logger) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "include <config_dir> <include_file>",
 		Short: "Add an include directive to all configs in a directory",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			configDir := args[0]
+			includeFile := args[1]
+
+			info, err := os.Stat(configDir)
+			if err != nil {
+				return &exitError{code: 5, err: fmt.Errorf("config directory %q not found: %w", configDir, err)}
+			}
+			if !info.IsDir() {
+				return &exitError{code: 2, err: fmt.Errorf("%q is not a directory", configDir)}
+			}
+
+			files, err := discoverYAMLFiles(configDir, opts.includeHidden, logger)
+			if err != nil {
+				return &exitError{code: 3, err: fmt.Errorf("reading directory %q: %w", configDir, err)}
+			}
+
+			var modified []string
+			var resItems []output.ResultItem
+
+			for _, file := range files {
+				cleanFile := filepath.Clean(file)
+				cleanInc := filepath.Clean(includeFile)
+				if cleanFile == cleanInc || filepath.Base(file) == filepath.Base(includeFile) {
+					continue
+				}
+
+				var changed bool
+				if opts.dryRun {
+					has, err := config.HasIncludeInYAMLFile(file, includeFile)
+					if err != nil {
+						return &exitError{code: 3, err: fmt.Errorf("reading %q: %w", file, err)}
+					}
+					changed = !has
+				} else {
+					var err error
+					changed, err = config.AddIncludeToYAMLFile(file, includeFile)
+					if err != nil {
+						return &exitError{code: 3, err: fmt.Errorf("updating %q: %w", file, err)}
+					}
+				}
+				if changed {
+					modified = append(modified, file)
+				}
+				resItems = append(resItems, output.ResultItem{
+					Container: filepath.Base(file),
+					Action:    "include",
+					Changed:   changed,
+					OK:        true,
+				})
+			}
+
+			if opts.format == "text" {
+				prefix := "Added"
+				if opts.dryRun {
+					prefix = "[DRY RUN] Would add"
+				}
+				if len(modified) == 0 {
+					fmt.Fprintf(stdout, "No files modified in %s (include already present or no configs found)\n", configDir)
+				} else {
+					fmt.Fprintf(stdout, "%s include %q to %d file(s) in %s:\n", prefix, includeFile, len(modified), configDir)
+					for _, f := range modified {
+						fmt.Fprintf(stdout, "  - %s\n", f)
+					}
+				}
+			}
+
+			lastCommandResults = resItems
 			return nil
 		},
 	}
+	return cmd
 }
 
 func newCompileCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, logger *slog.Logger) *cobra.Command {
@@ -1834,34 +1902,26 @@ func fetchLiveSnapshots(ctx context.Context, svc provider.Driver, configs []*con
 		}
 	}
 
-	result := make(map[string]*plan.InstanceSnapshot)
+	result := make(map[string]*plan.InstanceSnapshot, len(instances))
 	for _, full := range instances {
 		instName := full.Name
-		inst, etag, err := svc.GetInstance(ctx, instName)
-		if err != nil || inst == nil {
-			inst = &full
-			etag = ""
-		}
-		instType := string(inst.Type)
-		if instType == "" {
-			instType = string(full.Type)
-		}
+		instType := string(full.Type)
 		if instType == "" {
 			instType = "container"
 		}
 		result[instName] = &plan.InstanceSnapshot{
-			Name:            inst.Name,
+			Name:            full.Name,
 			Type:            instType,
-			Status:          inst.Status,
-			StatusCode:      inst.StatusCode,
-			Architecture:    inst.Architecture,
-			Config:          inst.Config,
+			Status:          full.Status,
+			StatusCode:      full.StatusCode,
+			Architecture:    full.Architecture,
+			Config:          full.Config,
 			ExpandedConfig:  full.ExpandedConfig,
-			Devices:         inst.Devices,
+			Devices:         full.Devices,
 			ExpandedDevices: full.ExpandedDevices,
-			Profiles:        inst.Profiles,
-			Ephemeral:       inst.Ephemeral,
-			ETag:            etag,
+			Profiles:        full.Profiles,
+			Ephemeral:       full.Ephemeral,
+			ETag:            full.ETag,
 			HasSnapshots:    len(full.Snapshots) > 0,
 		}
 	}
@@ -1916,14 +1976,39 @@ func computePlanSummary(steps []plan.Step) plan.PlanSummary {
 // resolveDriverFunc connects to a provider driver from resolved targeting options.
 type resolveDriverFunc func(opts remote.ResolveOptions) (provider.Driver, error)
 
+func collectManifestRemotes(configs []*config.Config) map[string]remote.RemoteEntry {
+	var remotes map[string]remote.RemoteEntry
+	for _, c := range configs {
+		if c == nil || len(c.Remotes) == 0 {
+			continue
+		}
+		if remotes == nil {
+			remotes = make(map[string]remote.RemoteEntry)
+		}
+		for name, r := range c.Remotes {
+			remotes[name] = remote.RemoteEntry{
+				Address:  r.Address,
+				Provider: provider.ProviderType(r.Provider),
+				Project:  r.Project,
+				Protocol: r.Protocol,
+				Insecure: r.Insecure,
+			}
+		}
+	}
+	return remotes
+}
+
 func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opts *cmdOptions, resolve resolveDriverFunc) (provider.Driver, error) {
+	manifestRemotes := collectManifestRemotes(configs)
+
 	// 1. CLI flags take highest precedence
 	if opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != "") {
 		resOpts := remote.ResolveOptions{
-			Provider:   provider.ProviderType(opts.provider),
-			RemoteName: opts.remote,
-			TargetNode: opts.target,
-			Project:    opts.project,
+			Provider:        provider.ProviderType(opts.provider),
+			RemoteName:      opts.remote,
+			TargetNode:      opts.target,
+			Project:         opts.project,
+			ManifestRemotes: manifestRemotes,
 		}
 		d, err := resolve(resOpts)
 		if err != nil {
@@ -1964,10 +2049,11 @@ func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opt
 	// If any manifest targeting parameter was found across the fleet
 	if manifestRemote != "" || manifestProvider != "" || manifestProject != "" || manifestTarget != "" {
 		resOpts := remote.ResolveOptions{
-			Provider:   provider.ProviderType(manifestProvider),
-			RemoteName: manifestRemote,
-			TargetNode: manifestTarget,
-			Project:    manifestProject,
+			Provider:        provider.ProviderType(manifestProvider),
+			RemoteName:      manifestRemote,
+			TargetNode:      manifestTarget,
+			Project:         manifestProject,
+			ManifestRemotes: manifestRemotes,
 		}
 		d, err := resolve(resOpts)
 		if err != nil {

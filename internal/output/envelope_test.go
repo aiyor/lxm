@@ -75,6 +75,57 @@ func TestExitCodeToErrorCode_Catalog(t *testing.T) {
 	}
 }
 
+func TestErrorCodeToExitCode_Catalog(t *testing.T) {
+	tests := []struct {
+		code string
+		want int
+	}{
+		{"INTERNAL_ERROR", 1},
+		{"USAGE_ERROR", 2},
+		{"CONFIG_ERROR", 3},
+		{"PROVIDER_ERROR", 4},
+		{"TARGET_NOT_FOUND", 5},
+		{"EXEC_FAILED", 6},
+		{"WAIT_TIMEOUT", 7},
+		{"UNKNOWN", 1},
+	}
+
+	for _, tt := range tests {
+		got := ErrorCodeToExitCode(tt.code)
+		if got != tt.want {
+			t.Errorf("ErrorCodeToExitCode(%q) = %d, want %d", tt.code, got, tt.want)
+		}
+	}
+}
+
+func TestSelectWorstExitCode(t *testing.T) {
+	tests := []struct {
+		current int
+		newCode int
+		want    int
+	}{
+		{0, 0, 0},
+		{0, 7, 7},
+		{7, 6, 6},
+		{6, 5, 5},
+		{5, 4, 4},
+		{4, 1, 1},
+		{2, 4, 4},
+		{3, 6, 6},
+		{6, 7, 6}, // 6 is worse than 7
+		{4, 5, 4}, // 4 is worse than 5
+		{1, 4, 1}, // 1 is worst
+		{4, 1, 1},
+	}
+
+	for _, tt := range tests {
+		got := SelectWorstExitCode(tt.current, tt.newCode)
+		if got != tt.want {
+			t.Errorf("SelectWorstExitCode(%d, %d) = %d, want %d", tt.current, tt.newCode, got, tt.want)
+		}
+	}
+}
+
 func TestSetExitCode(t *testing.T) {
 	env := NewEnvelope("run", "box1")
 	testErr := errors.New("script execution failed")

@@ -780,6 +780,11 @@ func TestPlan_VSwitch_OVN_AutoResolve_DNS(t *testing.T) {
 		t.Fatalf("expected steps, got none")
 	}
 
+	// Observation 4.2: Verify input fleet was not mutated
+	if len(f.VSwitches[0].DNSResolvers) != 0 {
+		t.Errorf("expected input fleet vswitch DNSResolvers to remain unmutated (len 0), got %v", f.VSwitches[0].DNSResolvers)
+	}
+
 	for _, s := range np.Steps {
 		if s.Kind == "create_acl" && s.Name == "lxm-ovnbr0" {
 			hasTCPGuard := false

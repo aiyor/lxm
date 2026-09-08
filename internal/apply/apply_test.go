@@ -596,6 +596,112 @@ func TestExecutor_RecipeExecutionAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestExecutor_MultiScriptRecipeExecution(t *testing.T) {
+	ctx := t.Context()
+	tmpDir := t.TempDir()
+
+	s1 := filepath.Join(tmpDir, "step1.sh")
+	s2 := filepath.Join(tmpDir, "step2.sh")
+	_ = os.WriteFile(s1, []byte("#!/bin/bash\necho step1"), 0755)
+	_ = os.WriteFile(s2, []byte("#!/bin/bash\necho step2"), 0755)
+
+	recipeYAML := filepath.Join(tmpDir, "recipe.yaml")
+	_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: multi-step
+scripts:
+  - step1.sh
+  - step2.sh
+`), 0644)
+
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "multibox"})
+	driver.Instances["multibox"].Status = "Running"
+	driver.Instances["multibox"].StatusCode = 103
+
+	var executedScripts []string
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+		if len(cmd) >= 4 {
+			executedScripts = append(executedScripts, cmd[3])
+		}
+		return provider.ExecResult{ExitCode: 0}, nil
+	}
+
+	exec := apply.NewExecutor(driver)
+	p := &plan.Plan{
+		Steps: []plan.Step{
+			{
+				Container:     "multibox",
+				Action:        "noop",
+				ConfigBaseDir: tmpDir,
+				Recipes: []plan.RecipeStep{
+					{Path: "recipe.yaml", RunAs: "root"},
+				},
+			},
+		},
+	}
+
+	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
+	if err != nil || rep.ExitCode != 0 {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	if len(executedScripts) != 2 {
+		t.Fatalf("expected 2 scripts executed, got %d: %v", len(executedScripts), executedScripts)
+	}
+
+	// Verify combined hash recorded
+	inst, _, _ := driver.GetInstance(ctx, "multibox")
+	if inst.Config["user.lxm.recipe.multi-step.hash"] == "" {
+		t.Errorf("expected recipe hash stored")
+	}
+}
+
+func TestExecutor_RecipeSudo(t *testing.T) {
+	ctx := t.Context()
+	tmpDir := t.TempDir()
+
+	s1 := filepath.Join(tmpDir, "install.sh")
+	_ = os.WriteFile(s1, []byte("#!/bin/bash\nsudo apt update"), 0755)
+
+	recipeYAML := filepath.Join(tmpDir, "recipe.yaml")
+	_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: sudo-test
+run_as: dev
+sudo: true
+scripts:
+  - install.sh
+`), 0644)
+
+	driver := fake.New()
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
+	driver.Instances["sudobox"].Status = "Running"
+	driver.Instances["sudobox"].StatusCode = 103
+
+	exec := apply.NewExecutor(driver)
+	p := &plan.Plan{
+		Steps: []plan.Step{
+			{
+				Container:     "sudobox",
+				Action:        "noop",
+				ConfigBaseDir: tmpDir,
+				Recipes: []plan.RecipeStep{
+					{Path: "recipe.yaml", RunAs: "dev"},
+				},
+			},
+		},
+	}
+
+	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
+	if err != nil || rep.ExitCode != 0 {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	// Sudoers drop-in should have been created and cleaned up
+	if _, exists := driver.Files["sudobox"]["/etc/sudoers.d/99-lxm-recipe-sudo-test"]; exists {
+		t.Errorf("expected sudoers drop-in to be cleaned up after execution")
+	}
+}
+
 func TestExecutor_ContextCancellation(t *testing.T) {
 	driver := fake.New()
 	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "cancelbox"})

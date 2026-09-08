@@ -137,6 +137,31 @@ func TestResolveFleetService(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "conflicting cluster target nodes") {
 		t.Fatalf("expected conflicting cluster target nodes error, got: %v", err)
 	}
+
+	// 5. Conf with manifest remotes passes ManifestRemotes to resolver
+	confManifestRemote := &config.Config{
+		Name:   "web",
+		Remote: "custom-remote",
+		Remotes: map[string]config.RemoteConfig{
+			"custom-remote": {
+				Address:  "https://10.0.0.50:8443",
+				Provider: "incus",
+			},
+		},
+	}
+	svc, err = resolveFleetService(baseGetter, []*config.Config{confManifestRemote}, opts, func(opts remote.ResolveOptions) (provider.Driver, error) {
+		if opts.RemoteName != "custom-remote" {
+			t.Errorf("expected remote name custom-remote, got %q", opts.RemoteName)
+		}
+		entry, ok := opts.ManifestRemotes["custom-remote"]
+		if !ok || entry.Address != "https://10.0.0.50:8443" || entry.Provider != provider.ProviderTypeIncus {
+			t.Errorf("manifest remotes not populated properly: %+v", opts.ManifestRemotes)
+		}
+		return override, nil
+	})
+	if err != nil || svc != override {
+		t.Fatalf("expected resolved svc with manifest remotes, got %v", err)
+	}
 }
 
 // unexpectedResolve returns a resolver that fails the test if it is ever invoked.

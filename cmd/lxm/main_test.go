@@ -843,14 +843,87 @@ func TestRun_CompileAndDoctor(t *testing.T) {
 func TestRun_Include(t *testing.T) {
 	driver := fake.New()
 	tmpDir := t.TempDir()
-	cfgFile := filepath.Join(tmpDir, "dev.yaml")
-	_ = os.WriteFile(cfgFile, []byte("name: dev-box\nimage: ubuntu:22.04\nstatus: present\n"), 0644)
 
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"include", tmpDir, "_base.yaml", "--dry-run"}, &stdout, &stderr, driver)
-	if code != 0 {
-		t.Errorf("include returned %d, want 0", code)
+	cfg1 := filepath.Join(tmpDir, "app1.yaml")
+	cfg2 := filepath.Join(tmpDir, "app2.yaml")
+
+	content1 := `schema: lxm/config/v2
+name: app1
+image: ubuntu:24.04
+`
+	content2 := `schema: lxm/config/v2
+name: app2
+image: ubuntu:24.04
+include:
+  - _base.yaml
+`
+	if err := os.WriteFile(cfg1, []byte(content1), 0644); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(cfg2, []byte(content2), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("dry-run does not modify file", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", tmpDir, "_base.yaml", "--dry-run"}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("include --dry-run failed with code %d: %s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "[DRY RUN] Would add include") {
+			t.Errorf("expected dry run message, got: %s", stdout.String())
+		}
+		hasInc, err := config.HasIncludeInYAMLFile(cfg1, "_base.yaml")
+		if err != nil || hasInc {
+			t.Errorf("cfg1 should not have _base.yaml yet after dry-run, err: %v, has: %v", err, hasInc)
+		}
+	})
+
+	t.Run("include adds directive and outputs text", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", tmpDir, "_base.yaml"}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("include failed with code %d: %s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Added include \"_base.yaml\" to 1 file(s)") {
+			t.Errorf("expected 1 file updated, got: %s", stdout.String())
+		}
+
+		// Verify file was updated
+		hasInc, err := config.HasIncludeInYAMLFile(cfg1, "_base.yaml")
+		if err != nil || !hasInc {
+			t.Errorf("cfg1 should have _base.yaml include, err: %v, has: %v", err, hasInc)
+		}
+	})
+
+	t.Run("include is idempotent", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", tmpDir, "_base.yaml"}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("include failed with code %d: %s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "No files modified") {
+			t.Errorf("expected no files modified, got: %s", stdout.String())
+		}
+	})
+
+	t.Run("include with json output", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"--format", "json", "include", tmpDir, "_extra.yaml"}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("include --format json failed with code %d: %s", code, stderr.String())
+		}
+		var env output.Envelope
+		if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshaling json envelope: %v. Output: %s", err, stdout.String())
+		}
+		if !env.OK || env.ExitCode != 0 {
+			t.Errorf("envelope not OK: %+v", env)
+		}
+		if len(env.Results) != 2 {
+			t.Errorf("expected 2 result items, got %d", len(env.Results))
+		}
+	})
 }
 
 func TestHasAnyGroup(t *testing.T) {

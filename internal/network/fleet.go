@@ -251,7 +251,9 @@ func Union(configs []*config.Config) (*Fleet, error) {
 func (f *Fleet) managedSubnets() []string {
 	out := make([]string, 0, len(f.VSwitches))
 	for _, vs := range f.VSwitches {
-		out = append(out, vs.Subnet.String())
+		if vs.Status != "absent" && vs.Subnet != nil {
+			out = append(out, vs.Subnet.String())
+		}
 	}
 	return out
 }

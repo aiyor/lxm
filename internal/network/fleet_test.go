@@ -170,3 +170,24 @@ func TestUnion_NatFalseInternetTrue_Warning(t *testing.T) {
 		t.Fatalf("expected nat/internet warning, got warnings: %v", f.Warnings)
 	}
 }
+
+func TestUnion_AbsentVSwitch_NoPanicOrInvalidCIDR(t *testing.T) {
+	b := &config.Config{
+		Schema: "lxm/config/v2",
+		VSwitches: []config.VSwitchConfig{
+			{Name: "br0", IPv4: "10.30.0.1/24", Group: "a"},
+			{Name: "br-old", Status: "absent"},
+		},
+	}
+	f, err := Union([]*config.Config{b})
+	if err != nil {
+		t.Fatalf("expected Union to succeed with absent vswitch, got error: %v", err)
+	}
+	if len(f.VSwitches) != 2 {
+		t.Fatalf("expected 2 vswitches in fleet, got %d", len(f.VSwitches))
+	}
+	if vs, ok := f.ByName["br-old"]; !ok || vs.Status != "absent" {
+		t.Fatalf("expected br-old to be present in fleet with status=absent")
+	}
+}
+

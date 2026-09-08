@@ -492,7 +492,11 @@ func buildInstancesPost(manifest *config.Config) (*provider.InstanceCreateReques
 		}
 		parent := n.Parent
 		if parent == "" {
-			parent = "lxdbr0"
+			if manifest != nil && manifest.Provider == "incus" {
+				parent = "incusbr0"
+			} else {
+				parent = "lxdbr0"
+			}
 		}
 		props := map[string]string{
 			"type":    "nic",
@@ -722,7 +726,11 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*provide
 		}
 		parent := n.Parent
 		if parent == "" {
-			parent = "lxdbr0"
+			if manifest != nil && manifest.Provider == "incus" {
+				parent = "incusbr0"
+			} else {
+				parent = "lxdbr0"
+			}
 		}
 		props := map[string]string{
 			"type":    "nic",

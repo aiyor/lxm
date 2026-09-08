@@ -37,7 +37,7 @@
 * Linux (Ubuntu 22.04+ recommended; Linux kernel 5.12+ for idmapped mounts)
 * LXD 5.0+ LTS and/or Incus 6.x/7.x (either is sufficient; `lxm` auto-detects the local daemon)
 * Host user in the `lxd` (LXD) or `incus-admin` (Incus) system group
-* Go 1.26+ to build from source
+* Go 1.27+ to build from source
 
 ---
 

@@ -177,3 +177,38 @@ scripts:
 		t.Errorf("expected CUE schema validation to fail for spaced key BAD KEY")
 	}
 }
+
+func TestComputeRecipeHash_MultiScript(t *testing.T) {
+	tmpDir := t.TempDir()
+	s1 := filepath.Join(tmpDir, "step1.sh")
+	s2 := filepath.Join(tmpDir, "step2.sh")
+	if err := os.WriteFile(s1, []byte("echo step1"), 0755); err != nil {
+		t.Fatalf("writing s1: %v", err)
+	}
+	if err := os.WriteFile(s2, []byte("echo step2"), 0755); err != nil {
+		t.Fatalf("writing s2: %v", err)
+	}
+
+	meta := &RecipeMetadata{
+		Name:    "multi",
+		Scripts: []string{"step1.sh", "step2.sh"},
+	}
+
+	h1, err := ComputeRecipeHash(meta, tmpDir)
+	if err != nil {
+		t.Fatalf("ComputeRecipeHash error: %v", err)
+	}
+
+	// Modifying s2 should change hash
+	if err := os.WriteFile(s2, []byte("echo step2 modified"), 0755); err != nil {
+		t.Fatalf("updating s2: %v", err)
+	}
+	h2, err := ComputeRecipeHash(meta, tmpDir)
+	if err != nil {
+		t.Fatalf("ComputeRecipeHash error: %v", err)
+	}
+	if h1 == h2 {
+		t.Errorf("expected different hash after modifying step2.sh, got identical %q", h1)
+	}
+}
+

@@ -67,19 +67,45 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 	np := &NetworkPlan{Steps: []NetworkStep{}, Warnings: []string{}}
 
 	// For OVN vswitches, auto-resolve parent DNS resolver /32 if not already populated.
-	for _, vs := range f.VSwitches {
+	vswitchesToCompile := make([]*network.VSwitch, len(f.VSwitches))
+	vswitchCopyNeeded := false
+	for i, vs := range f.VSwitches {
 		if vs.EffectiveType() == "ovn" {
 			resolvers, warn := deriveDNSResolvers(vs, live)
 			if len(vs.DNSResolvers) == 0 && len(resolvers) > 0 {
-				vs.DNSResolvers = resolvers
+				vsCopy := *vs
+				vsCopy.DNSResolvers = resolvers
+				vswitchesToCompile[i] = &vsCopy
+				vswitchCopyNeeded = true
+			} else {
+				vswitchesToCompile[i] = vs
 			}
 			if warn != "" {
 				np.Warnings = append(np.Warnings, warn)
 			}
+		} else {
+			vswitchesToCompile[i] = vs
 		}
 	}
 
-	compiled := network.Compile(f)
+	fleetToCompile := f
+	if vswitchCopyNeeded {
+		fCopy := *f
+		fCopy.VSwitches = vswitchesToCompile
+		fCopy.ByName = make(map[string]*network.VSwitch, len(f.ByName))
+		for _, vs := range vswitchesToCompile {
+			fCopy.ByName[vs.Name] = vs
+		}
+		fCopy.ByGroup = make(map[string][]*network.VSwitch, len(f.ByGroup))
+		for _, vs := range vswitchesToCompile {
+			if vs.Group != "" {
+				fCopy.ByGroup[vs.Group] = append(fCopy.ByGroup[vs.Group], vs)
+			}
+		}
+		fleetToCompile = &fCopy
+	}
+
+	compiled := network.Compile(fleetToCompile)
 	for _, acl := range compiled {
 		if n := network.RejectRuleCount(acl); n > 256 {
 			np.Warnings = append(np.Warnings, fmt.Sprintf("ACL %q has %d reject rules (>256); consider fewer inter-group carve-outs", acl.Name, n))

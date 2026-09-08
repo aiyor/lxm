@@ -95,6 +95,49 @@ func ExitCodeToErrorCode(code int) string {
 	}
 }
 
+// ErrorCodeToExitCode maps an error code string (F8 catalog) to its corresponding numeric exit code.
+func ErrorCodeToExitCode(code string) int {
+	switch code {
+	case "INTERNAL_ERROR":
+		return 1
+	case "USAGE_ERROR":
+		return 2
+	case "CONFIG_ERROR":
+		return 3
+	case "PROVIDER_ERROR":
+		return 4
+	case "TARGET_NOT_FOUND":
+		return 5
+	case "EXEC_FAILED":
+		return 6
+	case "WAIT_TIMEOUT":
+		return 7
+	default:
+		return 1
+	}
+}
+
+// SelectWorstExitCode chooses the worse exit code according to precedence:
+// 1 (internal) > 4 (provider) > 5 (target not found) > 6 (execution) > 7 (wait) > 2/3 > 0.
+func SelectWorstExitCode(current, newCode int) int {
+	if current == 1 || newCode == 1 {
+		return 1
+	}
+	precedence := map[int]int{
+		4: 5,
+		5: 4,
+		6: 3,
+		7: 2,
+		2: 1,
+		3: 1,
+		0: 0,
+	}
+	if precedence[newCode] > precedence[current] {
+		return newCode
+	}
+	return current
+}
+
 // SetExitCode sets the numeric exit code, updates the OK flag, and appends an ErrorInfo if code != 0.
 func (e *Envelope) SetExitCode(code int, err error, container string, retryable bool) {
 	e.ExitCode = code

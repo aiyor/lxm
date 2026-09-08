@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aiyor/lxm/internal/fleet"
+	"github.com/aiyor/lxm/internal/output"
 	"github.com/aiyor/lxm/internal/plan"
 	"github.com/aiyor/lxm/internal/provider"
 	"github.com/aiyor/lxm/internal/provider/common"
@@ -1037,7 +1038,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 	needsRun := opts.Force
 	var recipesToRun []*recipe.RecipeMetadata
 	var hashKeys []string
-	var scriptPaths []string
+	var recipeHashes []string
 
 	for _, rStep := range step.Recipes {
 		rMeta, err := recipe.LoadRecipe(rStep.Path, step.ConfigBaseDir)
@@ -1050,11 +1051,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 		}
 
 		hashKey := recipe.PathQualifiedHashKey(rStep.Path, rMeta.Name)
-		scriptFile := rStep.Path
-		if len(rMeta.Scripts) > 0 {
-			scriptFile = rMeta.Scripts[0]
-		}
-		currentHash, err := recipe.ComputeScriptHash(scriptFile, step.ConfigBaseDir)
+		currentHash, err := recipe.ComputeRecipeHash(rMeta, step.ConfigBaseDir)
 		if err != nil {
 			return &ErrorInfo{
 				Code:      "CONFIG_ERROR",
@@ -1069,7 +1066,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 		}
 		recipesToRun = append(recipesToRun, rMeta)
 		hashKeys = append(hashKeys, hashKey)
-		scriptPaths = append(scriptPaths, scriptFile)
+		recipeHashes = append(recipeHashes, currentHash)
 	}
 
 	if !needsRun {
@@ -1078,7 +1075,6 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 
 	snapshotTaken := false
 	for i, rMeta := range recipesToRun {
-		scriptFile := scriptPaths[i]
 		select {
 		case <-ctx.Done():
 			return &ErrorInfo{
@@ -1107,27 +1103,48 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 			runAs = step.Recipes[i].RunAs
 		}
 
-		execRes, hashVal, execErr := recipe.ExecuteRecipeScriptContext(ctx, e.driver, step.Container, scriptFile, step.ConfigBaseDir, runAs, rMeta.Env, rMeta.Retries)
-		if execErr != nil || execRes.ExitCode != 0 {
-			if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) || ctx.Err() != nil {
+		// B6: Recipe sudo opt-in
+		if rMeta.Sudo && runAs != "root" && runAs != "" {
+			sudoerRule := fmt.Sprintf("%s ALL=(ALL) NOPASSWD:ALL\n", runAs)
+			sudoerPath := fmt.Sprintf("/etc/sudoers.d/99-lxm-recipe-%s", rMeta.Name)
+			if rMeta.Name == "" {
+				sudoerPath = "/etc/sudoers.d/99-lxm-recipe"
+			}
+			if err := e.driver.CreateInstanceFile(ctx, step.Container, sudoerPath, strings.NewReader(sudoerRule), 0440, 0, 0); err == nil {
+				defer func(path string) {
+					_ = e.driver.DeleteInstanceFile(ctx, step.Container, path)
+				}(sudoerPath)
+			}
+		}
+
+		scripts := rMeta.Scripts
+		if len(scripts) == 0 {
+			scripts = []string{step.Recipes[i].Path}
+		}
+
+		for _, scriptFile := range scripts {
+			execRes, _, execErr := recipe.ExecuteRecipeScriptContext(ctx, e.driver, step.Container, scriptFile, step.ConfigBaseDir, runAs, rMeta.Env, rMeta.Retries)
+			if execErr != nil || execRes.ExitCode != 0 {
+				if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) || ctx.Err() != nil {
+					return &ErrorInfo{
+						Code:      "INTERNAL_ERROR",
+						Container: step.Container,
+						Message:   "recipe execution cancelled by user interrupt",
+					}
+				}
+				errMsg := execRes.Stderr
+				if errMsg == "" {
+					if execErr != nil {
+						errMsg = execErr.Error()
+					} else {
+						errMsg = fmt.Sprintf("recipe script %q failed with exit code %d", scriptFile, execRes.ExitCode)
+					}
+				}
 				return &ErrorInfo{
-					Code:      "INTERNAL_ERROR",
+					Code:      "EXEC_FAILED",
 					Container: step.Container,
-					Message:   "recipe execution cancelled by user interrupt",
+					Message:   errMsg,
 				}
-			}
-			errMsg := execRes.Stderr
-			if errMsg == "" {
-				if execErr != nil {
-					errMsg = execErr.Error()
-				} else {
-					errMsg = fmt.Sprintf("recipe script %q failed with exit code %d", scriptFile, execRes.ExitCode)
-				}
-			}
-			return &ErrorInfo{
-				Code:      "EXEC_FAILED",
-				Container: step.Container,
-				Message:   errMsg,
 			}
 		}
 
@@ -1144,7 +1161,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 		if put.Config == nil {
 			put.Config = make(map[string]string)
 		}
-		put.Config[hashKeys[i]] = hashVal
+		put.Config[hashKeys[i]] = recipeHashes[i]
 		if putErr := e.driver.UpdateInstance(ctx, step.Container, put, freshETag); putErr != nil {
 			return &ErrorInfo{
 				Code:      "PROVIDER_ERROR",
@@ -1157,64 +1174,15 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 	return nil
 }
 
-// Exit-code Precedence: 1 (internal) > 4 (LXD) > 5 (target) > 6 (execution) > 7 (wait)
+// Exit-code Precedence: 1 (internal) > 4 (provider) > 5 (target) > 6 (execution) > 7 (wait)
 func selectWorstExitCode(current, newCode int) int {
-	if current == 1 || newCode == 1 {
-		return 1
-	}
-	precedence := map[int]int{
-		4: 5,
-		5: 4,
-		6: 3,
-		7: 2,
-		2: 1,
-		3: 1,
-		0: 0,
-	}
-	if precedence[newCode] > precedence[current] {
-		return newCode
-	}
-	return current
+	return output.SelectWorstExitCode(current, newCode)
 }
 
 func errorCodeToExit(code string) int {
-	switch code {
-	case "INTERNAL_ERROR":
-		return 1
-	case "USAGE_ERROR":
-		return 2
-	case "CONFIG_ERROR":
-		return 3
-	case "PROVIDER_ERROR":
-		return 4
-	case "TARGET_NOT_FOUND":
-		return 5
-	case "EXEC_FAILED":
-		return 6
-	case "WAIT_TIMEOUT":
-		return 7
-	default:
-		return 1
-	}
+	return output.ErrorCodeToExitCode(code)
 }
 
 func exitToErrorCode(code int) string {
-	switch code {
-	case 1:
-		return "INTERNAL_ERROR"
-	case 2:
-		return "USAGE_ERROR"
-	case 3:
-		return "CONFIG_ERROR"
-	case 4:
-		return "PROVIDER_ERROR"
-	case 5:
-		return "TARGET_NOT_FOUND"
-	case 6:
-		return "EXEC_FAILED"
-	case 7:
-		return "WAIT_TIMEOUT"
-	default:
-		return "INTERNAL_ERROR"
-	}
+	return output.ExitCodeToErrorCode(code)
 }

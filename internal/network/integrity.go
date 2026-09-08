@@ -34,7 +34,11 @@ func CheckInstances(configs []*config.Config, f *Fleet, liveNetworks map[string]
 			}
 			parent := nic.Parent
 			if parent == "" {
-				parent = "lxdbr0"
+				if conf != nil && conf.Provider == "incus" {
+					parent = "incusbr0"
+				} else {
+					parent = "lxdbr0"
+				}
 			}
 
 			vs, declared := f.ByName[parent]

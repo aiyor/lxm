@@ -261,7 +261,7 @@ go vet ./...
 golangci-lint run ./...
 
 # 3. Verify zero forbidden dependencies in core packages
-! grep -rE "canonical/lxd" internal/plan internal/apply internal/config internal/network internal/lxm internal/output internal/fleet cmd/lxm
+! grep -rE "canonical/lxd" internal/plan internal/apply internal/config internal/network internal/output internal/fleet cmd/lxm
 ! grep -rE "canonical/lxd/shared/units" internal/
 
 # 4. Build release binary

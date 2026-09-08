@@ -168,6 +168,35 @@ func ComputeScriptHash(scriptPath string, baseDir string) (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
+// ComputeRecipeHash computes the combined SHA256 content hash of all scripts in a recipe.
+func ComputeRecipeHash(rMeta *RecipeMetadata, baseDir string) (string, error) {
+	if rMeta == nil {
+		return "", fmt.Errorf("recipe metadata cannot be nil")
+	}
+	scripts := rMeta.Scripts
+	if len(scripts) == 0 {
+		scripts = []string{rMeta.Path}
+	}
+	if len(scripts) == 1 {
+		return ComputeScriptHash(scripts[0], baseDir)
+	}
+
+	h := sha256.New()
+	for _, s := range scripts {
+		target := s
+		if baseDir != "" && !filepath.IsAbs(target) {
+			target = filepath.Join(baseDir, s)
+		}
+		target = filepath.Clean(target)
+		data, err := os.ReadFile(target)
+		if err != nil {
+			return "", fmt.Errorf("reading script file %q: %w", target, err)
+		}
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // ExecuteRecipeScript runs a script inside a container with POSIX env map and retry policy.
 func ExecuteRecipeScript(svc provider.InstanceService, containerName string, scriptPath string, baseDir string, runAs string, env map[string]string, retries int) (provider.ExecResult, string, error) {
 	return ExecuteRecipeScriptContext(context.Background(), svc, containerName, scriptPath, baseDir, runAs, env, retries)
