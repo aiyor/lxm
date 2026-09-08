@@ -1147,18 +1147,30 @@ func TestComputeNetworks_AbsentVSwitchInSameGroup_NoNilCIDRRules(t *testing.T) {
 		t.Fatalf("ComputeNetworks error: %v", err)
 	}
 
+	var aclRulesChecked int
 	for _, step := range np.Steps {
-		if step.ACLPut != nil {
-			for _, rule := range step.ACLPut.Egress {
-				if strings.Contains(rule.Source, "<nil>") || strings.Contains(rule.Destination, "<nil>") {
-					t.Fatalf("found <nil> in egress ACL rule: %+v", rule)
-				}
-			}
-			for _, rule := range step.ACLPut.Ingress {
-				if strings.Contains(rule.Source, "<nil>") || strings.Contains(rule.Destination, "<nil>") {
-					t.Fatalf("found <nil> in ingress ACL rule: %+v", rule)
-				}
+		var egress, ingress []provider.NetworkACLRule
+		if step.ACLPost != nil {
+			egress = step.ACLPost.Egress
+			ingress = step.ACLPost.Ingress
+		} else if step.ACLPut != nil {
+			egress = step.ACLPut.Egress
+			ingress = step.ACLPut.Ingress
+		}
+		for _, rule := range egress {
+			aclRulesChecked++
+			if strings.Contains(rule.Source, "<nil>") || strings.Contains(rule.Destination, "<nil>") {
+				t.Fatalf("found <nil> in egress ACL rule: %+v", rule)
 			}
 		}
+		for _, rule := range ingress {
+			aclRulesChecked++
+			if strings.Contains(rule.Source, "<nil>") || strings.Contains(rule.Destination, "<nil>") {
+				t.Fatalf("found <nil> in ingress ACL rule: %+v", rule)
+			}
+		}
+	}
+	if aclRulesChecked == 0 {
+		t.Fatalf("expected to check ACL rules, but none were found in plan steps")
 	}
 }

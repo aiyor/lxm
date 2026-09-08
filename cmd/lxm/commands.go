@@ -1546,6 +1546,34 @@ func newIncludeCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 				ops = append(ops, pendingOp{file: file, changed: !has})
 			}
 
+			// Pre-validate write access and capture original contents for atomic rollback
+			origContents := make(map[string][]byte)
+			if !opts.dryRun {
+				for _, op := range ops {
+					if !op.changed {
+						continue
+					}
+					info, err := os.Stat(op.file)
+					if err != nil {
+						return &exitError{code: 3, err: fmt.Errorf("stat %q: %w", op.file, err)}
+					}
+					if info.Mode().Perm()&0200 == 0 {
+						return &exitError{code: 3, err: fmt.Errorf("file %q is read-only", op.file)}
+					}
+					f, err := os.OpenFile(op.file, os.O_WRONLY, 0)
+					if err != nil {
+						return &exitError{code: 3, err: fmt.Errorf("verifying write permission for %q: %w", op.file, err)}
+					}
+					_ = f.Close()
+
+					data, err := os.ReadFile(op.file)
+					if err != nil {
+						return &exitError{code: 3, err: fmt.Errorf("reading original content of %q: %w", op.file, err)}
+					}
+					origContents[op.file] = data
+				}
+			}
+
 			var modified []string
 			var resItems []output.ResultItem
 
@@ -1553,6 +1581,12 @@ func newIncludeCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 				if !opts.dryRun && op.changed {
 					_, err := config.AddIncludeToYAMLFile(op.file, includeFile)
 					if err != nil {
+						// Roll back any files modified in this batch
+						for _, m := range modified {
+							if orig, ok := origContents[m]; ok {
+								_ = os.WriteFile(m, orig, 0644)
+							}
+						}
 						return &exitError{code: 3, err: fmt.Errorf("updating %q: %w", op.file, err)}
 					}
 				}

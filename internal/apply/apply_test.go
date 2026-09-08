@@ -831,6 +831,58 @@ scripts:
 			t.Errorf("expected exit code 4 (PROVIDER_ERROR) when sudoers injection fails, got %d", rep.ExitCode)
 		}
 	})
+
+	t.Run("visudo validation failure returns CONFIG_ERROR and cleans up sudoers file", func(t *testing.T) {
+		recipeYAML := filepath.Join(tmpDir, "visudofail.yaml")
+		_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: visudofail
+run_as: dev
+sudo: true
+scripts:
+  - install.sh
+`), 0644)
+
+		driver := fake.New()
+		_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
+		driver.Instances["sudobox"].Status = "Running"
+		driver.Instances["sudobox"].StatusCode = 103
+
+		driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+			if len(cmd) > 0 && cmd[0] == "visudo" {
+				return provider.ExecResult{
+					ExitCode: 1,
+					Stderr:   "visudo: >>> /etc/sudoers.d/99-lxm-recipe-visudofail: syntax error <<<",
+				}, nil
+			}
+			return provider.ExecResult{ExitCode: 0}, nil
+		}
+
+		exec := apply.NewExecutor(driver)
+		p := &plan.Plan{
+			Steps: []plan.Step{
+				{
+					Container:     "sudobox",
+					Action:        "noop",
+					ConfigBaseDir: tmpDir,
+					Recipes: []plan.RecipeStep{
+						{Path: "visudofail.yaml", RunAs: "dev"},
+					},
+				},
+			},
+		}
+
+		rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
+		if rep.ExitCode != 3 {
+			t.Errorf("expected exit code 3 (CONFIG_ERROR) on visudo syntax failure, got %d", rep.ExitCode)
+		}
+
+		// Verify sudoers file was deleted
+		for path := range driver.Files["sudobox"] {
+			if strings.HasPrefix(path, "/etc/sudoers.d/99-lxm-recipe-") {
+				t.Errorf("expected sudoers file to be cleaned up on visudo failure, found: %s", path)
+			}
+		}
+	})
 }
 
 func TestExecutor_ContextCancellation(t *testing.T) {

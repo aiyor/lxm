@@ -5,7 +5,7 @@ tasks:
     desc: Format Go source files
     aliases: [fmt]
     cmds:
-      - gofmt -s -w .
+      - $(go env GOROOT)/bin/gofmt -s -w .
 
   build:
     desc: Build the lxm binary

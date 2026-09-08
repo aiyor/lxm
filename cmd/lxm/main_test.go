@@ -949,6 +949,48 @@ nav:
 			t.Errorf("mkdocs.yml was modified: %s", string(data))
 		}
 	})
+
+	t.Run("include atomicity preserves all files when one file is read-only", func(t *testing.T) {
+		subDir := t.TempDir()
+		fileA := filepath.Join(subDir, "a.yaml")
+		fileB := filepath.Join(subDir, "b.yaml")
+
+		contentA := "schema: lxm/config/v2\nname: box-a\nimage: debian:12\n"
+		contentB := "schema: lxm/config/v2\nname: box-b\nimage: debian:12\n"
+
+		if err := os.WriteFile(fileA, []byte(contentA), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fileB, []byte(contentB), 0444); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chmod(fileB, 0644)
+		})
+
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", subDir, "_common.yaml"}, &stdout, &stderr, driver)
+		if code != 3 {
+			t.Fatalf("expected exit code 3 (CONFIG_ERROR) when modifying read-only file, got %d. stderr: %s", code, stderr.String())
+		}
+
+		// Verify neither file was modified
+		dataA, err := os.ReadFile(fileA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(dataA) != contentA {
+			t.Errorf("fileA was modified despite atomic failure:\n%s", string(dataA))
+		}
+
+		dataB, err := os.ReadFile(fileB)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(dataB) != contentB {
+			t.Errorf("fileB was modified despite atomic failure:\n%s", string(dataB))
+		}
+	})
 }
 
 func TestHasAnyGroup(t *testing.T) {
@@ -1767,7 +1809,8 @@ func TestFetchLiveSnapshots_PopulatesLiveETag(t *testing.T) {
 	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
 		Name: "web-box",
 	})
-	driver.Instances["web-box"].ETag = "etag-12345"
+	driver.Instances["web-box"].ETag = ""
+	driver.ETags["web-box"] = "etag-12345"
 
 	snaps, _, err := fetchLiveSnapshots(t.Context(), driver, nil)
 	if err != nil {

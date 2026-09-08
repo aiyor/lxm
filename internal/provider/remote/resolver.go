@@ -1,9 +1,14 @@
 package remote
 
 import (
+	"crypto/tls"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	lxd_client "github.com/canonical/lxd/client"
 	incus_client "github.com/lxc/incus/v7/client"
@@ -126,6 +131,47 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 		}
 		if prov == "" || prov == provider.ProviderTypeAuto {
 			prov = provider.ProviderTypeIncus // default to Incus for remotes
+		}
+
+		// Certificate and fingerprint validation (N7)
+		if entry.ServerCertificate != "" {
+			fp, err := FingerprintPEM([]byte(entry.ServerCertificate))
+			if err != nil {
+				return nil, fmt.Errorf("remote %q: parsing server_certificate: %w", remoteName, err)
+			}
+			if entry.ServerFingerprint != "" {
+				expFP := strings.ToLower(strings.ReplaceAll(entry.ServerFingerprint, ":", ""))
+				if strings.ToLower(fp) != expFP {
+					return nil, fmt.Errorf("remote %q: server_fingerprint mismatch: declared %s, certificate has %s", remoteName, entry.ServerFingerprint, fp)
+				}
+			}
+		} else if entry.ServerFingerprint != "" {
+			// Probe the remote TLS server to verify the presented peer certificate fingerprint
+			u, err := url.Parse(entry.Address)
+			if err == nil && (u.Scheme == "https" || u.Scheme == "") {
+				host := u.Host
+				if host == "" {
+					host = entry.Address
+				}
+				if !strings.Contains(host, ":") {
+					host = host + ":8443"
+				}
+				dialer := &net.Dialer{Timeout: 5 * time.Second}
+				tlsConn, err := tls.DialWithDialer(dialer, "tcp", host, &tls.Config{InsecureSkipVerify: true})
+				if err != nil {
+					return nil, fmt.Errorf("remote %q: verifying server fingerprint at %s: %w", remoteName, host, err)
+				}
+				peerCerts := tlsConn.ConnectionState().PeerCertificates
+				_ = tlsConn.Close()
+				if len(peerCerts) == 0 {
+					return nil, fmt.Errorf("remote %q: no TLS certificates presented by %s", remoteName, host)
+				}
+				gotFP := FingerprintSHA256(peerCerts[0].Raw)
+				expFP := strings.ToLower(strings.ReplaceAll(entry.ServerFingerprint, ":", ""))
+				if strings.ToLower(gotFP) != expFP {
+					return nil, fmt.Errorf("remote %q: server certificate fingerprint mismatch: expected %s, got %s", remoteName, entry.ServerFingerprint, gotFP)
+				}
+			}
 		}
 
 		certPath, keyPath, err := EnsureClientCertificate()

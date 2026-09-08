@@ -1814,9 +1814,43 @@ func writeYAMLNode(filePath string, doc *yaml.Node) error {
 		return fmt.Errorf("marshaling YAML: %w", err)
 	}
 
-	//nolint:gosec // G306: YAML configuration file intended to be readable (0644)
-	if err := os.WriteFile(filePath, out, 0644); err != nil {
-		return fmt.Errorf("writing file: %w", err)
+	info, err := os.Stat(filePath)
+	if err == nil && info.Mode().Perm()&0200 == 0 {
+		return fmt.Errorf("file %q is read-only", filePath)
+	}
+
+	dir := filepath.Dir(filePath)
+	tmp, err := os.CreateTemp(dir, ".lxm-write-*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpName)
+	}()
+
+	if _, err := tmp.Write(out); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("syncing temp file: %w", err)
+	}
+	mode := os.FileMode(0644)
+	if info != nil {
+		mode = info.Mode().Perm()
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting temp file permissions: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpName, filePath); err != nil {
+		return fmt.Errorf("renaming temp file to target: %w", err)
 	}
 	return nil
 }

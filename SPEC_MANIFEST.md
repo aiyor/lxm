@@ -84,7 +84,12 @@ remotes:
     provider: incus
     project: production
     insecure: false
+    server_certificate: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----" # optional pinned server PEM
+    server_fingerprint: "64-char-sha256-hex"                                          # optional pinned SHA256 fingerprint
 ```
+
+Fields allowed under each `remotes:<name>` entry: `address` (required string), `provider` (optional "incus" | "lxd"), `project` (optional string), `insecure` (optional bool), `protocol` (optional "https" | "unix"), `server_certificate` (optional PEM certificate string), `server_fingerprint` (optional 64-character SHA256 hex string).
+
 
 ### 3.5 Network Schema (`#NetworkObj`)
 Network interfaces are declared using the `#NetworkObj` schema:
