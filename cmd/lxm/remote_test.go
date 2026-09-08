@@ -236,3 +236,40 @@ func TestRemoteCLI_AddInsecure_RoundTripResolve(t *testing.T) {
 		t.Fatalf("expected resolved driver, got nil")
 	}
 }
+
+func TestRemoteCLI_AddInsecure_UnreachableServerSucceeds(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("LXM_CONFIG_DIR", tmpDir)
+
+	ctx := t.Context()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mockGetter := func() (provider.Driver, error) {
+		return fake.New(), nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	rootCmd, _ := newRootCmd(ctx, &stdout, &stderr, mockGetter, logger)
+	// Unreachable endpoint (closed port) must succeed when --insecure is passed because probe is skipped
+	rootCmd.SetArgs([]string{"remote", "add", "unreachable-host", "https://127.0.0.1:65534", "--insecure"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("remote add --insecure on unreachable host should succeed without probing, but got: %v", err)
+	}
+
+	cfg, err := remote.LoadConfig()
+	if err != nil {
+		t.Fatalf("loading saved remote config: %v", err)
+	}
+	entry, ok := cfg.Remotes["unreachable-host"]
+	if !ok {
+		t.Fatalf("expected remote 'unreachable-host' in config, got %+v", cfg.Remotes)
+	}
+	if !entry.Insecure {
+		t.Errorf("expected Insecure: true, got false")
+	}
+	if entry.ServerCertificate != "" {
+		t.Errorf("expected empty ServerCertificate when --insecure is set, got %q", entry.ServerCertificate)
+	}
+	if entry.ServerFingerprint != "" {
+		t.Errorf("expected empty ServerFingerprint when --insecure is set, got %q", entry.ServerFingerprint)
+	}
+}

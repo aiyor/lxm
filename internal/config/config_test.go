@@ -676,6 +676,86 @@ func TestValidatePostMerge_UniqueNetworks_Pass(t *testing.T) {
 	}
 }
 
+func TestValidatePostMerge_Remotes(t *testing.T) {
+	t.Run("valid remotes pass", func(t *testing.T) {
+		conf := &Config{
+			Name:  "test",
+			Image: "ubuntu:24.04",
+			Remotes: map[string]RemoteConfig{
+				"valid-https": {
+					Address:           "https://10.0.0.1:8443",
+					Provider:          "incus",
+					ServerCertificate: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+					ServerFingerprint: "abcdef",
+				},
+				"valid-insecure": {
+					Address:  "https://10.0.0.2:8443",
+					Insecure: true,
+				},
+				"valid-unix": {
+					Address: "unix:///var/lib/incus/unix.socket",
+				},
+			},
+		}
+		if err := ValidatePostMerge(conf); err != nil {
+			t.Fatalf("expected valid remotes to pass ValidatePostMerge, got: %v", err)
+		}
+	})
+
+	t.Run("insecure combined with server_certificate fails", func(t *testing.T) {
+		conf := &Config{
+			Name:  "test",
+			Image: "ubuntu:24.04",
+			Remotes: map[string]RemoteConfig{
+				"bad-remote": {
+					Address:           "https://10.0.0.1:8443",
+					Insecure:          true,
+					ServerCertificate: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+				},
+			},
+		}
+		err := ValidatePostMerge(conf)
+		if err == nil || !strings.Contains(err.Error(), "contradictory configuration") {
+			t.Fatalf("expected contradictory configuration error, got: %v", err)
+		}
+	})
+
+	t.Run("insecure combined with server_fingerprint fails", func(t *testing.T) {
+		conf := &Config{
+			Name:  "test",
+			Image: "ubuntu:24.04",
+			Remotes: map[string]RemoteConfig{
+				"bad-remote": {
+					Address:           "https://10.0.0.1:8443",
+					Insecure:          true,
+					ServerFingerprint: "abcdef",
+				},
+			},
+		}
+		err := ValidatePostMerge(conf)
+		if err == nil || !strings.Contains(err.Error(), "contradictory configuration") {
+			t.Fatalf("expected contradictory configuration error, got: %v", err)
+		}
+	})
+
+	t.Run("unix socket with server_fingerprint fails", func(t *testing.T) {
+		conf := &Config{
+			Name:  "test",
+			Image: "ubuntu:24.04",
+			Remotes: map[string]RemoteConfig{
+				"bad-unix": {
+					Address:           "unix:///run/incus/unix.socket",
+					ServerFingerprint: "abcdef",
+				},
+			},
+		}
+		err := ValidatePostMerge(conf)
+		if err == nil || !strings.Contains(err.Error(), "UNIX socket endpoint") {
+			t.Fatalf("expected UNIX socket endpoint error, got: %v", err)
+		}
+	})
+}
+
 // LoadConfig tests
 
 func TestLoadConfig_NoIncludes(t *testing.T) {

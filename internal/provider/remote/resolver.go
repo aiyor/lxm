@@ -144,7 +144,7 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 			return nil, fmt.Errorf("remote %q: server_certificate and server_fingerprint cannot be used with a UNIX socket endpoint", remoteName)
 		}
 		if entry.Insecure && (entry.ServerCertificate != "" || entry.ServerFingerprint != "") {
-			return nil, fmt.Errorf("remote %q: contradictory configuration: insecure: true cannot be combined with certificate or fingerprint pinning", remoteName)
+			return nil, fmt.Errorf("remote %q: contradictory configuration: insecure: true cannot be combined with certificate or fingerprint pinning (re-add without pinning or remove server_certificate/server_fingerprint from remotes configuration)", remoteName)
 		}
 
 		// Certificate and fingerprint validation (N7, R2)

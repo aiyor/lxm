@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -685,6 +686,14 @@ func ValidatePostMerge(conf *Config) error {
 		}
 		if rem.Provider != "" && rem.Provider != "incus" && rem.Provider != "lxd" && rem.Provider != "auto" {
 			return fmt.Errorf("remote %q: invalid provider %q (must be 'incus', 'lxd', or 'auto')", name, rem.Provider)
+		}
+		u, parseErr := url.Parse(rem.Address)
+		isUnix := (parseErr == nil && u.Scheme == "unix") || strings.HasPrefix(rem.Address, "/") || rem.Protocol == "unix"
+		if isUnix && (rem.ServerCertificate != "" || rem.ServerFingerprint != "") {
+			return fmt.Errorf("remote %q: server_certificate and server_fingerprint cannot be used with a UNIX socket endpoint", name)
+		}
+		if rem.Insecure && (rem.ServerCertificate != "" || rem.ServerFingerprint != "") {
+			return fmt.Errorf("remote %q: contradictory configuration: insecure: true cannot be combined with certificate or fingerprint pinning", name)
 		}
 	}
 

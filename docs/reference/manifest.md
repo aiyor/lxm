@@ -170,6 +170,12 @@ remotes:
     server_fingerprint: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 ```
 
+> [!NOTE]
+> When both `server_certificate` and `server_fingerprint` are specified, the SHA-256 fingerprint computed from the certificate must match the declared `server_fingerprint`.
+>
+> If an existing remote in `remotes.yaml` was saved with `--insecure` under earlier versions and contains discovered pinning fields, remove `server_certificate` and `server_fingerprint` from `remotes.yaml` or re-add it using `lxm remote remove <name>` and `lxm remote add <name> <url> --insecure`.
+
+
 * `address` (string, required): HTTPS or UNIX socket URL of the remote daemon.
 * `provider` (string, optional): Provider type (`incus` or `lxd`).
 * `project` (string, optional): Target project name (defaults to `default`).
