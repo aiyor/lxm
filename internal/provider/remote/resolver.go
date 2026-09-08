@@ -137,6 +137,16 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 
 		serverCertPEM := entry.ServerCertificate
 
+		// Validate TLS configuration applicability and consistency
+		u, parseErr := url.Parse(entry.Address)
+		isUnix := (parseErr == nil && u.Scheme == "unix") || strings.HasPrefix(entry.Address, "/") || entry.Protocol == "unix"
+		if isUnix && (entry.ServerCertificate != "" || entry.ServerFingerprint != "") {
+			return nil, fmt.Errorf("remote %q: server_certificate and server_fingerprint cannot be used with a UNIX socket endpoint", remoteName)
+		}
+		if entry.Insecure && (entry.ServerCertificate != "" || entry.ServerFingerprint != "") {
+			return nil, fmt.Errorf("remote %q: contradictory configuration: insecure: true cannot be combined with certificate or fingerprint pinning", remoteName)
+		}
+
 		// Certificate and fingerprint validation (N7, R2)
 		if entry.ServerCertificate != "" {
 			fp, err := FingerprintPEM([]byte(entry.ServerCertificate))
@@ -151,37 +161,37 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 			}
 		} else if entry.ServerFingerprint != "" {
 			// Probe the remote TLS server to verify the presented peer certificate fingerprint
-			u, err := url.Parse(entry.Address)
-			if err == nil && (u.Scheme == "https" || u.Scheme == "") {
-				host := u.Host
-				if host == "" {
-					host = entry.Address
-				}
-				if !strings.Contains(host, ":") {
-					host = host + ":8443"
-				}
-				dialer := &net.Dialer{Timeout: 5 * time.Second}
-				tlsConn, err := tls.DialWithDialer(dialer, "tcp", host, &tls.Config{InsecureSkipVerify: true})
-				if err != nil {
-					return nil, fmt.Errorf("remote %q: verifying server fingerprint at %s: %w", remoteName, host, err)
-				}
-				peerCerts := tlsConn.ConnectionState().PeerCertificates
-				_ = tlsConn.Close()
-				if len(peerCerts) == 0 {
-					return nil, fmt.Errorf("remote %q: no TLS certificates presented by %s", remoteName, host)
-				}
-				gotFP := FingerprintSHA256(peerCerts[0].Raw)
-				expFP := strings.ToLower(strings.ReplaceAll(entry.ServerFingerprint, ":", ""))
-				if strings.ToLower(gotFP) != expFP {
-					return nil, fmt.Errorf("remote %q: server certificate fingerprint mismatch: expected %s, got %s", remoteName, entry.ServerFingerprint, gotFP)
-				}
-				// Pin the verified peer certificate into serverCertPEM for the SDK connection (R2)
-				var pemBuf bytes.Buffer
-				if err := pem.Encode(&pemBuf, &pem.Block{Type: "CERTIFICATE", Bytes: peerCerts[0].Raw}); err != nil {
-					return nil, fmt.Errorf("remote %q: encoding pinned server certificate: %w", remoteName, err)
-				}
-				serverCertPEM = pemBuf.String()
+			if parseErr != nil || (u.Scheme != "https" && u.Scheme != "") {
+				return nil, fmt.Errorf("remote %q: server_fingerprint requires an HTTPS endpoint, got %q", remoteName, entry.Address)
 			}
+			host := u.Host
+			if host == "" {
+				host = entry.Address
+			}
+			if !strings.Contains(host, ":") {
+				host = host + ":8443"
+			}
+			dialer := &net.Dialer{Timeout: 5 * time.Second}
+			tlsConn, err := tls.DialWithDialer(dialer, "tcp", host, &tls.Config{InsecureSkipVerify: true})
+			if err != nil {
+				return nil, fmt.Errorf("remote %q: verifying server fingerprint at %s: %w", remoteName, host, err)
+			}
+			peerCerts := tlsConn.ConnectionState().PeerCertificates
+			_ = tlsConn.Close()
+			if len(peerCerts) == 0 {
+				return nil, fmt.Errorf("remote %q: no TLS certificates presented by %s", remoteName, host)
+			}
+			gotFP := FingerprintSHA256(peerCerts[0].Raw)
+			expFP := strings.ToLower(strings.ReplaceAll(entry.ServerFingerprint, ":", ""))
+			if strings.ToLower(gotFP) != expFP {
+				return nil, fmt.Errorf("remote %q: server certificate fingerprint mismatch: expected %s, got %s", remoteName, entry.ServerFingerprint, gotFP)
+			}
+			// Pin the verified peer certificate into serverCertPEM for the SDK connection (R2)
+			var pemBuf bytes.Buffer
+			if err := pem.Encode(&pemBuf, &pem.Block{Type: "CERTIFICATE", Bytes: peerCerts[0].Raw}); err != nil {
+				return nil, fmt.Errorf("remote %q: encoding pinned server certificate: %w", remoteName, err)
+			}
+			serverCertPEM = pemBuf.String()
 		}
 
 		certPath, keyPath, err := EnsureClientCertificate()

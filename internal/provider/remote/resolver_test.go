@@ -84,4 +84,37 @@ func TestResolveDriver_ServerCertificateAndFingerprintValidation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "server certificate fingerprint mismatch") {
 		t.Fatalf("expected server certificate fingerprint mismatch error, got: %v", err)
 	}
+
+	// 4. UNIX socket with server_fingerprint is rejected
+	optsUnixFP := remote.ResolveOptions{
+		RemoteName: "unix-fp",
+		ManifestRemotes: map[string]remote.RemoteEntry{
+			"unix-fp": {
+				Address:           "unix:///var/lib/incus/unix.socket",
+				Provider:          provider.ProviderTypeIncus,
+				ServerFingerprint: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+			},
+		},
+	}
+	_, err = remote.ResolveDriver(optsUnixFP)
+	if err == nil || !strings.Contains(err.Error(), "UNIX socket endpoint") {
+		t.Fatalf("expected error rejecting server_fingerprint on UNIX socket, got: %v", err)
+	}
+
+	// 5. Insecure true combined with server_fingerprint is rejected as contradictory
+	optsInsecureFP := remote.ResolveOptions{
+		RemoteName: "insecure-fp",
+		ManifestRemotes: map[string]remote.RemoteEntry{
+			"insecure-fp": {
+				Address:           ts.URL,
+				Provider:          provider.ProviderTypeIncus,
+				Insecure:          true,
+				ServerFingerprint: realFP,
+			},
+		},
+	}
+	_, err = remote.ResolveDriver(optsInsecureFP)
+	if err == nil || !strings.Contains(err.Error(), "contradictory configuration") {
+		t.Fatalf("expected error rejecting insecure: true with server_fingerprint, got: %v", err)
+	}
 }
