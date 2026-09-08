@@ -1120,7 +1120,7 @@ func TestComputeNetworks_AbsentVSwitchInSameGroup_NoNilCIDRRules(t *testing.T) {
 		Schema: "lxm/config/v2",
 		Base:   true,
 		VSwitches: []config.VSwitchConfig{
-			{Name: "ovn-active", Type: "ovn", IPv4: "10.70.0.1/24", Group: "shared-grp"},
+			{Name: "ovn-active", Type: "ovn", IPv4: "10.70.0.1/24", Group: "shared-grp", Parent: "incusbr0"},
 			{Name: "ovn-absent", Status: "absent", Group: "shared-grp"},
 		},
 	}

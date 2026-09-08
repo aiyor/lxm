@@ -1,6 +1,8 @@
 package remote_test
 
 import (
+	"bytes"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,24 +25,30 @@ func TestResolveDriver_ServerCertificateAndFingerprintValidation(t *testing.T) {
 	serverCert := ts.Certificate()
 	realFP := remote.FingerprintSHA256(serverCert.Raw)
 
-	// 1. Mismatched fingerprint with certificate declared
+	var certPEMBuf bytes.Buffer
+	if err := pem.Encode(&certPEMBuf, &pem.Block{Type: "CERTIFICATE", Bytes: serverCert.Raw}); err != nil {
+		t.Fatalf("encoding server cert to PEM: %v", err)
+	}
+	validPEM := certPEMBuf.String()
+
+	// 1. Mismatched fingerprint with valid certificate declared
 	optsMismatch := remote.ResolveOptions{
 		RemoteName: "mismatch-node",
 		ManifestRemotes: map[string]remote.RemoteEntry{
 			"mismatch-node": {
 				Address:           ts.URL,
 				Provider:          provider.ProviderTypeIncus,
-				ServerCertificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----",
+				ServerCertificate: validPEM,
 				ServerFingerprint: "0000000000000000000000000000000000000000000000000000000000000000",
 			},
 		},
 	}
 	_, err := remote.ResolveDriver(optsMismatch)
-	if err == nil || !strings.Contains(err.Error(), "parsing server_certificate") {
-		// If PEM decoding failed on invalid dummy PEM, that's expected
+	if err == nil || !strings.Contains(err.Error(), "server_fingerprint mismatch") {
+		t.Fatalf("expected server_fingerprint mismatch error on declared cert+fp, got: %v", err)
 	}
 
-	// 2. Probe TLS server with matching fingerprint
+	// 2. Probe TLS server with matching fingerprint (pins certificate into SDK connection)
 	optsProbeMatch := remote.ResolveOptions{
 		RemoteName: "probe-match",
 		ManifestRemotes: map[string]remote.RemoteEntry{
@@ -51,10 +59,14 @@ func TestResolveDriver_ServerCertificateAndFingerprintValidation(t *testing.T) {
 			},
 		},
 	}
-	// This will pass the fingerprint probe and proceed to connect to Incus (which fails on mock HTTP server, but NOT on fingerprint)
 	_, err = remote.ResolveDriver(optsProbeMatch)
-	if err != nil && strings.Contains(err.Error(), "server certificate fingerprint mismatch") {
-		t.Fatalf("expected fingerprint to match, got: %v", err)
+	if err != nil {
+		if strings.Contains(err.Error(), "unknown authority") {
+			t.Fatalf("connection failed with unknown authority despite pinned certificate: %v", err)
+		}
+		if strings.Contains(err.Error(), "fingerprint mismatch") {
+			t.Fatalf("expected fingerprint to match, got: %v", err)
+		}
 	}
 
 	// 3. Probe TLS server with mismatched fingerprint fails immediately

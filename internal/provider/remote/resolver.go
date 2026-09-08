@@ -1,7 +1,9 @@
 package remote
 
 import (
+	"bytes"
 	"crypto/tls"
+	"encoding/pem"
 	"fmt"
 	"net"
 	"net/url"
@@ -133,7 +135,9 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 			prov = provider.ProviderTypeIncus // default to Incus for remotes
 		}
 
-		// Certificate and fingerprint validation (N7)
+		serverCertPEM := entry.ServerCertificate
+
+		// Certificate and fingerprint validation (N7, R2)
 		if entry.ServerCertificate != "" {
 			fp, err := FingerprintPEM([]byte(entry.ServerCertificate))
 			if err != nil {
@@ -171,6 +175,12 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 				if strings.ToLower(gotFP) != expFP {
 					return nil, fmt.Errorf("remote %q: server certificate fingerprint mismatch: expected %s, got %s", remoteName, entry.ServerFingerprint, gotFP)
 				}
+				// Pin the verified peer certificate into serverCertPEM for the SDK connection (R2)
+				var pemBuf bytes.Buffer
+				if err := pem.Encode(&pemBuf, &pem.Block{Type: "CERTIFICATE", Bytes: peerCerts[0].Raw}); err != nil {
+					return nil, fmt.Errorf("remote %q: encoding pinned server certificate: %w", remoteName, err)
+				}
+				serverCertPEM = pemBuf.String()
 			}
 		}
 
@@ -193,7 +203,7 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 			args := &incus_client.ConnectionArgs{
 				TLSClientCert:      string(clientCertPEM),
 				TLSClientKey:       string(clientKeyPEM),
-				TLSServerCert:      entry.ServerCertificate,
+				TLSServerCert:      serverCertPEM,
 				InsecureSkipVerify: entry.Insecure,
 			}
 			d, err = incus.NewRemoteDriver(entry.Address, args)
@@ -204,7 +214,7 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 			args := &lxd_client.ConnectionArgs{
 				TLSClientCert:      string(clientCertPEM),
 				TLSClientKey:       string(clientKeyPEM),
-				TLSServerCert:      entry.ServerCertificate,
+				TLSServerCert:      serverCertPEM,
 				InsecureSkipVerify: entry.Insecure,
 			}
 			d, err = lxd.NewRemoteDriver(entry.Address, args)

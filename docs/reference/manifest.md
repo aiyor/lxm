@@ -175,7 +175,7 @@ remotes:
 * `project` (string, optional): Target project name (defaults to `default`).
 * `insecure` (bool, optional): Skip TLS certificate verification (`false` by default).
 * `server_certificate` (string, optional): Pinned server PEM certificate string for TLS validation.
-* `server_fingerprint` (string, optional): Pinned 64-character SHA-256 fingerprint hex string verified during TLS connection.
+* `server_fingerprint` (string, optional): Pinned 64-character SHA-256 fingerprint hex string. When specified without `server_certificate`, lxm probes the endpoint, verifies the SHA-256 fingerprint, and pins the resulting certificate into the SDK client connection.
 
 ### `user`
 

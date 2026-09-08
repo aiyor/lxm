@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -989,6 +990,59 @@ nav:
 		}
 		if string(dataB) != contentB {
 			t.Errorf("fileB was modified despite atomic failure:\n%s", string(dataB))
+		}
+	})
+
+	t.Run("include atomicity rolls back modified files on write failure", func(t *testing.T) {
+		subDir := t.TempDir()
+		fileA := filepath.Join(subDir, "a.yaml")
+		fileB := filepath.Join(subDir, "b.yaml")
+
+		contentA := "schema: lxm/config/v2\nname: box-a\nimage: debian:12\n"
+		contentB := "schema: lxm/config/v2\nname: box-b\nimage: debian:12\n"
+
+		if err := os.WriteFile(fileA, []byte(contentA), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fileB, []byte(contentB), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		origAddInclude := addIncludeFunc
+		t.Cleanup(func() {
+			addIncludeFunc = origAddInclude
+		})
+
+		// Make write fail on fileB after fileA has been written
+		addIncludeFunc = func(filePath, inc string) (bool, error) {
+			if strings.HasSuffix(filePath, "b.yaml") {
+				return false, errors.New("simulated disk failure on b.yaml")
+			}
+			return origAddInclude(filePath, inc)
+		}
+
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", subDir, "_common.yaml"}, &stdout, &stderr, driver)
+		if code != 3 {
+			t.Fatalf("expected exit code 3 (CONFIG_ERROR) on write failure, got %d. stderr: %s", code, stderr.String())
+		}
+
+		// Verify fileA was rolled back to original content
+		dataA, err := os.ReadFile(fileA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(dataA) != contentA {
+			t.Errorf("fileA was not rolled back to original content:\n%s", string(dataA))
+		}
+
+		// Verify fileB is untouched
+		dataB, err := os.ReadFile(fileB)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(dataB) != contentB {
+			t.Errorf("fileB was modified:\n%s", string(dataB))
 		}
 	})
 }

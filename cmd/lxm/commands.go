@@ -1493,6 +1493,8 @@ groups: [dev]
 	return cmd
 }
 
+var addIncludeFunc = config.AddIncludeToYAMLFile
+
 func newIncludeCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, logger *slog.Logger) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "include <config_dir> <include_file>",
@@ -1579,7 +1581,7 @@ func newIncludeCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 
 			for _, op := range ops {
 				if !opts.dryRun && op.changed {
-					_, err := config.AddIncludeToYAMLFile(op.file, includeFile)
+					_, err := addIncludeFunc(op.file, includeFile)
 					if err != nil {
 						// Roll back any files modified in this batch
 						for _, m := range modified {
