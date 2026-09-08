@@ -313,4 +313,34 @@ recipes:
 			})
 		}
 	})
+
+	t.Run("Contradictory remotes configuration rejected by #LXM_AUTHORING", func(t *testing.T) {
+		badCertYAML := []byte(`
+schema: lxm/config/v2
+name: t
+image: ubuntu-24.04
+remotes:
+  lab:
+    address: https://10.0.0.1:8443
+    insecure: true
+    server_certificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----"
+`)
+		if err := v.ValidateAuthoring(badCertYAML); err == nil {
+			t.Errorf("expected insecure: true + server_certificate to be rejected by #LXM_AUTHORING")
+		}
+
+		badFpYAML := []byte(`
+schema: lxm/config/v2
+name: t
+image: ubuntu-24.04
+remotes:
+  lab:
+    address: https://10.0.0.1:8443
+    insecure: true
+    server_fingerprint: "0123456789abcdef"
+`)
+		if err := v.ValidateAuthoring(badFpYAML); err == nil {
+			t.Errorf("expected insecure: true + server_fingerprint to be rejected by #LXM_AUTHORING")
+		}
+	})
 }

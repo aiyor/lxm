@@ -44,6 +44,13 @@ import (
 	protocol?:          "https" | "unix"
 	server_certificate?: string
 	server_fingerprint?: string
+
+	if insecure != _|_ {
+		if insecure {
+			server_certificate: _|_
+			server_fingerprint: _|_
+		}
+	}
 })
 
 // #ImageRemoteNameInvalid rejects keys that do not fully match #ImageRemoteName.
