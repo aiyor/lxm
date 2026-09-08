@@ -169,6 +169,11 @@ func newRemoteAddCmd(opts *cmdOptions, stdout, stderr io.Writer, logger *slog.Lo
 				proj = "default"
 			}
 
+			if addFlags.insecure {
+				serverCert = ""
+				serverFp = ""
+			}
+
 			cfg.Remotes[name] = remote.RemoteEntry{
 				Address:           addr,
 				Provider:          provType,

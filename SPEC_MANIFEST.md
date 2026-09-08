@@ -88,7 +88,7 @@ remotes:
     server_fingerprint: "64-char-sha256-hex"                                          # optional pinned SHA256 fingerprint
 ```
 
-Fields allowed under each `remotes:<name>` entry: `address` (required string), `provider` (optional "incus" | "lxd"), `project` (optional string), `insecure` (optional bool), `protocol` (optional "https" | "unix"), `server_certificate` (optional PEM certificate string), `server_fingerprint` (optional 64-character SHA256 hex string; probes and pins the server certificate into the SDK connection when declared without server_certificate).
+Fields allowed under each `remotes:<name>` entry: `address` (required string), `provider` (optional "incus" | "lxd"), `project` (optional string), `insecure` (optional bool), `protocol` (optional "https" | "unix"), `server_certificate` (optional PEM certificate string), `server_fingerprint` (optional 64-character SHA256 hex string; probes and pins the server certificate into the SDK connection when declared without server_certificate). Note: `insecure: true` is mutually exclusive with `server_certificate` and `server_fingerprint`. Neither certificate nor fingerprint pinning may be used with UNIX socket endpoints. Fingerprint probing requires an `https://` endpoint (or bare hostname without port).
 
 
 ### 3.5 Network Schema (`#NetworkObj`)

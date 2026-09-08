@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -178,5 +180,59 @@ func unexpectedResolve(t *testing.T) resolveDriverFunc {
 	return func(remote.ResolveOptions) (provider.Driver, error) {
 		t.Fatal("resolveFleetService resolver invoked unexpectedly")
 		return nil, nil
+	}
+}
+
+func TestRemoteCLI_AddInsecure_RoundTripResolve(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("LXM_CONFIG_DIR", tmpDir)
+
+	// Spin up mock HTTPS server simulating an Incus API endpoint
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"sync","status":"Success","status_code":200,"metadata":{"api_version":"1.0"}}`))
+	}))
+	defer ts.Close()
+
+	ctx := t.Context()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mockGetter := func() (provider.Driver, error) {
+		return fake.New(), nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	rootCmd, _ := newRootCmd(ctx, &stdout, &stderr, mockGetter, logger)
+	rootCmd.SetArgs([]string{"remote", "add", "lab-insecure", ts.URL, "--insecure"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("remote add --insecure failed: %v", err)
+	}
+
+	cfg, err := remote.LoadConfig()
+	if err != nil {
+		t.Fatalf("loading saved remote config: %v", err)
+	}
+	entry, ok := cfg.Remotes["lab-insecure"]
+	if !ok {
+		t.Fatalf("expected remote 'lab-insecure' in config, got %+v", cfg.Remotes)
+	}
+	if !entry.Insecure {
+		t.Errorf("expected Insecure: true, got false")
+	}
+	if entry.ServerCertificate != "" {
+		t.Errorf("expected empty ServerCertificate when --insecure is set, got %q", entry.ServerCertificate)
+	}
+	if entry.ServerFingerprint != "" {
+		t.Errorf("expected empty ServerFingerprint when --insecure is set, got %q", entry.ServerFingerprint)
+	}
+
+	// Resolve the remote driver; must succeed without contradictory configuration errors
+	d, err := remote.ResolveDriver(remote.ResolveOptions{
+		RemoteName: "lab-insecure",
+	})
+	if err != nil {
+		t.Fatalf("ResolveDriver failed on remote added with --insecure: %v", err)
+	}
+	if d == nil {
+		t.Fatalf("expected resolved driver, got nil")
 	}
 }

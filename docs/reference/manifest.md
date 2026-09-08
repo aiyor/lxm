@@ -173,9 +173,9 @@ remotes:
 * `address` (string, required): HTTPS or UNIX socket URL of the remote daemon.
 * `provider` (string, optional): Provider type (`incus` or `lxd`).
 * `project` (string, optional): Target project name (defaults to `default`).
-* `insecure` (bool, optional): Skip TLS certificate verification (`false` by default).
-* `server_certificate` (string, optional): Pinned server PEM certificate string for TLS validation.
-* `server_fingerprint` (string, optional): Pinned 64-character SHA-256 fingerprint hex string. When specified without `server_certificate`, lxm probes the endpoint, verifies the SHA-256 fingerprint, and pins the resulting certificate into the SDK client connection.
+* `insecure` (bool, optional): Skip TLS certificate verification (`false` by default). Cannot be combined with `server_certificate` or `server_fingerprint` (mutually exclusive with pinning).
+* `server_certificate` (string, optional): Pinned server PEM certificate string for TLS validation. Cannot be used with UNIX socket endpoints or when `insecure: true`.
+* `server_fingerprint` (string, optional): Pinned 64-character SHA-256 fingerprint hex string. When specified without `server_certificate`, lxm probes the remote HTTPS endpoint, verifies the SHA-256 fingerprint, and pins the resulting certificate into the SDK client connection. Requires an `https://` endpoint (or bare hostname without port) and cannot be used with UNIX socket endpoints or when `insecure: true`.
 
 ### `user`
 
