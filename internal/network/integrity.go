@@ -40,13 +40,14 @@ func CheckInstancesWithProvider(configs []*config.Config, f *Fleet, liveNetworks
 			}
 			parent := nic.Parent
 			if parent == "" {
-				if conf != nil && conf.Provider == "incus" {
+				switch {
+				case conf.Provider == "incus":
 					parent = "incusbr0"
-				} else if conf != nil && conf.Provider == "lxd" {
+				case conf.Provider == "lxd":
 					parent = "lxdbr0"
-				} else if prov == "incus" {
+				case prov == "incus":
 					parent = "incusbr0"
-				} else {
+				default:
 					parent = "lxdbr0"
 				}
 			}

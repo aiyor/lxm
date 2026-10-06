@@ -1586,6 +1586,7 @@ func newIncludeCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 						// Roll back any files modified in this batch
 						for _, m := range modified {
 							if orig, ok := origContents[m]; ok {
+								//nolint:gosec // G306: rollback restores original manifest bytes with standard readable config perms (0644)
 								_ = os.WriteFile(m, orig, 0644)
 							}
 						}

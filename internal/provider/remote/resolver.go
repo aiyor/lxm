@@ -2,6 +2,7 @@ package remote
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/pem"
 	"fmt"
@@ -169,12 +170,20 @@ func ResolveDriver(opts ResolveOptions) (provider.Driver, error) {
 				host = entry.Address
 			}
 			if !strings.Contains(host, ":") {
-				host = host + ":8443"
+				host += ":8443"
 			}
-			dialer := &net.Dialer{Timeout: 5 * time.Second}
-			tlsConn, err := tls.DialWithDialer(dialer, "tcp", host, &tls.Config{InsecureSkipVerify: true})
+			tlsDialer := &tls.Dialer{
+				NetDialer: &net.Dialer{Timeout: 5 * time.Second},
+				Config:    &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // G402: fingerprint probe pins peer cert manually below, matching trust.go TOFU pattern
+			}
+			conn, err := tlsDialer.DialContext(context.Background(), "tcp", host)
 			if err != nil {
 				return nil, fmt.Errorf("remote %q: verifying server fingerprint at %s: %w", remoteName, host, err)
+			}
+			tlsConn, ok := conn.(*tls.Conn)
+			if !ok {
+				_ = conn.Close()
+				return nil, fmt.Errorf("remote %q: unexpected connection type for %s", remoteName, host)
 			}
 			peerCerts := tlsConn.ConnectionState().PeerCertificates
 			_ = tlsConn.Close()
