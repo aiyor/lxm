@@ -24,16 +24,16 @@ func (e *defaultExecutor) executeNetworkStep(ctx context.Context, step plan.Netw
 	select {
 	case <-ctx.Done():
 		return NetworkResult{
-				Name:    step.Name,
-				Kind:    step.Kind,
-				Changed: step.Changed,
-				OK:      false,
-				Error:   "operation cancelled by user interrupt",
-			}, &ErrorInfo{
-				Code:    "INTERNAL_ERROR",
-				Name:    step.Name,
-				Message: "operation cancelled by user interrupt",
-			}, ""
+			Name:    step.Name,
+			Kind:    step.Kind,
+			Changed: step.Changed,
+			OK:      false,
+			Error:   "operation cancelled by user interrupt",
+		}, &ErrorInfo{
+			Code:    "INTERNAL_ERROR",
+			Name:    step.Name,
+			Message: "operation cancelled by user interrupt",
+		}, ""
 	default:
 	}
 

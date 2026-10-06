@@ -1,6 +1,6 @@
 module github.com/aiyor/lxm
 
-go 1.26.1
+go 1.27.0
 
 require (
 	cuelang.org/go v0.17.1

@@ -1,7 +1,6 @@
 package apply_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/aiyor/lxm/internal/apply"
@@ -12,7 +11,7 @@ import (
 )
 
 func TestApply_VolumeDelete_Phase3_Success(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.Instances["vm1"] = &provider.Instance{
 		Name:       "vm1",
@@ -78,7 +77,7 @@ func TestApply_VolumeDelete_Phase3_Success(t *testing.T) {
 }
 
 func TestApply_VolumeDelete_IdempotentNotFound(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.Instances["vm1"] = &provider.Instance{
 		Name:       "vm1",
@@ -123,7 +122,7 @@ func TestApply_VolumeDelete_IdempotentNotFound(t *testing.T) {
 }
 
 func TestApply_VSwitchDelete_Phase4_OrderBridgeBeforeACL(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.Networks["legacybr0"] = &provider.Network{
 		Name:    "legacybr0",
@@ -180,7 +179,7 @@ func TestApply_VSwitchDelete_Phase4_OrderBridgeBeforeACL(t *testing.T) {
 }
 
 func TestApply_DryRun_SkipsDeletions(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.AddVolume("default", "vm1-scratch", "filesystem", nil)
 	driver.Networks["legacybr0"] = &provider.Network{Name: "legacybr0"}
@@ -233,7 +232,7 @@ func TestApply_DryRun_SkipsDeletions(t *testing.T) {
 }
 
 func TestApply_SteadyStateVolume_BackfillsMarker(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.Instances["vm1"] = &provider.Instance{
 		Name:       "vm1",
@@ -292,7 +291,7 @@ func TestApply_SteadyStateVolume_BackfillsMarker(t *testing.T) {
 }
 
 func TestApply_ExternalVolume_NotBackfilledAsManaged(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.Instances["vm1"] = &provider.Instance{
 		Name:       "vm1",

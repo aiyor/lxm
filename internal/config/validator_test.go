@@ -314,3 +314,107 @@ recipes:
 		}
 	})
 }
+
+func TestCUEValidator_RemotesAuthoring(t *testing.T) {
+	v, err := NewValidator()
+	if err != nil {
+		t.Fatalf("failed to create validator: %v", err)
+	}
+
+	// Positive controls: legitimate configurations MUST pass
+	t.Run("insecure alone passes #LXM_AUTHORING", func(t *testing.T) {
+		validYAML := []byte(`
+schema: lxm/config/v2
+name: t
+image: ubuntu-24.04
+remotes:
+  lab:
+    address: https://10.0.0.1:8443
+    insecure: true
+`)
+		if err := v.ValidateAuthoring(validYAML); err != nil {
+			t.Fatalf("expected insecure: true alone to pass #LXM_AUTHORING, got: %v", err)
+		}
+	})
+
+	t.Run("insecure false with server_certificate passes #LXM_AUTHORING", func(t *testing.T) {
+		validYAML := []byte(`
+schema: lxm/config/v2
+name: t
+image: ubuntu-24.04
+remotes:
+  lab:
+    address: https://10.0.0.1:8443
+    insecure: false
+    server_certificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----"
+`)
+		if err := v.ValidateAuthoring(validYAML); err != nil {
+			t.Fatalf("expected insecure: false + server_certificate to pass #LXM_AUTHORING, got: %v", err)
+		}
+	})
+
+	t.Run("secure with certificate and fingerprint passes #LXM_AUTHORING", func(t *testing.T) {
+		validYAML := []byte(`
+schema: lxm/config/v2
+name: t
+image: ubuntu-24.04
+remotes:
+  lab:
+    address: https://10.0.0.1:8443
+    server_certificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----"
+    server_fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+`)
+		if err := v.ValidateAuthoring(validYAML); err != nil {
+			t.Fatalf("expected secure + cert + fingerprint to pass #LXM_AUTHORING, got: %v", err)
+		}
+	})
+
+	t.Run("unix endpoint passes #LXM_AUTHORING", func(t *testing.T) {
+		validYAML := []byte(`
+schema: lxm/config/v2
+name: t
+image: ubuntu-24.04
+remotes:
+  lab-unix:
+    address: unix:///run/incus/unix.socket
+`)
+		if err := v.ValidateAuthoring(validYAML); err != nil {
+			t.Fatalf("expected unix remote to pass #LXM_AUTHORING, got: %v", err)
+		}
+	})
+
+	// Negative controls: contradictory configurations MUST fail
+	t.Run("insecure true with server_certificate rejected by #LXM_AUTHORING", func(t *testing.T) {
+		badCertYAML := []byte(`
+schema: lxm/config/v2
+name: t
+image: ubuntu-24.04
+remotes:
+  lab:
+    address: https://10.0.0.1:8443
+    insecure: true
+    server_certificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----"
+`)
+		err := v.ValidateAuthoring(badCertYAML)
+		if err == nil {
+			t.Fatalf("expected insecure: true + server_certificate to be rejected by #LXM_AUTHORING")
+		}
+	})
+
+	t.Run("insecure true with server_fingerprint rejected by #LXM_AUTHORING", func(t *testing.T) {
+		badFpYAML := []byte(`
+schema: lxm/config/v2
+name: t
+image: ubuntu-24.04
+remotes:
+  lab:
+    address: https://10.0.0.1:8443
+    insecure: true
+    server_fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+`)
+		err := v.ValidateAuthoring(badFpYAML)
+		if err == nil {
+			t.Fatalf("expected insecure: true + server_fingerprint to be rejected by #LXM_AUTHORING")
+		}
+	})
+}

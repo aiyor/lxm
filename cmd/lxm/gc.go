@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
+	"github.com/aiyor/lxm/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -111,35 +112,55 @@ func newDiskCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			}
 
 			if len(orphans) == 0 {
-				fmt.Fprintln(stdout, "No orphaned managed storage volumes found.")
+				if opts.format != "json" {
+					fmt.Fprintln(stdout, "No orphaned managed storage volumes found.")
+				}
+				lastCommandResults = nil
 				return nil
 			}
 
 			// 3. Print preview table
-			fmt.Fprintf(stdout, "ORPHANED MANAGED STORAGE VOLUMES (%d):\n", len(orphans))
-			fmt.Fprintf(stdout, "%-12s %-24s %-16s %-12s %-10s %s\n", "POOL", "VOLUME", "CREATOR INSTANCE", "DISK NAME", "SIZE", "STATUS")
-			for _, o := range orphans {
-				inst := o.instance
-				if inst == "" {
-					inst = "-"
+			if opts.format != "json" {
+				fmt.Fprintf(stdout, "ORPHANED MANAGED STORAGE VOLUMES (%d):\n", len(orphans))
+				fmt.Fprintf(stdout, "%-12s %-24s %-16s %-12s %-10s %s\n", "POOL", "VOLUME", "CREATOR INSTANCE", "DISK NAME", "SIZE", "STATUS")
+				for _, o := range orphans {
+					inst := o.instance
+					if inst == "" {
+						inst = "-"
+					}
+					disk := o.disk
+					if disk == "" {
+						disk = "-"
+					}
+					size := o.size
+					if size == "" {
+						size = "-"
+					}
+					fmt.Fprintf(stdout, "%-12s %-24s %-16s %-12s %-10s %s\n", o.pool, o.name, inst, disk, size, "Unreferenced")
 				}
-				disk := o.disk
-				if disk == "" {
-					disk = "-"
-				}
-				size := o.size
-				if size == "" {
-					size = "-"
-				}
-				fmt.Fprintf(stdout, "%-12s %-24s %-16s %-12s %-10s %s\n", o.pool, o.name, inst, disk, size, "Unreferenced")
 			}
 
 			if opts.dryRun {
-				fmt.Fprintln(stdout, "\n[dry-run] No volumes were deleted.")
+				if opts.format != "json" {
+					fmt.Fprintln(stdout, "\n[dry-run] No volumes were deleted.")
+				}
+				var resItems []output.ResultItem
+				for _, o := range orphans {
+					resItems = append(resItems, output.ResultItem{
+						Container: o.name,
+						Action:    "delete_volume",
+						Changed:   false,
+						OK:        true,
+					})
+				}
+				lastCommandResults = resItems
 				return nil
 			}
 
 			if !opts.force {
+				if opts.format == "json" {
+					return &exitError{code: 2, err: fmt.Errorf("confirmation required; use --force or --dry-run with --format json")}
+				}
 				fmt.Fprintf(stdout, "\nAre you sure you want to permanently delete %d volume(s)? [y/N]: ", len(orphans))
 				reader := bufio.NewReader(cmd.InOrStdin())
 				input, _ := reader.ReadString('\n')
@@ -150,17 +171,38 @@ func newDiskCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				}
 			}
 
+			var resItems []output.ResultItem
 			deleted := 0
 			for _, o := range orphans {
 				err := svc.DeleteStoragePoolVolume(ctx, o.pool, "custom", o.name)
 				if err != nil {
-					fmt.Fprintf(stderr, "Error deleting volume %s/%s: %v\n", o.pool, o.name, err)
+					if opts.format != "json" {
+						fmt.Fprintf(stderr, "Error deleting volume %s/%s: %v\n", o.pool, o.name, err)
+					}
+					resItems = append(resItems, output.ResultItem{
+						Container: o.name,
+						Action:    "delete_volume",
+						Changed:   false,
+						OK:        false,
+					})
 				} else {
 					deleted++
+					resItems = append(resItems, output.ResultItem{
+						Container: o.name,
+						Action:    "delete_volume",
+						Changed:   true,
+						OK:        true,
+					})
 				}
 			}
+			lastCommandResults = resItems
 
-			fmt.Fprintf(stdout, "Successfully deleted %d volume(s).\n", deleted)
+			if opts.format != "json" {
+				fmt.Fprintf(stdout, "Successfully deleted %d volume(s).\n", deleted)
+			}
+			if deleted < len(orphans) {
+				return &exitError{code: 4, err: fmt.Errorf("failed to delete %d of %d volume(s)", len(orphans)-deleted, len(orphans))}
+			}
 			return nil
 		},
 	}
@@ -239,26 +281,46 @@ func newVSwitchCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 			}
 
 			if len(orphans) == 0 {
-				fmt.Fprintln(stdout, "No orphaned managed network ACLs found.")
+				if opts.format != "json" {
+					fmt.Fprintln(stdout, "No orphaned managed network ACLs found.")
+				}
+				lastCommandResults = nil
 				return nil
 			}
 
-			fmt.Fprintf(stdout, "ORPHANED MANAGED NETWORK ACLS (%d):\n", len(orphans))
-			fmt.Fprintf(stdout, "%-24s %-40s %s\n", "ACL NAME", "DESCRIPTION", "STATUS")
-			for _, o := range orphans {
-				desc := o.description
-				if len(desc) > 38 {
-					desc = desc[:35] + "..."
+			if opts.format != "json" {
+				fmt.Fprintf(stdout, "ORPHANED MANAGED NETWORK ACLS (%d):\n", len(orphans))
+				fmt.Fprintf(stdout, "%-24s %-40s %s\n", "ACL NAME", "DESCRIPTION", "STATUS")
+				for _, o := range orphans {
+					desc := o.description
+					if len(desc) > 38 {
+						desc = desc[:35] + "..."
+					}
+					fmt.Fprintf(stdout, "%-24s %-40s %s\n", o.name, desc, "Unreferenced")
 				}
-				fmt.Fprintf(stdout, "%-24s %-40s %s\n", o.name, desc, "Unreferenced")
 			}
 
 			if opts.dryRun {
-				fmt.Fprintln(stdout, "\n[dry-run] No network ACLs were deleted.")
+				if opts.format != "json" {
+					fmt.Fprintln(stdout, "\n[dry-run] No network ACLs were deleted.")
+				}
+				var resItems []output.ResultItem
+				for _, o := range orphans {
+					resItems = append(resItems, output.ResultItem{
+						Container: o.name,
+						Action:    "delete_acl",
+						Changed:   false,
+						OK:        true,
+					})
+				}
+				lastCommandResults = resItems
 				return nil
 			}
 
 			if !opts.force {
+				if opts.format == "json" {
+					return &exitError{code: 2, err: fmt.Errorf("confirmation required; use --force or --dry-run with --format json")}
+				}
 				fmt.Fprintf(stdout, "\nAre you sure you want to permanently delete %d network ACL(s)? [y/N]: ", len(orphans))
 				reader := bufio.NewReader(cmd.InOrStdin())
 				input, _ := reader.ReadString('\n')
@@ -269,17 +331,38 @@ func newVSwitchCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writ
 				}
 			}
 
+			var resItems []output.ResultItem
 			deleted := 0
 			for _, o := range orphans {
 				err := svc.DeleteNetworkACL(ctx, o.name)
 				if err != nil {
-					fmt.Fprintf(stderr, "Error deleting ACL %s: %v\n", o.name, err)
+					if opts.format != "json" {
+						fmt.Fprintf(stderr, "Error deleting ACL %s: %v\n", o.name, err)
+					}
+					resItems = append(resItems, output.ResultItem{
+						Container: o.name,
+						Action:    "delete_acl",
+						Changed:   false,
+						OK:        false,
+					})
 				} else {
 					deleted++
+					resItems = append(resItems, output.ResultItem{
+						Container: o.name,
+						Action:    "delete_acl",
+						Changed:   true,
+						OK:        true,
+					})
 				}
 			}
+			lastCommandResults = resItems
 
-			fmt.Fprintf(stdout, "Successfully deleted %d network ACL(s).\n", deleted)
+			if opts.format != "json" {
+				fmt.Fprintf(stdout, "Successfully deleted %d network ACL(s).\n", deleted)
+			}
+			if deleted < len(orphans) {
+				return &exitError{code: 4, err: fmt.Errorf("failed to delete %d of %d network ACL(s)", len(orphans)-deleted, len(orphans))}
+			}
 			return nil
 		},
 	}

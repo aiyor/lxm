@@ -155,6 +155,34 @@ image_remotes:
 URLs must be `https://` (or `http://` for loopback hosts) with a non-empty host; they are
 canonicalized (lowercase scheme+host, trailing `/` trimmed) before comparison.
 
+### `remotes`
+
+Fleet-scoped definitions of remote Incus/LXD daemon endpoints. Remotes declared in a manifest allow target instances to be deployed to remote hosts without requiring manual `lxm remote add` configuration.
+
+```yaml
+remotes:
+  lab-node1:
+    address: https://10.171.13.50:8443
+    provider: incus
+    project: staging
+    insecure: false
+    server_certificate: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+    server_fingerprint: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+```
+
+> [!NOTE]
+> When both `server_certificate` and `server_fingerprint` are specified, the SHA-256 fingerprint computed from the certificate must match the declared `server_fingerprint`.
+>
+> If an existing remote in `remotes.yaml` was saved with `--insecure` under earlier versions and contains discovered pinning fields, remove `server_certificate` and `server_fingerprint` from `remotes.yaml` or re-add it using `lxm remote remove <name>` and `lxm remote add <name> <url> --insecure`.
+
+
+* `address` (string, required): HTTPS or UNIX socket URL of the remote daemon.
+* `provider` (string, optional): Provider type (`incus` or `lxd`).
+* `project` (string, optional): Target project name (defaults to `default`).
+* `insecure` (bool, optional): Skip TLS certificate verification (`false` by default). Cannot be combined with `server_certificate` or `server_fingerprint` (mutually exclusive with pinning).
+* `server_certificate` (string, optional): Pinned server PEM certificate string for TLS validation. Cannot be used with UNIX socket endpoints or when `insecure: true`.
+* `server_fingerprint` (string, optional): Pinned 64-character SHA-256 fingerprint hex string. When specified without `server_certificate`, lxm probes the remote HTTPS endpoint, verifies the SHA-256 fingerprint, and pins the resulting certificate into the SDK client connection. Requires an `https://` endpoint (or bare hostname without port) and cannot be used with UNIX socket endpoints or when `insecure: true`.
+
 ### `user`
 
 The primary user lxm creates in the container. Defaults to `ubuntu`. lxm injects the user via cloud-init, adds it to the `sudo` group, and writes `LXM_USER` into `/etc/profile.d/lxm-env.sh`.

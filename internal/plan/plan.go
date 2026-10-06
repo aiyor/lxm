@@ -1,12 +1,14 @@
 package plan
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
@@ -70,14 +72,14 @@ type Step struct {
 	Action          string                           `json:"action"` // create | update | recreate | delete | start | stop | noop
 	Changed         bool                             `json:"changed"`
 	Diff            []FieldDiff                      `json:"diff,omitempty"`
-	Wait            bool                             `json:"wait,omitempty"`
+	Wait            bool                             `json:"wait,omitzero"`
 	WaitPolicy      *config.WaitConfig               `json:"wait_policy,omitempty"`
 	ConfigBaseDir   string                           `json:"config_base_dir,omitempty"`
 	Recipes         []RecipeStep                     `json:"recipes,omitempty"`
 	Snapshot        string                           `json:"snapshot,omitempty"`
 	ETag            string                           `json:"etag,omitempty"`
-	RebuildFallback bool                             `json:"rebuild_fallback,omitempty"`
-	PurgeSnapshots  bool                             `json:"purge_snapshots,omitempty"`
+	RebuildFallback bool                             `json:"rebuild_fallback,omitzero"`
+	PurgeSnapshots  bool                             `json:"purge_snapshots,omitzero"`
 	PowerTransition string                           `json:"power_transition,omitempty"` // "start" | "stop" | "restart"
 	VolumeOps       []VolumeOp                       `json:"volume_ops,omitempty"`
 	ImageOps        []ImageOp                        `json:"image_ops,omitempty"`
@@ -102,10 +104,10 @@ func (e *MissingVolumeError) Error() string {
 
 // FieldDiff records an exact field-level delta between desired and live state.
 type FieldDiff struct {
-	Field            string      `json:"field"`
-	Old              interface{} `json:"old,omitempty"`
-	New              interface{} `json:"new,omitempty"`
-	RequiresRecreate bool        `json:"requires_recreate"`
+	Field            string `json:"field"`
+	Old              any    `json:"old,omitempty"`
+	New              any    `json:"new,omitempty"`
+	RequiresRecreate bool   `json:"requires_recreate"`
 }
 
 // PlanSummary tallies planned actions across all containers.
@@ -138,11 +140,18 @@ type Reconciler interface {
 	Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume, imageAliases map[string]bool, imageRemotes map[string]string, hasRebuildExt bool) (*Plan, error)
 }
 
-type defaultReconciler struct{}
+type defaultReconciler struct {
+	provider string
+}
 
 // NewReconciler returns a new default Reconciler.
 func NewReconciler() Reconciler {
 	return &defaultReconciler{}
+}
+
+// NewReconcilerWithProvider returns a new default Reconciler configured with a provider.
+func NewReconcilerWithProvider(provider string) Reconciler {
+	return &defaultReconciler{provider: provider}
 }
 
 func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume, imageAliases map[string]bool, imageRemotes map[string]string, hasRebuildExt bool) (*Plan, error) {
@@ -211,7 +220,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 			step.PowerTransition = "stop"
 		}
 
-		postPayload, err := buildInstancesPost(manifest)
+		postPayload, err := buildInstancesPost(manifest, r.provider)
 		if err != nil {
 			return nil, fmt.Errorf("building create payload: %w", err)
 		}
@@ -250,7 +259,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 
 	// 3. Instance exists — compare live state against desired state
 	step.ETag = liveInst.ETag
-	diffs, requiresRecreate, volumeOps, err := computeDiffs(manifest, liveInst, volumes)
+	diffs, requiresRecreate, volumeOps, err := computeDiffs(manifest, liveInst, volumes, r.provider)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +289,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		step.RebuildPost = &provider.InstanceRebuildRequest{
 			Source: resolvedInstanceSource(manifest.Image, manifest.Type),
 		}
-		postPayload, err := buildInstancesPost(manifest)
+		postPayload, err := buildInstancesPost(manifest, r.provider)
 		if err != nil {
 			return nil, fmt.Errorf("building recreate payload: %w", err)
 		}
@@ -336,7 +345,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		step.Changed = true
 		step.Diff = diffs
 		step.Wait = manifest.WaitPolicy.Required
-		putPayload, err := buildInstancePut(manifest, liveInst)
+		putPayload, err := buildInstancePut(manifest, liveInst, r.provider)
 		if err != nil {
 			return nil, fmt.Errorf("building update payload: %w", err)
 		}
@@ -392,7 +401,44 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 	return plan, nil
 }
 
-func buildInstancesPost(manifest *config.Config) (*provider.InstanceCreateRequest, error) {
+func defaultBridgeForProvider(manifest *config.Config, prov string) string {
+	if manifest != nil && manifest.Provider == "incus" {
+		return "incusbr0"
+	}
+	if manifest != nil && manifest.Provider == "lxd" {
+		return "lxdbr0"
+	}
+	if prov == "incus" {
+		return "incusbr0"
+	}
+	return "lxdbr0"
+}
+
+func normalizeNetworks(nets []config.NetworkConfig, manifest *config.Config, prov string) []config.NetworkConfig {
+	if len(nets) == 0 {
+		return nil
+	}
+	res := make([]config.NetworkConfig, len(nets))
+	for i, n := range nets {
+		res[i] = n
+		if res[i].Name == "" {
+			res[i].Name = "eth0"
+		}
+		if res[i].Parent == "" {
+			res[i].Parent = defaultBridgeForProvider(manifest, prov)
+		}
+	}
+	slices.SortFunc(res, func(a, b config.NetworkConfig) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+	return res
+}
+
+func buildInstancesPost(manifest *config.Config, prov ...string) (*provider.InstanceCreateRequest, error) {
+	p := ""
+	if len(prov) > 0 {
+		p = prov[0]
+	}
 	instType := provider.InstanceTypeContainer
 	if manifest.Type == "virtual-machine" {
 		instType = provider.InstanceTypeVM
@@ -445,9 +491,8 @@ func buildInstancesPost(manifest *config.Config) (*provider.InstanceCreateReques
 	// from the reference string (§4.5).
 	post.Config["user.lxm.image"] = manifest.Image
 	if len(manifest.Groups) > 0 {
-		grps := make([]string, len(manifest.Groups))
-		copy(grps, manifest.Groups)
-		sort.Strings(grps)
+		grps := slices.Clone(manifest.Groups)
+		slices.Sort(grps)
 		post.Config["user.lxm.groups"] = strings.Join(grps, ",")
 	}
 	cloudInit, err := manifest.ResolveCloudInit(manifest.ConfigBaseDir)
@@ -491,7 +536,7 @@ func buildInstancesPost(manifest *config.Config) (*provider.InstanceCreateReques
 		}
 		parent := n.Parent
 		if parent == "" {
-			parent = "lxdbr0"
+			parent = defaultBridgeForProvider(manifest, p)
 		}
 		props := map[string]string{
 			"type":    "nic",
@@ -579,21 +624,25 @@ func imageFetchEnabled() bool {
 	return v != "0" && !strings.EqualFold(v, "false")
 }
 
-func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*provider.InstanceUpdateRequest, error) {
+func buildInstancePut(manifest *config.Config, live *InstanceSnapshot, prov ...string) (*provider.InstanceUpdateRequest, error) {
+	p := ""
+	if len(prov) > 0 {
+		p = prov[0]
+	}
 	instType := provider.InstanceType(manifest.Type)
 	if instType == "" {
 		instType = provider.InstanceTypeContainer
 	}
 	put := &provider.InstanceUpdateRequest{
 		Type:     instType,
-		Config:   make(map[string]string),
 		Devices:  make(map[string]map[string]string),
 		Profiles: live.Profiles,
 	}
 
 	// 1. Copy live configuration base
-	for k, v := range live.Config {
-		put.Config[k] = v
+	put.Config = maps.Clone(live.Config)
+	if put.Config == nil {
+		put.Config = make(map[string]string)
 	}
 	put.Config["user.lxm.managed"] = "true"
 	// The manifest reference is re-recorded on every update so the imageMatches
@@ -606,9 +655,8 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*provide
 		put.Config["user.lxm.user"] = manifest.User
 	}
 	if len(manifest.Groups) > 0 {
-		grps := make([]string, len(manifest.Groups))
-		copy(grps, manifest.Groups)
-		sort.Strings(grps)
+		grps := slices.Clone(manifest.Groups)
+		slices.Sort(grps)
 		put.Config["user.lxm.groups"] = strings.Join(grps, ",")
 	} else {
 		delete(put.Config, "user.lxm.groups")
@@ -678,29 +726,17 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*provide
 	for dev, props := range live.Devices {
 		if dev == "root" {
 			if manifest.Limits == nil || manifest.Limits.Disk == "" {
-				devCopy := make(map[string]string)
-				for k, v := range props {
-					devCopy[k] = v
-				}
-				put.Devices[dev] = devCopy
+				put.Devices[dev] = maps.Clone(props)
 			}
 			continue
 		}
 		if props["type"] != "disk" && props["type"] != "nic" {
-			devCopy := make(map[string]string)
-			for k, v := range props {
-				devCopy[k] = v
-			}
-			put.Devices[dev] = devCopy
+			put.Devices[dev] = maps.Clone(props)
 			continue
 		}
 		// Disk devices: preserve only foreign ones (no mount* / disk-* prefix).
 		if props["type"] == "disk" && !strings.HasPrefix(dev, "mount") && !strings.HasPrefix(dev, "disk-") {
-			devCopy := make(map[string]string)
-			for k, v := range props {
-				devCopy[k] = v
-			}
-			put.Devices[dev] = devCopy
+			put.Devices[dev] = maps.Clone(props)
 		}
 	}
 
@@ -734,7 +770,7 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot) (*provide
 		}
 		parent := n.Parent
 		if parent == "" {
-			parent = "lxdbr0"
+			parent = defaultBridgeForProvider(manifest, p)
 		}
 		props := map[string]string{
 			"type":    "nic",
@@ -786,21 +822,15 @@ func buildDiskDevice(d config.DiskConfig) map[string]string {
 }
 
 func isTypeChange(diffs []FieldDiff) bool {
-	for _, d := range diffs {
-		if d.Field == "type" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(diffs, func(d FieldDiff) bool {
+		return d.Field == "type"
+	})
 }
 
 func hasVMConfigDiff(diffs []FieldDiff) bool {
-	for _, d := range diffs {
-		if d.Field == "boot.mode" || d.Field == "limits.memory.hugepages" || d.Field == "raw.qemu" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(diffs, func(d FieldDiff) bool {
+		return d.Field == "boot.mode" || d.Field == "limits.memory.hugepages" || d.Field == "raw.qemu"
+	})
 }
 
 func isDiskShrink(oldSizeStr, newSizeStr string) bool {
@@ -816,11 +846,11 @@ func isDiskShrink(oldSizeStr, newSizeStr string) bool {
 }
 
 func sortMounts(mounts []config.Mount) {
-	sort.Slice(mounts, func(i, j int) bool {
-		if mounts[i].Path != mounts[j].Path {
-			return mounts[i].Path < mounts[j].Path
+	slices.SortFunc(mounts, func(a, b config.Mount) int {
+		if c := cmp.Compare(a.Path, b.Path); c != 0 {
+			return c
 		}
-		return mounts[i].Source < mounts[j].Source
+		return cmp.Compare(a.Source, b.Source)
 	})
 }
 
@@ -846,7 +876,11 @@ func areMountsEqual(manifestMounts, liveMounts []config.Mount) bool {
 	return true
 }
 
-func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume) ([]FieldDiff, bool, []VolumeOp, error) {
+func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[string]map[string]*provider.StorageVolume, prov ...string) ([]FieldDiff, bool, []VolumeOp, error) {
+	p := ""
+	if len(prov) > 0 {
+		p = prov[0]
+	}
 	var diffs []FieldDiff
 	requiresRecreate := false
 	var volumeOps []VolumeOp
@@ -885,7 +919,7 @@ func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[s
 	liveGroups := live.Config["user.lxm.groups"]
 	desiredGroups := ""
 	if len(manifest.Groups) > 0 {
-		sort.Strings(manifest.Groups)
+		slices.Sort(manifest.Groups)
 		desiredGroups = strings.Join(manifest.Groups, ",")
 	}
 	if desiredGroups != liveGroups {
@@ -983,7 +1017,8 @@ func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[s
 	}
 
 	liveNetworks := getLiveNetworks(live)
-	if !reflect.DeepEqual(manifest.Networks, liveNetworks) {
+	normManifestNets := normalizeNetworks(manifest.Networks, manifest, p)
+	if !reflect.DeepEqual(normManifestNets, liveNetworks) {
 		diffs = append(diffs, FieldDiff{
 			Field: "networks",
 			Old:   liveNetworks,
@@ -1333,8 +1368,9 @@ func getLiveDisks(live *InstanceSnapshot, volumes map[string]map[string]*provide
 		if devProps["type"] != "disk" || !strings.HasPrefix(devName, "disk-") {
 			continue
 		}
+		name, _ := strings.CutPrefix(devName, "disk-")
 		d := config.DiskConfig{
-			Name:     strings.TrimPrefix(devName, "disk-"),
+			Name:     name,
 			Pool:     devProps["pool"],
 			Path:     devProps["path"],
 			Source:   devProps["source"],
@@ -1351,7 +1387,9 @@ func getLiveDisks(live *InstanceSnapshot, volumes map[string]map[string]*provide
 		}
 		disks = append(disks, d)
 	}
-	sort.Slice(disks, func(i, j int) bool { return disks[i].Name < disks[j].Name })
+	slices.SortFunc(disks, func(a, b config.DiskConfig) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
 	return disks
 }
 
@@ -1382,8 +1420,8 @@ func getLiveNetworks(live *InstanceSnapshot) []config.NetworkConfig {
 			})
 		}
 	}
-	sort.Slice(nets, func(i, j int) bool {
-		return nets[i].Name < nets[j].Name
+	slices.SortFunc(nets, func(a, b config.NetworkConfig) int {
+		return cmp.Compare(a.Name, b.Name)
 	})
 	return nets
 }

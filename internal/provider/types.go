@@ -66,8 +66,8 @@ type InstanceState struct {
 	Disk       map[string]InstanceStateDisk    `json:"disk,omitempty"`
 	Memory     InstanceStateMemory             `json:"memory,omitempty"`
 	Network    map[string]InstanceStateNetwork `json:"network,omitempty"`
-	Pid        int64                           `json:"pid,omitempty"`
-	Processes  int64                           `json:"processes,omitempty"`
+	Pid        int64                           `json:"pid,omitzero"`
+	Processes  int64                           `json:"processes,omitzero"`
 	CPU        InstanceStateCPU                `json:"cpu,omitempty"`
 }
 
@@ -272,7 +272,7 @@ type InstanceCreateRequest struct {
 	Config      map[string]string            `json:"config"`
 	Devices     map[string]map[string]string `json:"devices"`
 	Profiles    []string                     `json:"profiles,omitempty"`
-	Ephemeral   bool                         `json:"ephemeral,omitempty"`
+	Ephemeral   bool                         `json:"ephemeral,omitzero"`
 }
 
 type InstanceUpdateRequest struct {

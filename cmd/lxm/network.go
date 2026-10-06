@@ -91,7 +91,8 @@ func computeNetworkPlan(ctx context.Context, svc provider.Driver, loaded []*conf
 	for n := range live.Networks {
 		liveNetNames[n] = true
 	}
-	nicWarnings, err := network.CheckInstances(loaded, fleet, liveNetNames)
+	provType := resolveProviderType(nil, svc, loaded)
+	nicWarnings, err := network.CheckInstancesWithProvider(loaded, fleet, liveNetNames, provType)
 	if err != nil {
 		return nil, nil, &exitError{code: 3, err: err}
 	}

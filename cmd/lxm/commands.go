@@ -137,7 +137,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				return &exitError{code: 4, err: fmt.Errorf("listing local image aliases: %w", err)}
 			}
 
-			reconciler := plan.NewReconciler()
+			reconciler := plan.NewReconcilerWithProvider(resolveProviderType(opts, svc, loaded))
 			hasRebuild := svc.HasExtension("instances_rebuild")
 
 			combinedPlan := &plan.Plan{
@@ -324,13 +324,14 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				hasRebuild = svc.HasExtension("instances_rebuild")
 			}
 
-			reconciler := plan.NewReconciler()
+			provType := resolveProviderType(opts, svc, loaded)
+			reconciler := plan.NewReconcilerWithProvider(provType)
 			combinedPlan := &plan.Plan{
 				Schema: "lxm/plan/v1",
 				Steps:  []plan.Step{},
 			}
 
-			imageRemotes, err := config.EffectiveImageRemotesForProvider(resolveProviderType(opts, svc, loaded), loaded)
+			imageRemotes, err := config.EffectiveImageRemotesForProvider(provType, loaded)
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
@@ -443,8 +444,9 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				hasRebuild = svc.HasExtension("instances_rebuild")
 			}
 
-			reconciler := plan.NewReconciler()
-			imageRemotes, err := config.EffectiveImageRemotesForProvider(resolveProviderType(opts, svc, []*config.Config{conf}), []*config.Config{conf})
+			provType := resolveProviderType(opts, svc, []*config.Config{conf})
+			reconciler := plan.NewReconcilerWithProvider(provType)
+			imageRemotes, err := config.EffectiveImageRemotesForProvider(provType, []*config.Config{conf})
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
@@ -576,10 +578,10 @@ func newStatusCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 			ip, _ := svc.GetIP(ctx, name)
 			recipeHashes := make(map[string]string)
 			for k, v := range inst.Config {
-				if strings.HasPrefix(k, "user.lxm.recipe.") && strings.HasSuffix(k, ".hash") {
-					rName := strings.TrimPrefix(k, "user.lxm.recipe.")
-					rName = strings.TrimSuffix(rName, ".hash")
-					recipeHashes[rName] = v
+				if rName, ok := strings.CutPrefix(k, "user.lxm.recipe."); ok {
+					if rName, ok = strings.CutSuffix(rName, ".hash"); ok {
+						recipeHashes[rName] = v
+					}
 				}
 			}
 
@@ -615,11 +617,11 @@ func parseEnvVars(envSlice []string) (map[string]string, error) {
 	}
 	m := make(map[string]string)
 	for _, item := range envSlice {
-		parts := strings.SplitN(item, "=", 2)
-		if len(parts) != 2 {
+		key, val, ok := strings.Cut(item, "=")
+		if !ok {
 			return nil, fmt.Errorf("invalid environment variable format %q (expected KEY=VAL)", item)
 		}
-		m[parts[0]] = parts[1]
+		m[key] = val
 	}
 	if err := recipe.ValidateEnvKeys(m); err != nil {
 		return nil, err
@@ -839,8 +841,7 @@ func newSnapshotCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Wri
 				if olderThanStr != "" {
 					if d, err := time.ParseDuration(olderThanStr); err == nil {
 						retentionDuration = d
-					} else if strings.HasSuffix(olderThanStr, "d") {
-						daysStr := strings.TrimSuffix(olderThanStr, "d")
+					} else if daysStr, ok := strings.CutSuffix(olderThanStr, "d"); ok {
 						if days, err := strconv.Atoi(daysStr); err == nil {
 							retentionDuration = time.Duration(days) * 24 * time.Hour
 						}
@@ -1012,12 +1013,10 @@ func isHostKeyBypassArg(arg string) bool {
 			clean = clean[:sp] + "=" + strings.TrimSpace(clean[sp+1:])
 		}
 	}
-	if strings.HasPrefix(clean, "stricthostkeychecking=") {
-		val := strings.TrimPrefix(clean, "stricthostkeychecking=")
+	if val, ok := strings.CutPrefix(clean, "stricthostkeychecking="); ok {
 		return val == "no" || val == "off" || val == "false" || val == "0"
 	}
-	if strings.HasPrefix(clean, "userknownhostsfile=") {
-		val := strings.TrimPrefix(clean, "userknownhostsfile=")
+	if val, ok := strings.CutPrefix(clean, "userknownhostsfile="); ok {
 		return val == "/dev/null" || val == "none"
 	}
 	return false
@@ -1051,7 +1050,7 @@ func sshUserOptions(args []string) map[string]bool {
 				mark("Port")
 			}
 		case strings.HasPrefix(a, "-o"):
-			opt := strings.TrimPrefix(a, "-o")
+			opt, _ := strings.CutPrefix(a, "-o")
 			if opt == "" && i+1 < len(args) {
 				opt = args[i+1]
 				i++
@@ -1059,10 +1058,12 @@ func sshUserOptions(args []string) map[string]bool {
 			opt = strings.TrimSpace(opt)
 			// Accept both KEY=VALUE and the config-file space form KEY VALUE.
 			var key string
-			if eq := strings.IndexByte(opt, '='); eq > 0 {
-				key = opt[:eq]
-			} else if sp := strings.IndexAny(opt, " \t"); sp > 0 {
-				key = opt[:sp]
+			if k, _, ok := strings.Cut(opt, "="); ok && k != "" {
+				key = k
+			} else if k, _, ok := strings.Cut(opt, " "); ok && k != "" {
+				key = k
+			} else if k, _, ok := strings.Cut(opt, "\t"); ok && k != "" {
+				key = k
 			}
 			mark(key)
 		}
@@ -1098,7 +1099,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 					return &exitError{code: 2, err: fmt.Errorf("interactive command ssh rejects --format json")}
 				}
 				if strings.HasPrefix(arg, "--format=") {
-					if strings.EqualFold(strings.TrimPrefix(arg, "--format="), "json") {
+					if val, _ := strings.CutPrefix(arg, "--format="); strings.EqualFold(val, "json") {
 						return &exitError{code: 2, err: fmt.Errorf("interactive command ssh rejects --format json")}
 					}
 					i++
@@ -1122,7 +1123,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 					continue
 				}
 				if strings.HasPrefix(arg, "--user=") {
-					user = strings.TrimPrefix(arg, "--user=")
+					user, _ = strings.CutPrefix(arg, "--user=")
 					i++
 					continue
 				}
@@ -1132,12 +1133,12 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 					continue
 				}
 				if strings.HasPrefix(arg, "--run-as=") {
-					user = strings.TrimPrefix(arg, "--run-as=")
+					user, _ = strings.CutPrefix(arg, "--run-as=")
 					i++
 					continue
 				}
 				if strings.HasPrefix(arg, "--remote=") {
-					opts.remote = strings.TrimPrefix(arg, "--remote=")
+					opts.remote, _ = strings.CutPrefix(arg, "--remote=")
 					i++
 					continue
 				}
@@ -1147,7 +1148,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 					continue
 				}
 				if strings.HasPrefix(arg, "--provider=") {
-					opts.provider = strings.TrimPrefix(arg, "--provider=")
+					opts.provider, _ = strings.CutPrefix(arg, "--provider=")
 					i++
 					continue
 				}
@@ -1157,7 +1158,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 					continue
 				}
 				if strings.HasPrefix(arg, "--project=") {
-					opts.project = strings.TrimPrefix(arg, "--project=")
+					opts.project, _ = strings.CutPrefix(arg, "--project=")
 					i++
 					continue
 				}
@@ -1167,7 +1168,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 					continue
 				}
 				if strings.HasPrefix(arg, "--target=") {
-					opts.target = strings.TrimPrefix(arg, "--target=")
+					opts.target, _ = strings.CutPrefix(arg, "--target=")
 					i++
 					continue
 				}
@@ -1177,7 +1178,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 					continue
 				}
 				if strings.HasPrefix(arg, "-i=") || strings.HasPrefix(arg, "--identity=") {
-					identity = strings.SplitN(arg, "=", 2)[1]
+					_, identity, _ = strings.Cut(arg, "=")
 					i++
 					continue
 				}
@@ -1280,8 +1281,7 @@ func newSSHCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, 
 						hasHostKeyBypass = true
 						break
 					}
-				} else if strings.HasPrefix(a, "-o") {
-					opt := strings.TrimPrefix(a, "-o")
+				} else if opt, ok := strings.CutPrefix(a, "-o"); ok {
 					if isHostKeyBypassArg(opt) {
 						hasHostKeyBypass = true
 						break
@@ -1493,15 +1493,137 @@ groups: [dev]
 	return cmd
 }
 
+var addIncludeFunc = config.AddIncludeToYAMLFile
+
 func newIncludeCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, logger *slog.Logger) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "include <config_dir> <include_file>",
 		Short: "Add an include directive to all configs in a directory",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			configDir := args[0]
+			includeFile := args[1]
+
+			info, err := os.Stat(configDir)
+			if err != nil {
+				return &exitError{code: 5, err: fmt.Errorf("config directory %q not found: %w", configDir, err)}
+			}
+			if !info.IsDir() {
+				return &exitError{code: 2, err: fmt.Errorf("%q is not a directory", configDir)}
+			}
+
+			files, err := discoverYAMLFiles(configDir, opts.includeHidden, logger)
+			if err != nil {
+				return &exitError{code: 3, err: fmt.Errorf("reading directory %q: %w", configDir, err)}
+			}
+
+			var manifestFiles []string
+			for _, file := range files {
+				cleanFile := filepath.Clean(file)
+				cleanInc := filepath.Clean(includeFile)
+				if cleanFile == cleanInc || filepath.Base(file) == filepath.Base(includeFile) {
+					continue
+				}
+				probe, err := probeManifestFile(file)
+				if err != nil {
+					continue
+				}
+				// Skip unrelated YAML (e.g. mkdocs.yml, Taskfile.yml): only process lxm manifests
+				if probe.Schema == "" && probe.Name == "" && probe.Image == "" && !probe.Base {
+					continue
+				}
+				manifestFiles = append(manifestFiles, file)
+			}
+
+			type pendingOp struct {
+				file    string
+				changed bool
+			}
+			var ops []pendingOp
+			for _, file := range manifestFiles {
+				has, err := config.HasIncludeInYAMLFile(file, includeFile)
+				if err != nil {
+					return &exitError{code: 3, err: fmt.Errorf("validating %q: %w", file, err)}
+				}
+				ops = append(ops, pendingOp{file: file, changed: !has})
+			}
+
+			// Pre-validate write access and capture original contents for atomic rollback
+			origContents := make(map[string][]byte)
+			if !opts.dryRun {
+				for _, op := range ops {
+					if !op.changed {
+						continue
+					}
+					info, err := os.Stat(op.file)
+					if err != nil {
+						return &exitError{code: 3, err: fmt.Errorf("stat %q: %w", op.file, err)}
+					}
+					if info.Mode().Perm()&0200 == 0 {
+						return &exitError{code: 3, err: fmt.Errorf("file %q is read-only", op.file)}
+					}
+					f, err := os.OpenFile(op.file, os.O_WRONLY, 0)
+					if err != nil {
+						return &exitError{code: 3, err: fmt.Errorf("verifying write permission for %q: %w", op.file, err)}
+					}
+					_ = f.Close()
+
+					data, err := os.ReadFile(op.file)
+					if err != nil {
+						return &exitError{code: 3, err: fmt.Errorf("reading original content of %q: %w", op.file, err)}
+					}
+					origContents[op.file] = data
+				}
+			}
+
+			var modified []string
+			var resItems []output.ResultItem
+
+			for _, op := range ops {
+				if !opts.dryRun && op.changed {
+					_, err := addIncludeFunc(op.file, includeFile)
+					if err != nil {
+						// Roll back any files modified in this batch
+						for _, m := range modified {
+							if orig, ok := origContents[m]; ok {
+								//nolint:gosec // G306: rollback restores original manifest bytes with standard readable config perms (0644)
+								_ = os.WriteFile(m, orig, 0644)
+							}
+						}
+						return &exitError{code: 3, err: fmt.Errorf("updating %q: %w", op.file, err)}
+					}
+				}
+				if op.changed {
+					modified = append(modified, op.file)
+				}
+				resItems = append(resItems, output.ResultItem{
+					Container: filepath.Base(op.file),
+					Action:    "include",
+					Changed:   op.changed,
+					OK:        true,
+				})
+			}
+
+			if opts.format == "text" {
+				prefix := "Added"
+				if opts.dryRun {
+					prefix = "[DRY RUN] Would add"
+				}
+				if len(modified) == 0 {
+					fmt.Fprintf(stdout, "No files modified in %s (include already present or no configs found)\n", configDir)
+				} else {
+					fmt.Fprintf(stdout, "%s include %q to %d file(s) in %s:\n", prefix, includeFile, len(modified), configDir)
+					for _, f := range modified {
+						fmt.Fprintf(stdout, "  - %s\n", f)
+					}
+				}
+			}
+
+			lastCommandResults = resItems
 			return nil
 		},
 	}
+	return cmd
 }
 
 func newCompileCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer, logger *slog.Logger) *cobra.Command {
@@ -1759,8 +1881,7 @@ func newDoctorCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 // other plan error is a manifest/config-level error (exit 3, CONFIG_ERROR) —
 // STORAGE-SPEC §7.6/§11.
 func planComputeError(err error) error {
-	var mve *plan.MissingVolumeError
-	if errors.As(err, &mve) {
+	if _, ok := errors.AsType[*plan.MissingVolumeError](err); ok {
 		return &exitError{code: 4, err: err}
 	}
 	return &exitError{code: 3, err: err}
@@ -1837,33 +1958,32 @@ func fetchLiveSnapshots(ctx context.Context, svc provider.Driver, configs []*con
 		}
 	}
 
-	result := make(map[string]*plan.InstanceSnapshot)
+	result := make(map[string]*plan.InstanceSnapshot, len(instances))
 	for _, full := range instances {
 		instName := full.Name
-		inst, etag, err := svc.GetInstance(ctx, instName)
-		if err != nil || inst == nil {
-			inst = &full
-			etag = ""
-		}
-		instType := string(inst.Type)
-		if instType == "" {
-			instType = string(full.Type)
-		}
+		instType := string(full.Type)
 		if instType == "" {
 			instType = "container"
 		}
+		etag := full.ETag
+		if etag == "" {
+			_, liveETag, err := svc.GetInstance(ctx, instName)
+			if err == nil {
+				etag = liveETag
+			}
+		}
 		result[instName] = &plan.InstanceSnapshot{
-			Name:            inst.Name,
+			Name:            full.Name,
 			Type:            instType,
-			Status:          inst.Status,
-			StatusCode:      inst.StatusCode,
-			Architecture:    inst.Architecture,
-			Config:          inst.Config,
+			Status:          full.Status,
+			StatusCode:      full.StatusCode,
+			Architecture:    full.Architecture,
+			Config:          full.Config,
 			ExpandedConfig:  full.ExpandedConfig,
-			Devices:         inst.Devices,
+			Devices:         full.Devices,
 			ExpandedDevices: full.ExpandedDevices,
-			Profiles:        inst.Profiles,
-			Ephemeral:       inst.Ephemeral,
+			Profiles:        full.Profiles,
+			Ephemeral:       full.Ephemeral,
 			ETag:            etag,
 			HasSnapshots:    len(full.Snapshots) > 0,
 		}
@@ -1919,14 +2039,41 @@ func computePlanSummary(steps []plan.Step) plan.PlanSummary {
 // resolveDriverFunc connects to a provider driver from resolved targeting options.
 type resolveDriverFunc func(opts remote.ResolveOptions) (provider.Driver, error)
 
+func collectManifestRemotes(configs []*config.Config) map[string]remote.RemoteEntry {
+	var remotes map[string]remote.RemoteEntry
+	for _, c := range configs {
+		if c == nil || len(c.Remotes) == 0 {
+			continue
+		}
+		if remotes == nil {
+			remotes = make(map[string]remote.RemoteEntry)
+		}
+		for name, r := range c.Remotes {
+			remotes[name] = remote.RemoteEntry{
+				Address:           r.Address,
+				Provider:          provider.ProviderType(r.Provider),
+				Project:           r.Project,
+				Protocol:          r.Protocol,
+				Insecure:          r.Insecure,
+				ServerCertificate: r.ServerCertificate,
+				ServerFingerprint: r.ServerFingerprint,
+			}
+		}
+	}
+	return remotes
+}
+
 func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opts *cmdOptions, resolve resolveDriverFunc) (provider.Driver, error) {
+	manifestRemotes := collectManifestRemotes(configs)
+
 	// 1. CLI flags take highest precedence
 	if opts != nil && (opts.provider != "" || opts.remote != "" || opts.target != "" || opts.project != "") {
 		resOpts := remote.ResolveOptions{
-			Provider:   provider.ProviderType(opts.provider),
-			RemoteName: opts.remote,
-			TargetNode: opts.target,
-			Project:    opts.project,
+			Provider:        provider.ProviderType(opts.provider),
+			RemoteName:      opts.remote,
+			TargetNode:      opts.target,
+			Project:         opts.project,
+			ManifestRemotes: manifestRemotes,
 		}
 		d, err := resolve(resOpts)
 		if err != nil {
@@ -1967,10 +2114,11 @@ func resolveFleetService(baseGetter serviceGetter, configs []*config.Config, opt
 	// If any manifest targeting parameter was found across the fleet
 	if manifestRemote != "" || manifestProvider != "" || manifestProject != "" || manifestTarget != "" {
 		resOpts := remote.ResolveOptions{
-			Provider:   provider.ProviderType(manifestProvider),
-			RemoteName: manifestRemote,
-			TargetNode: manifestTarget,
-			Project:    manifestProject,
+			Provider:        provider.ProviderType(manifestProvider),
+			RemoteName:      manifestRemote,
+			TargetNode:      manifestTarget,
+			Project:         manifestProject,
+			ManifestRemotes: manifestRemotes,
 		}
 		d, err := resolve(resOpts)
 		if err != nil {

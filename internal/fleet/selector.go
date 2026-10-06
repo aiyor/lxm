@@ -31,8 +31,7 @@ func NewSelector(opts SelectorOpts) (*Selector, error) {
 
 	// 1. Process groups (OR across group values)
 	for _, g := range opts.Groups {
-		parts := strings.Split(g, ",")
-		for _, p := range parts {
+		for p := range strings.SplitSeq(g, ",") {
 			clean := strings.TrimSpace(p)
 			if clean != "" {
 				sel.groupSet[clean] = true
@@ -42,8 +41,7 @@ func NewSelector(opts SelectorOpts) (*Selector, error) {
 
 	// 2. Process exclude groups
 	for _, eg := range opts.ExcludeGroups {
-		parts := strings.Split(eg, ",")
-		for _, p := range parts {
+		for p := range strings.SplitSeq(eg, ",") {
 			clean := strings.TrimSpace(p)
 			if clean != "" {
 				sel.excludeGroupSet[clean] = true

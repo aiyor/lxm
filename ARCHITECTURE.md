@@ -134,7 +134,7 @@ Current tagging status across every resource class:
 | Instances (containers/VMs) | `user.lxm.managed=true` ✓ | `lxm list` (`internal/fleet/inventory.go`) |
 | Networks (vswitch bridges) | `user.lxm.managed=true` ✓ | plan reconcile only |
 | Network ACLs (`lxm-<name>`) | `user.lxm.managed=true` ✓ | plan reconcile only |
-| NIC devices | `user.lxm.managed=true` in the legacy path (`internal/lxm/devices.go`); **omitted in the plan path** (`internal/plan/plan.go`) | — |
+| NIC devices | Managed as part of instance configuration (`internal/plan/plan.go`) | — |
 | Mount devices | **no marker** | — |
 | Storage volumes (disks) | **no marker** (`config: {size}` only) | — |
 | Snapshots | name-prefix only (`user.lxm.snap.<inst>-<ts>`) | `lxm snapshot gc --prefix` |

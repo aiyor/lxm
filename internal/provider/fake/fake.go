@@ -69,6 +69,7 @@ type FakeDriver struct {
 	GetNetworkACLsFunc          func() ([]provider.NetworkACL, error)
 	GetImageAliasesFunc         func() ([]provider.ImageAlias, error)
 	CopyRemoteImageFunc         func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error
+	CreateInstanceFileFunc      func(name, path string, content io.Reader, mode int, uid, gid int64) error
 }
 
 var _ provider.Driver = (*FakeDriver)(nil)
@@ -889,6 +890,10 @@ func (f *FakeDriver) InteractiveExecInstance(ctx context.Context, name string, c
 func (f *FakeDriver) CreateInstanceFile(ctx context.Context, name string, path string, content io.Reader, mode int, uid, gid int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.CreateInstanceFileFunc != nil {
+		return f.CreateInstanceFileFunc(name, path, content, mode, uid, gid)
+	}
 
 	if f.Files[name] == nil {
 		f.Files[name] = make(map[string][]byte)

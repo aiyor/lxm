@@ -113,3 +113,40 @@ remotes:
 		t.Errorf("expected merged 2 remotes, got %d", len(conf.Remotes))
 	}
 }
+
+func TestProviderConfig_ServerCertAndFingerprint(t *testing.T) {
+	manifest := `schema: lxm/config/v2
+name: secure-remote-instance
+image: images:ubuntu/24.04
+provider: incus
+remote: secure-node
+remotes:
+  secure-node:
+    address: https://10.0.0.10:8443
+    provider: incus
+    project: default
+    server_certificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----"
+    server_fingerprint: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+`
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "secure.yaml")
+	if err := os.WriteFile(path, []byte(manifest), 0644); err != nil {
+		t.Fatalf("writing temp manifest: %v", err)
+	}
+
+	conf, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed for manifest with server_certificate and server_fingerprint: %v", err)
+	}
+
+	rem, ok := conf.Remotes["secure-node"]
+	if !ok {
+		t.Fatalf("expected remote 'secure-node' in config")
+	}
+	if rem.ServerCertificate != "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----" {
+		t.Errorf("server_certificate mismatch: got %q", rem.ServerCertificate)
+	}
+	if rem.ServerFingerprint != "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" {
+		t.Errorf("server_fingerprint mismatch: got %q", rem.ServerFingerprint)
+	}
+}

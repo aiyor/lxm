@@ -1,7 +1,6 @@
 package apply_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/aiyor/lxm/internal/apply"
@@ -11,7 +10,7 @@ import (
 )
 
 func TestApply_NetworkPhase_BeforeInstances(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -59,7 +58,7 @@ func TestApply_NetworkPhase_BeforeInstances(t *testing.T) {
 }
 
 func TestApply_NetworkFailure_AbortsBeforeInstances(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	// Pre-create vmbr0 so the create_vswitch step fails ("already exists").
 	if err := driver.CreateNetwork(ctx, provider.NetworkCreateRequest{Name: "vmbr0", Type: "bridge"}); err != nil {
@@ -95,7 +94,7 @@ func TestApply_NetworkFailure_AbortsBeforeInstances(t *testing.T) {
 }
 
 func TestApply_DryRun_NoNetworkMutation(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -122,7 +121,7 @@ func TestApply_DryRun_NoNetworkMutation(t *testing.T) {
 }
 
 func TestApply_UpdateACL_UsesFreshETag(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateNetworkACL(ctx, provider.NetworkACLCreateRequest{
 		Name:   "lxm-vmbr0",

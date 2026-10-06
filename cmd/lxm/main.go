@@ -64,35 +64,25 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 	lastApplyReport = nil
 	lastCommandResults = nil
 
-	var once sync.Once
-	var cachedSvc provider.Driver
-	var svcErr error
 	var opts *cmdOptions
 
-	getSvc := func() (provider.Driver, error) {
+	getSvc := sync.OnceValues(func() (provider.Driver, error) {
 		if svc != nil {
 			return svc, nil
 		}
-		once.Do(func() {
-			resOpts := remote.ResolveOptions{}
-			if opts != nil {
-				resOpts.Provider = provider.ProviderType(opts.provider)
-				resOpts.RemoteName = opts.remote
-				resOpts.TargetNode = opts.target
-				resOpts.Project = opts.project
-			}
-			d, err := remote.ResolveDriver(resOpts)
-			if err != nil {
-				svcErr = &exitError{code: 4, err: fmt.Errorf("failed to connect to provider: %w", err)}
-				return
-			}
-			cachedSvc = d
-		})
-		if svcErr != nil {
-			return nil, svcErr
+		resOpts := remote.ResolveOptions{}
+		if opts != nil {
+			resOpts.Provider = provider.ProviderType(opts.provider)
+			resOpts.RemoteName = opts.remote
+			resOpts.TargetNode = opts.target
+			resOpts.Project = opts.project
 		}
-		return cachedSvc, nil
-	}
+		d, err := remote.ResolveDriver(resOpts)
+		if err != nil {
+			return nil, &exitError{code: 4, err: fmt.Errorf("failed to connect to provider: %w", err)}
+		}
+		return d, nil
+	})
 
 	rootCmd, opts := newRootCmd(ctx, stdout, stderr, getSvc, logger)
 	rootCmd.SetArgs(args)
@@ -121,8 +111,7 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 		finalErr = ctx.Err()
 		fmt.Fprintf(stderr, "Error: operation interrupted: %v\n", ctx.Err())
 	} else if err != nil {
-		var ee *exitError
-		if errors.As(err, &ee) {
+		if ee, ok := errors.AsType[*exitError](err); ok {
 			exitCode = ee.code
 			finalErr = ee.err
 			if ee.err != nil {

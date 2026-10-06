@@ -2,8 +2,9 @@ package plan
 
 import (
 	"fmt"
+	"maps"
 	"net"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,7 +20,7 @@ type NetworkStep struct {
 	Name      string                            `json:"name"`
 	Changed   bool                              `json:"changed"`
 	Diff      []FieldDiff                       `json:"diff,omitempty"`
-	Tightened bool                              `json:"tightened,omitempty"` // update_acl narrows/removes allows (conntrack warning)
+	Tightened bool                              `json:"tightened,omitzero"` // update_acl narrows/removes allows (conntrack warning)
 	ACLPost   *provider.NetworkACLCreateRequest `json:"acl_post,omitempty"`
 	ACLPut    *provider.NetworkACLUpdateRequest `json:"acl_put,omitempty"`
 	NetPost   *provider.NetworkCreateRequest    `json:"network_post,omitempty"`
@@ -66,19 +67,45 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 	np := &NetworkPlan{Steps: []NetworkStep{}, Warnings: []string{}}
 
 	// For OVN vswitches, auto-resolve parent DNS resolver /32 if not already populated.
-	for _, vs := range f.VSwitches {
+	vswitchesToCompile := make([]*network.VSwitch, len(f.VSwitches))
+	vswitchCopyNeeded := false
+	for i, vs := range f.VSwitches {
 		if vs.EffectiveType() == "ovn" {
 			resolvers, warn := deriveDNSResolvers(vs, live)
 			if len(vs.DNSResolvers) == 0 && len(resolvers) > 0 {
-				vs.DNSResolvers = resolvers
+				vsCopy := *vs
+				vsCopy.DNSResolvers = resolvers
+				vswitchesToCompile[i] = &vsCopy
+				vswitchCopyNeeded = true
+			} else {
+				vswitchesToCompile[i] = vs
 			}
 			if warn != "" {
 				np.Warnings = append(np.Warnings, warn)
 			}
+		} else {
+			vswitchesToCompile[i] = vs
 		}
 	}
 
-	compiled := network.Compile(f)
+	fleetToCompile := f
+	if vswitchCopyNeeded {
+		fCopy := *f
+		fCopy.VSwitches = vswitchesToCompile
+		fCopy.ByName = make(map[string]*network.VSwitch, len(f.ByName))
+		for _, vs := range vswitchesToCompile {
+			fCopy.ByName[vs.Name] = vs
+		}
+		fCopy.ByGroup = make(map[string][]*network.VSwitch, len(f.ByGroup))
+		for _, vs := range vswitchesToCompile {
+			if vs.Status != "absent" && vs.Group != "" {
+				fCopy.ByGroup[vs.Group] = append(fCopy.ByGroup[vs.Group], vs)
+			}
+		}
+		fleetToCompile = &fCopy
+	}
+
+	compiled := network.Compile(fleetToCompile)
 	for _, acl := range compiled {
 		if n := network.RejectRuleCount(acl); n > 256 {
 			np.Warnings = append(np.Warnings, fmt.Sprintf("ACL %q has %d reject rules (>256); consider fewer inter-group carve-outs", acl.Name, n))
@@ -258,16 +285,18 @@ func allowsRemoved(live *provider.NetworkACL, desired *provider.NetworkACLUpdate
 			liveKeys[allowRuleKey("egress", r)] = true
 		}
 	}
+	desiredKeys := make(map[string]bool)
 	for _, r := range desired.Ingress {
 		if r.Action == "allow" {
-			delete(liveKeys, allowRuleKey("ingress", r))
+			desiredKeys[allowRuleKey("ingress", r)] = true
 		}
 	}
 	for _, r := range desired.Egress {
 		if r.Action == "allow" {
-			delete(liveKeys, allowRuleKey("egress", r))
+			desiredKeys[allowRuleKey("egress", r)] = true
 		}
 	}
+	maps.DeleteFunc(liveKeys, func(k string, _ bool) bool { return desiredKeys[k] })
 	return len(liveKeys) > 0
 }
 
@@ -278,9 +307,9 @@ func allowRuleKey(dir string, r provider.NetworkACLRule) string {
 // buildNetworksPost constructs the create payload for a vswitch.
 func buildNetworksPost(vs *network.VSwitch) *provider.NetworkCreateRequest {
 	netType := vs.EffectiveType()
-	cfg := make(map[string]string)
-	for k, v := range vs.Config {
-		cfg[k] = v
+	cfg := maps.Clone(vs.Config)
+	if cfg == nil {
+		cfg = make(map[string]string)
 	}
 
 	description := ""
@@ -289,9 +318,9 @@ func buildNetworksPost(vs *network.VSwitch) *provider.NetworkCreateRequest {
 	}
 
 	if netType == "ovn" {
-		cfg := make(map[string]string)
-		for k, v := range vs.Config {
-			cfg[k] = v
+		cfg := maps.Clone(vs.Config)
+		if cfg == nil {
+			cfg = make(map[string]string)
 		}
 		cfg["network"] = vs.EffectiveParent()
 		cfg["ipv4.address"] = vs.IPv4
@@ -375,12 +404,7 @@ func checkImmutableDrift(vs *network.VSwitch, live *provider.Network) error {
 // aclReferenced reports whether the network's security.acls references the
 // given ACL name.
 func aclReferenced(live *provider.Network, name string) bool {
-	for _, n := range splitACLs(live.Config["security.acls"]) {
-		if n == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(splitACLs(live.Config["security.acls"]), name)
 }
 
 // foreignACLs returns the network's security.acls entries other than name.
@@ -391,13 +415,13 @@ func foreignACLs(live *provider.Network, name string) []string {
 			out = append(out, n)
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
 func splitACLs(s string) []string {
 	var out []string
-	for _, part := range strings.Split(s, ",") {
+	for part := range strings.SplitSeq(s, ",") {
 		part = strings.TrimSpace(part)
 		if part != "" {
 			out = append(out, part)
@@ -446,10 +470,7 @@ func vswitchDescription(vs *network.VSwitch) string {
 // vswitch: live mutable values preserved, lxm-managed keys reconciled,
 // foreign ACLs preserved verbatim.
 func desiredNetworkConfig(vs *network.VSwitch, live *provider.Network) map[string]string {
-	out := make(map[string]string)
-	for k, v := range live.Config {
-		out[k] = v
-	}
+	out := maps.Clone(live.Config)
 	for k, v := range vs.Config {
 		out[k] = v
 	}
@@ -477,7 +498,7 @@ func desiredNetworkConfig(vs *network.VSwitch, live *provider.Network) map[strin
 				names = append(names, n)
 			}
 		}
-		sort.Strings(names)
+		slices.Sort(names)
 		out["security.acls"] = strings.Join(names, ",")
 		out["security.acls.default.ingress.action"] = "reject"
 		out["security.acls.default.egress.action"] = "reject"
@@ -512,7 +533,7 @@ func diffNetworkConfig(live, desired map[string]string) []FieldDiff {
 			keys = append(keys, k)
 		}
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	var diff []FieldDiff
 	for _, k := range keys {
 		equal := live[k] == desired[k]

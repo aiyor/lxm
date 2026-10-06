@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -142,7 +143,7 @@ func TestRun_ApplyNoStartFlag(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("apply --no-start returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
-	inst, _, err := driver.GetInstance(context.Background(), "dev-box")
+	inst, _, err := driver.GetInstance(t.Context(), "dev-box")
 	if err != nil {
 		t.Fatalf("dev-box container should exist in driver server, got: %v", err)
 	}
@@ -158,7 +159,7 @@ func TestRun_ApplyETagDrift_JSONRetryable(t *testing.T) {
 	// rebuilt error entries from the single exit error with retryable
 	// hardcoded to false.
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "dev-box"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "dev-box"})
 	driver.UpdateInstanceFunc = func(name string, put provider.InstanceUpdateRequest, etag string) error {
 		return fmt.Errorf("ETag does not match: stale vs fresh. The configuration has been modified since this change began. Please retrieve the updated configuration before proceeding.")
 	}
@@ -209,7 +210,7 @@ func TestRun_ApplyInterrupt_EnvelopeKeepsInternalError(t *testing.T) {
 	// INTERNAL_ERROR entry, never with the report's per-container
 	// PROVIDER_ERROR/retryable entries (SPEC_RESULT code-to-exit mapping).
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "dev-box"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "dev-box"})
 	driver.UpdateInstanceFunc = func(name string, put provider.InstanceUpdateRequest, etag string) error {
 		return fmt.Errorf("ETag does not match: stale vs fresh. The configuration has been modified since this change began. Please retrieve the updated configuration before proceeding.")
 	}
@@ -218,7 +219,7 @@ func TestRun_ApplyInterrupt_EnvelopeKeepsInternalError(t *testing.T) {
 	cfgFile := filepath.Join(tmpDir, "dev.yaml")
 	_ = os.WriteFile(cfgFile, []byte("name: dev-box\nimage: ubuntu:22.04\nstatus: present\nuser: ubuntu\n"), 0644)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // pre-canceled: simulates an interrupt
 
 	var stdout, stderr bytes.Buffer
@@ -265,7 +266,7 @@ func TestRun_ApplyInterrupt_EnvelopeKeepsInternalError(t *testing.T) {
 
 func TestRun_RunEnvVars(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "dev-box"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "dev-box"})
 
 	tmpDir := t.TempDir()
 	scriptFile := filepath.Join(tmpDir, "test.sh")
@@ -290,7 +291,7 @@ func TestRun_ApplyNameSelectorAndRenameTo(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("apply with --name and --rename-to returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
-		if _, _, err := driver.GetInstance(context.Background(), "renamed-box"); err != nil {
+		if _, _, err := driver.GetInstance(t.Context(), "renamed-box"); err != nil {
 			t.Errorf("container renamed-box should have been created")
 		}
 	})
@@ -314,7 +315,7 @@ func TestRun_ApplyNameSelectorAndRenameTo(t *testing.T) {
 
 func TestRun_SSHInterspersedFlags(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	var stdout, stderr bytes.Buffer
 	// Test passing SSH flag -o after container name box1 with --dry-run
@@ -333,7 +334,7 @@ func TestRun_SSHInterspersedFlags(t *testing.T) {
 // -o StrictHostKeyChecking=no) must not gain the alias.
 func TestRun_SSHStrictInvocation_HostKeyAlias(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	// Strict verification path.
 	var stdout, stderr bytes.Buffer
@@ -382,7 +383,7 @@ func TestRun_SSHStrictInvocation_HostKeyAlias(t *testing.T) {
 // failed strict verification).
 func TestRun_SSHUserOverridesEffective(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	t.Run("user -o StrictHostKeyChecking=no replaces lxm default", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
@@ -507,7 +508,7 @@ func TestRun_SSHUserOverridesEffective(t *testing.T) {
 
 func TestRun_ListJSONFormat(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"list", "--format", "json"}, &stdout, &stderr, driver)
@@ -648,7 +649,7 @@ status: present
 		t.Fatalf("run(apply) returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
 
-	inst, _, err := driver.GetInstance(context.Background(), "dev-box")
+	inst, _, err := driver.GetInstance(t.Context(), "dev-box")
 	if err != nil {
 		t.Fatalf("expected instance dev-box created in driver server, got err: %v", err)
 	}
@@ -673,10 +674,10 @@ func TestRun_GroupFiltersSpaceAndEquals(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run(apply --group dev) returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
-	if _, _, err := driver.GetInstance(context.Background(), "dev-box"); err != nil {
+	if _, _, err := driver.GetInstance(t.Context(), "dev-box"); err != nil {
 		t.Errorf("dev-box should be created")
 	}
-	if _, _, err := driver.GetInstance(context.Background(), "prod-box"); err == nil {
+	if _, _, err := driver.GetInstance(t.Context(), "prod-box"); err == nil {
 		t.Errorf("prod-box should not be created under --group dev")
 	}
 
@@ -687,7 +688,7 @@ func TestRun_GroupFiltersSpaceAndEquals(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run(apply --group=prod) returned %d, want 0. Stderr: %s", code, stderr.String())
 	}
-	if _, _, err := driver.GetInstance(context.Background(), "prod-box"); err != nil {
+	if _, _, err := driver.GetInstance(t.Context(), "prod-box"); err != nil {
 		t.Errorf("prod-box should be created under --group=prod")
 	}
 }
@@ -735,7 +736,7 @@ func TestRun_Plan(t *testing.T) {
 
 func TestRun_ScriptAndRunAs(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	tmpDir := t.TempDir()
 	scriptFile := filepath.Join(tmpDir, "setup.sh")
@@ -762,7 +763,7 @@ func TestRun_ScriptAndRunAs(t *testing.T) {
 
 func TestRun_SnapshotAndRollback(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	t.Run("create_snapshot", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
@@ -843,14 +844,207 @@ func TestRun_CompileAndDoctor(t *testing.T) {
 func TestRun_Include(t *testing.T) {
 	driver := fake.New()
 	tmpDir := t.TempDir()
-	cfgFile := filepath.Join(tmpDir, "dev.yaml")
-	_ = os.WriteFile(cfgFile, []byte("name: dev-box\nimage: ubuntu:22.04\nstatus: present\n"), 0644)
 
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"include", tmpDir, "_base.yaml", "--dry-run"}, &stdout, &stderr, driver)
-	if code != 0 {
-		t.Errorf("include returned %d, want 0", code)
+	cfg1 := filepath.Join(tmpDir, "app1.yaml")
+	cfg2 := filepath.Join(tmpDir, "app2.yaml")
+
+	content1 := `schema: lxm/config/v2
+name: app1
+image: ubuntu:24.04
+`
+	content2 := `schema: lxm/config/v2
+name: app2
+image: ubuntu:24.04
+include:
+  - _base.yaml
+`
+	if err := os.WriteFile(cfg1, []byte(content1), 0644); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(cfg2, []byte(content2), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("dry-run does not modify file", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", tmpDir, "_base.yaml", "--dry-run"}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("include --dry-run failed with code %d: %s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "[DRY RUN] Would add include") {
+			t.Errorf("expected dry run message, got: %s", stdout.String())
+		}
+		hasInc, err := config.HasIncludeInYAMLFile(cfg1, "_base.yaml")
+		if err != nil || hasInc {
+			t.Errorf("cfg1 should not have _base.yaml yet after dry-run, err: %v, has: %v", err, hasInc)
+		}
+	})
+
+	t.Run("include adds directive and outputs text", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", tmpDir, "_base.yaml"}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("include failed with code %d: %s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Added include \"_base.yaml\" to 1 file(s)") {
+			t.Errorf("expected 1 file updated, got: %s", stdout.String())
+		}
+
+		// Verify file was updated
+		hasInc, err := config.HasIncludeInYAMLFile(cfg1, "_base.yaml")
+		if err != nil || !hasInc {
+			t.Errorf("cfg1 should have _base.yaml include, err: %v, has: %v", err, hasInc)
+		}
+	})
+
+	t.Run("include is idempotent", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", tmpDir, "_base.yaml"}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("include failed with code %d: %s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "No files modified") {
+			t.Errorf("expected no files modified, got: %s", stdout.String())
+		}
+	})
+
+	t.Run("include with json output", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"--format", "json", "include", tmpDir, "_extra.yaml"}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("include --format json failed with code %d: %s", code, stderr.String())
+		}
+		var env output.Envelope
+		if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshaling json envelope: %v. Output: %s", err, stdout.String())
+		}
+		if !env.OK || env.ExitCode != 0 {
+			t.Errorf("envelope not OK: %+v", env)
+		}
+		if len(env.Results) != 2 {
+			t.Errorf("expected 2 result items, got %d", len(env.Results))
+		}
+	})
+
+	t.Run("include skips unrelated non-lxm YAML", func(t *testing.T) {
+		mkdocsPath := filepath.Join(tmpDir, "mkdocs.yml")
+		mkdocsContent := `site_name: test-docs
+nav:
+  - Home: index.md
+`
+		if err := os.WriteFile(mkdocsPath, []byte(mkdocsContent), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", tmpDir, "_another.yaml"}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("include failed with code %d: %s", code, stderr.String())
+		}
+
+		data, err := os.ReadFile(mkdocsPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != mkdocsContent {
+			t.Errorf("mkdocs.yml was modified: %s", string(data))
+		}
+	})
+
+	t.Run("include atomicity preserves all files when one file is read-only", func(t *testing.T) {
+		subDir := t.TempDir()
+		fileA := filepath.Join(subDir, "a.yaml")
+		fileB := filepath.Join(subDir, "b.yaml")
+
+		contentA := "schema: lxm/config/v2\nname: box-a\nimage: debian:12\n"
+		contentB := "schema: lxm/config/v2\nname: box-b\nimage: debian:12\n"
+
+		if err := os.WriteFile(fileA, []byte(contentA), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fileB, []byte(contentB), 0444); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chmod(fileB, 0644)
+		})
+
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", subDir, "_common.yaml"}, &stdout, &stderr, driver)
+		if code != 3 {
+			t.Fatalf("expected exit code 3 (CONFIG_ERROR) when modifying read-only file, got %d. stderr: %s", code, stderr.String())
+		}
+
+		// Verify neither file was modified
+		dataA, err := os.ReadFile(fileA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(dataA) != contentA {
+			t.Errorf("fileA was modified despite atomic failure:\n%s", string(dataA))
+		}
+
+		dataB, err := os.ReadFile(fileB)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(dataB) != contentB {
+			t.Errorf("fileB was modified despite atomic failure:\n%s", string(dataB))
+		}
+	})
+
+	t.Run("include atomicity rolls back modified files on write failure", func(t *testing.T) {
+		subDir := t.TempDir()
+		fileA := filepath.Join(subDir, "a.yaml")
+		fileB := filepath.Join(subDir, "b.yaml")
+
+		contentA := "schema: lxm/config/v2\nname: box-a\nimage: debian:12\n"
+		contentB := "schema: lxm/config/v2\nname: box-b\nimage: debian:12\n"
+
+		if err := os.WriteFile(fileA, []byte(contentA), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fileB, []byte(contentB), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		origAddInclude := addIncludeFunc
+		t.Cleanup(func() {
+			addIncludeFunc = origAddInclude
+		})
+
+		// Make write fail on fileB after fileA has been written
+		addIncludeFunc = func(filePath, inc string) (bool, error) {
+			if strings.HasSuffix(filePath, "b.yaml") {
+				return false, errors.New("simulated disk failure on b.yaml")
+			}
+			return origAddInclude(filePath, inc)
+		}
+
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"include", subDir, "_common.yaml"}, &stdout, &stderr, driver)
+		if code != 3 {
+			t.Fatalf("expected exit code 3 (CONFIG_ERROR) on write failure, got %d. stderr: %s", code, stderr.String())
+		}
+
+		// Verify fileA was rolled back to original content
+		dataA, err := os.ReadFile(fileA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(dataA) != contentA {
+			t.Errorf("fileA was not rolled back to original content:\n%s", string(dataA))
+		}
+
+		// Verify fileB is untouched
+		dataB, err := os.ReadFile(fileB)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(dataB) != contentB {
+			t.Errorf("fileB was modified:\n%s", string(dataB))
+		}
+	})
 }
 
 func TestHasAnyGroup(t *testing.T) {
@@ -1014,7 +1208,7 @@ func TestRun_FormatJSON_Errors(t *testing.T) {
 
 func TestRun_FormatJSON_InteractiveCarveOut(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	t.Run("shell rejects --format json", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
@@ -1072,7 +1266,7 @@ func TestRun_FormatJSON_SingleDocument(t *testing.T) {
 
 	t.Run("status --format json single document", func(t *testing.T) {
 		driver := fake.New()
-		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+		_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 		var stdout, stderr bytes.Buffer
 		code := run([]string{"status", "box1", "--format", "json"}, &stdout, &stderr, driver)
@@ -1137,7 +1331,7 @@ func TestRun_FormatJSON_SingleDocument(t *testing.T) {
 
 func TestRun_SSH_RemoteCommandJSON_NotCarvedOut(t *testing.T) {
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "box1"})
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "box1"})
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--dry-run", "ssh", "box1", "json"}, &stdout, &stderr, driver)
@@ -1159,7 +1353,7 @@ func TestRun_InvalidFormatFlag(t *testing.T) {
 }
 
 func TestRun_SignalInterrupt(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // Pre-cancelled context
 
 	var stdout, stderr bytes.Buffer
@@ -1411,7 +1605,7 @@ func TestRun_Prune_OrphanGC(t *testing.T) {
 	driver := fake.New()
 
 	// Pre-create orphan container with user.lxm.managed=true in driver LXD
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
 		Name: "orphan-box",
 		Config: map[string]string{
 			"user.lxm.managed": "true",
@@ -1419,7 +1613,7 @@ func TestRun_Prune_OrphanGC(t *testing.T) {
 			"user.lxm.user":    "ubuntu",
 		},
 	})
-	driver.UpdateInstanceState(context.Background(), "orphan-box", "start", false)
+	driver.UpdateInstanceState(t.Context(), "orphan-box", "start", false)
 
 	tmpDir := t.TempDir()
 	keeperPath := filepath.Join(tmpDir, "keeper.yaml")
@@ -1460,7 +1654,7 @@ groups: [dev]
 		if code != 0 {
 			t.Fatalf("apply --prune returned %d, want 0. Stderr: %s", code, stderr.String())
 		}
-		inst, _, err := driver.GetInstance(context.Background(), "orphan-box")
+		inst, _, err := driver.GetInstance(t.Context(), "orphan-box")
 		if err == nil && inst != nil {
 			t.Errorf("expected orphan-box to be deleted by apply --prune, but it still exists")
 		}
@@ -1472,7 +1666,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	t.Setenv("LXM_KNOWN_HOSTS_FILE", khFile)
 
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
 		Name: "secure-box",
 		Config: map[string]string{
 			"user.lxm.user":    "ubuntu",
@@ -1493,7 +1687,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	})
 
 	t.Run("B2: stopped container with no IPv4 returns exit code 6", func(t *testing.T) {
-		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
+		_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
 			Name:   "stopped-box",
 			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})
@@ -1574,7 +1768,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	})
 
 	t.Run("R5: keyscan failure on unreachable IP returns exit code 6", func(t *testing.T) {
-		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
+		_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
 			Name:   "unreachable-box",
 			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})
@@ -1593,7 +1787,7 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 	})
 
 	t.Run("R9: IP resolution from running instance State.Network", func(t *testing.T) {
-		_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{
+		_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
 			Name:   "running-box",
 			Config: map[string]string{"user.lxm.user": "ubuntu"},
 		})
@@ -1662,4 +1856,25 @@ func TestRun_SSH_SecurityPosture(t *testing.T) {
 			t.Fatalf("ssh --format json returned %d, want 2. Stderr: %s", code, stderr.String())
 		}
 	})
+}
+
+func TestFetchLiveSnapshots_PopulatesLiveETag(t *testing.T) {
+	driver := fake.New()
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{
+		Name: "web-box",
+	})
+	driver.Instances["web-box"].ETag = ""
+	driver.ETags["web-box"] = "etag-12345"
+
+	snaps, _, err := fetchLiveSnapshots(t.Context(), driver, nil)
+	if err != nil {
+		t.Fatalf("fetchLiveSnapshots error: %v", err)
+	}
+	snap, ok := snaps["web-box"]
+	if !ok {
+		t.Fatalf("expected snapshot for web-box")
+	}
+	if snap.ETag != "etag-12345" {
+		t.Errorf("snap.ETag = %q, want etag-12345", snap.ETag)
+	}
 }

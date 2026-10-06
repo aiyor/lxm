@@ -37,11 +37,20 @@ import (
 #ClusterTarget: =~"^[a-zA-Z0-9_\\.\\-]+$"
 
 #RemoteObjAuthoring: close({
-	address:   string
-	provider?: #ProviderType
-	project?:  #ProjectName
-	insecure?: bool
-	protocol?: "https" | "unix"
+	address:            string
+	provider?:          #ProviderType
+	project?:           #ProjectName
+	insecure?:          bool
+	protocol?:          "https" | "unix"
+	server_certificate?: string
+	server_fingerprint?: string
+
+	if insecure != _|_ {
+		if insecure == true {
+			server_certificate?: _|_
+			server_fingerprint?: _|_
+		}
+	}
 })
 
 // #ImageRemoteNameInvalid rejects keys that do not fully match #ImageRemoteName.

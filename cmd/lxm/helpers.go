@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -43,10 +44,8 @@ func discoverYAMLFiles(target string, includeHidden bool, logger *slog.Logger) (
 
 func hasAnyGroup(groups []string, targets []string) bool {
 	for _, g := range groups {
-		for _, t := range targets {
-			if g == t {
-				return true
-			}
+		if slices.Contains(targets, g) {
+			return true
 		}
 	}
 	return false

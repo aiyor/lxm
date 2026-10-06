@@ -170,3 +170,52 @@ func TestUnion_NatFalseInternetTrue_Warning(t *testing.T) {
 		t.Fatalf("expected nat/internet warning, got warnings: %v", f.Warnings)
 	}
 }
+
+func TestUnion_AbsentVSwitch_NoPanicOrInvalidCIDR(t *testing.T) {
+	b := &config.Config{
+		Schema: "lxm/config/v2",
+		VSwitches: []config.VSwitchConfig{
+			{Name: "br0", IPv4: "10.30.0.1/24", Group: "a"},
+			{Name: "br-old", Status: "absent"},
+		},
+	}
+	f, err := Union([]*config.Config{b})
+	if err != nil {
+		t.Fatalf("expected Union to succeed with absent vswitch, got error: %v", err)
+	}
+	if len(f.VSwitches) != 2 {
+		t.Fatalf("expected 2 vswitches in fleet, got %d", len(f.VSwitches))
+	}
+	if vs, ok := f.ByName["br-old"]; !ok || vs.Status != "absent" {
+		t.Fatalf("expected br-old to be present in fleet with status=absent")
+	}
+}
+
+func TestCheckInstancesWithProvider_IncusDefaultBridge(t *testing.T) {
+	conf := &config.Config{
+		Name: "web",
+		Networks: []config.NetworkConfig{
+			{Name: "eth0"}, // no parent specified, no provider on config
+		},
+	}
+	f := &Fleet{ByName: map[string]*VSwitch{}}
+	liveNets := map[string]bool{"incusbr0": true}
+
+	// When provider is incus, default parent is incusbr0 -> present in liveNets -> 0 warnings
+	warns, err := CheckInstancesWithProvider([]*config.Config{conf}, f, liveNets, "incus")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warns) != 0 {
+		t.Errorf("expected 0 warnings on incus, got: %v", warns)
+	}
+
+	// When provider is not incus, default parent is lxdbr0 -> missing from liveNets -> warning
+	warnsLXD, err := CheckInstancesWithProvider([]*config.Config{conf}, f, liveNets, "lxd")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnsLXD) == 0 || !strings.Contains(warnsLXD[0], "lxdbr0") {
+		t.Errorf("expected warning mentioning lxdbr0 on lxd, got: %v", warnsLXD)
+	}
+}

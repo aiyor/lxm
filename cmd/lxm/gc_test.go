@@ -2,7 +2,8 @@ package main
 
 import (
 	"bytes"
-	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aiyor/lxm/internal/output"
 	"github.com/aiyor/lxm/internal/provider"
 	"github.com/aiyor/lxm/internal/provider/fake"
 )
@@ -42,7 +44,7 @@ disks:
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetArgs([]string{"disk", "gc", "--dry-run", manifestDir})
 
 	if err := rootCmd.Execute(); err != nil {
@@ -92,7 +94,7 @@ disks:
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetArgs([]string{"disk", "gc", "--force", manifestDir})
 
 	if err := rootCmd.Execute(); err != nil {
@@ -152,7 +154,7 @@ vswitches:
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetArgs([]string{"vswitch", "gc", "--force", manifestDir})
 
 	if err := rootCmd.Execute(); err != nil {
@@ -190,7 +192,7 @@ func TestDiskGC_LoadError_FailsClosed(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetArgs([]string{"disk", "gc", "--force", manifestDir})
 
 	err := rootCmd.Execute()
@@ -225,7 +227,7 @@ user: ubuntu
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetArgs([]string{"disk", "gc", "--force", manifestDir})
 
 	if err := rootCmd.Execute(); err != nil {
@@ -260,7 +262,7 @@ user: ubuntu
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	getSvc := func() (provider.Driver, error) { return driver, nil }
 
-	rootCmd, _ := newRootCmd(context.Background(), &stdout, &stderr, getSvc, logger)
+	rootCmd, _ := newRootCmd(t.Context(), &stdout, &stderr, getSvc, logger)
 	rootCmd.SetIn(strings.NewReader("yes\n"))
 	rootCmd.SetArgs([]string{"disk", "gc", manifestDir})
 
@@ -272,4 +274,162 @@ user: ubuntu
 	if _, exists := driver.Volumes["default"]["vm1-orphan"]; exists {
 		t.Errorf("expected default/vm1-orphan deleted after interactive confirmation")
 	}
+}
+
+func TestDiskGC_JSON_Output(t *testing.T) {
+	driver := fake.New()
+	driver.AddVolume("default", "db-vm-orphan", "filesystem", map[string]string{
+		"user.lxm.managed":  "true",
+		"user.lxm.instance": "db-vm",
+		"user.lxm.disk":     "orphan",
+		"size":              "50GiB",
+	})
+
+	manifestDir := t.TempDir()
+	manifestFile := filepath.Join(manifestDir, "db.yaml")
+	content := `schema: lxm/config/v2
+name: db-vm
+type: vm
+user: ubuntu
+`
+	if err := os.WriteFile(manifestFile, []byte(content), 0644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+
+	t.Run("dry-run produces clean json without text table", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"disk", "gc", "--dry-run", "--format", "json", manifestDir}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("run returned %d, want 0. Stderr: %s", code, stderr.String())
+		}
+		if strings.Contains(stdout.String(), "ORPHANED MANAGED STORAGE VOLUMES") {
+			t.Errorf("stdout must not contain plain text table: %s", stdout.String())
+		}
+		var env output.Envelope
+		if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshaling json envelope: %v. Output: %s", err, stdout.String())
+		}
+		if !env.OK || len(env.Results) != 1 {
+			t.Errorf("expected 1 result item in envelope, got: %+v", env)
+		}
+		if env.Results[0].Container != "db-vm-orphan" || env.Results[0].Action != "delete_volume" {
+			t.Errorf("unexpected result item: %+v", env.Results[0])
+		}
+	})
+
+	t.Run("without force returns exit code 2 in json mode", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"disk", "gc", "--format", "json", manifestDir}, &stdout, &stderr, driver)
+		if code != 2 {
+			t.Fatalf("run returned %d, want 2. Stderr: %s", code, stderr.String())
+		}
+	})
+
+	t.Run("with force deletes volume and returns clean json", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"disk", "gc", "--force", "--format", "json", manifestDir}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("run returned %d, want 0. Stderr: %s", code, stderr.String())
+		}
+		var env output.Envelope
+		if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshaling json envelope: %v. Output: %s", err, stdout.String())
+		}
+		if !env.OK || len(env.Results) != 1 || !env.Results[0].Changed {
+			t.Errorf("expected changed result item, got: %+v", env)
+		}
+		if _, exists := driver.Volumes["default"]["db-vm-orphan"]; exists {
+			t.Errorf("expected volume deleted")
+		}
+	})
+
+	t.Run("deletion failure returns exit code 4 and ok=false in envelope", func(t *testing.T) {
+		driver.AddVolume("default", "db-vm-orphan", "filesystem", map[string]string{
+			"user.lxm.managed":  "true",
+			"user.lxm.instance": "db-vm",
+			"user.lxm.disk":     "orphan",
+			"size":              "50GiB",
+		})
+		driver.DeleteStoragePoolVolumeFunc = func(pool, volType, name string) error {
+			return errors.New("simulated disk deletion error")
+		}
+		defer func() { driver.DeleteStoragePoolVolumeFunc = nil }()
+
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"disk", "gc", "--force", "--format", "json", manifestDir}, &stdout, &stderr, driver)
+		if code != 4 {
+			t.Fatalf("run returned %d, want 4. Stderr: %s", code, stderr.String())
+		}
+		var env output.Envelope
+		if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshaling json envelope: %v. Output: %s", err, stdout.String())
+		}
+		if env.OK || env.ExitCode != 4 {
+			t.Errorf("expected env.OK=false and env.ExitCode=4, got OK=%v ExitCode=%d", env.OK, env.ExitCode)
+		}
+		if len(env.Results) != 1 || env.Results[0].OK {
+			t.Errorf("expected 1 failed result item, got: %+v", env.Results)
+		}
+	})
+}
+
+func TestVSwitchGC_JSON_Output(t *testing.T) {
+	driver := fake.New()
+	driver.NetworkACLs["lxm-orphaned-acl"] = &provider.NetworkACL{
+		Name:        "lxm-orphaned-acl",
+		Description: "Test ACL",
+		Config: map[string]string{
+			"user.lxm.managed": "true",
+		},
+	}
+
+	manifestDir := t.TempDir()
+	manifestFile := filepath.Join(manifestDir, "net.yaml")
+	content := `schema: lxm/config/v2
+name: dummy
+`
+	if err := os.WriteFile(manifestFile, []byte(content), 0644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+
+	t.Run("dry-run produces clean json without text table", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"vswitch", "gc", "--dry-run", "--format", "json", manifestDir}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("run returned %d, want 0. Stderr: %s", code, stderr.String())
+		}
+		if strings.Contains(stdout.String(), "ORPHANED MANAGED NETWORK ACLS") {
+			t.Errorf("stdout must not contain plain text table: %s", stdout.String())
+		}
+		var env output.Envelope
+		if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshaling json envelope: %v. Output: %s", err, stdout.String())
+		}
+		if !env.OK || len(env.Results) != 1 {
+			t.Errorf("expected 1 result item in envelope, got: %+v", env)
+		}
+	})
+
+	t.Run("without force returns exit code 2 in json mode", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"vswitch", "gc", "--format", "json", manifestDir}, &stdout, &stderr, driver)
+		if code != 2 {
+			t.Fatalf("run returned %d, want 2. Stderr: %s", code, stderr.String())
+		}
+	})
+
+	t.Run("with force deletes ACL and returns clean json", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"vswitch", "gc", "--force", "--format", "json", manifestDir}, &stdout, &stderr, driver)
+		if code != 0 {
+			t.Fatalf("run returned %d, want 0. Stderr: %s", code, stderr.String())
+		}
+		var env output.Envelope
+		if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshaling json envelope: %v. Output: %s", err, stdout.String())
+		}
+		if !env.OK || len(env.Results) != 1 || !env.Results[0].Changed {
+			t.Errorf("expected changed result item, got: %+v", env)
+		}
+	})
 }

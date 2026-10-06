@@ -780,6 +780,11 @@ func TestPlan_VSwitch_OVN_AutoResolve_DNS(t *testing.T) {
 		t.Fatalf("expected steps, got none")
 	}
 
+	// Observation 4.2: Verify input fleet was not mutated
+	if len(f.VSwitches[0].DNSResolvers) != 0 {
+		t.Errorf("expected input fleet vswitch DNSResolvers to remain unmutated (len 0), got %v", f.VSwitches[0].DNSResolvers)
+	}
+
 	for _, s := range np.Steps {
 		if s.Kind == "create_acl" && s.Name == "lxm-ovnbr0" {
 			hasTCPGuard := false
@@ -1107,4 +1112,65 @@ func TestPlan_VSwitch_OVN_DNS_Derivation_Nameservers_And_Volatile(t *testing.T) 
 			t.Errorf("expected custom.unmanaged to be preserved, got %q", got)
 		}
 	})
+}
+
+func TestComputeNetworks_AbsentVSwitchInSameGroup_NoNilCIDRRules(t *testing.T) {
+	// An active OVN vswitch needing DNS auto-derivation sharing a group with an absent vswitch
+	conf := &config.Config{
+		Schema: "lxm/config/v2",
+		Base:   true,
+		VSwitches: []config.VSwitchConfig{
+			{Name: "ovn-active", Type: "ovn", IPv4: "10.70.0.1/24", Group: "shared-grp", Parent: "incusbr0"},
+			{Name: "ovn-absent", Status: "absent", Group: "shared-grp"},
+		},
+	}
+	f, err := network.Union([]*config.Config{conf})
+	if err != nil {
+		t.Fatalf("Union error: %v", err)
+	}
+
+	live := &plan.NetworkLiveState{
+		Networks: map[string]*provider.Network{
+			"incusbr0": {
+				Name: "incusbr0",
+				Config: map[string]string{
+					"ipv4.address": "10.0.3.1/24",
+				},
+			},
+		},
+		ACLs: map[string]*provider.NetworkACL{},
+	}
+
+	rec := plan.NewNetworkReconciler()
+	np, err := rec.ComputeNetworks(f, live)
+	if err != nil {
+		t.Fatalf("ComputeNetworks error: %v", err)
+	}
+
+	var aclRulesChecked int
+	for _, step := range np.Steps {
+		var egress, ingress []provider.NetworkACLRule
+		if step.ACLPost != nil {
+			egress = step.ACLPost.Egress
+			ingress = step.ACLPost.Ingress
+		} else if step.ACLPut != nil {
+			egress = step.ACLPut.Egress
+			ingress = step.ACLPut.Ingress
+		}
+		for _, rule := range egress {
+			aclRulesChecked++
+			if strings.Contains(rule.Source, "<nil>") || strings.Contains(rule.Destination, "<nil>") {
+				t.Fatalf("found <nil> in egress ACL rule: %+v", rule)
+			}
+		}
+		for _, rule := range ingress {
+			aclRulesChecked++
+			if strings.Contains(rule.Source, "<nil>") || strings.Contains(rule.Destination, "<nil>") {
+				t.Fatalf("found <nil> in ingress ACL rule: %+v", rule)
+			}
+		}
+	}
+	if aclRulesChecked == 0 {
+		t.Fatalf("expected to check ACL rules, but none were found in plan steps")
+	}
 }

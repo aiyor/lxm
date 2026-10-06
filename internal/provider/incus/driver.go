@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -610,12 +611,7 @@ func (d *Driver) ProjectExists(ctx context.Context, name string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	for _, p := range projects {
-		if p == name {
-			return true, nil
-		}
-	}
-	return false, nil
+	return slices.Contains(projects, name), nil
 }
 
 func (d *Driver) CreateProject(ctx context.Context, name string, description string) error {
@@ -668,7 +664,7 @@ func (d *Driver) ExecInstance(ctx context.Context, name string, cmd []string, ui
 		return provider.ExecResult{ExitCode: -1}, err
 	}
 	waitErr := common.WaitOpContext(ctx, op)
-	var metadata map[string]interface{}
+	var metadata map[string]any
 	if op != nil {
 		metadata = op.Get().Metadata
 	}

@@ -282,9 +282,9 @@ func TestResolveCloudInit_UserInjectionAddsToExistingUsers(t *testing.T) {
 }
 
 func TestDeepMerge_Maps(t *testing.T) {
-	dst := map[string]interface{}{"a": "1", "b": "2"}
-	src := map[string]interface{}{"b": "3", "c": "4"}
-	result := deepMerge(dst, src).(map[string]interface{})
+	dst := map[string]any{"a": "1", "b": "2"}
+	src := map[string]any{"b": "3", "c": "4"}
+	result := deepMerge(dst, src).(map[string]any)
 	if result["a"] != "1" {
 		t.Error("expected a=1 preserved")
 	}
@@ -297,14 +297,14 @@ func TestDeepMerge_Maps(t *testing.T) {
 }
 
 func TestDeepMerge_NestedMaps(t *testing.T) {
-	dst := map[string]interface{}{
-		"nested": map[string]interface{}{"x": 1, "y": 2},
+	dst := map[string]any{
+		"nested": map[string]any{"x": 1, "y": 2},
 	}
-	src := map[string]interface{}{
-		"nested": map[string]interface{}{"y": 3, "z": 4},
+	src := map[string]any{
+		"nested": map[string]any{"y": 3, "z": 4},
 	}
-	result := deepMerge(dst, src).(map[string]interface{})
-	nested := result["nested"].(map[string]interface{})
+	result := deepMerge(dst, src).(map[string]any)
+	nested := result["nested"].(map[string]any)
 	if nested["x"] != 1 {
 		t.Error("expected x=1 preserved")
 	}
@@ -317,9 +317,9 @@ func TestDeepMerge_NestedMaps(t *testing.T) {
 }
 
 func TestDeepMerge_Slices(t *testing.T) {
-	dst := []interface{}{"a", "b"}
-	src := []interface{}{"c", "d"}
-	result := deepMerge(dst, src).([]interface{})
+	dst := []any{"a", "b"}
+	src := []any{"c", "d"}
+	result := deepMerge(dst, src).([]any)
 	if len(result) != 4 {
 		t.Fatalf("expected 4 elements, got %d", len(result))
 	}
@@ -335,14 +335,14 @@ func TestDeepMerge_ScalarOverride(t *testing.T) {
 }
 
 func TestDeepMerge_NonMatchingTypes_SrcWins(t *testing.T) {
-	result := deepMerge(map[string]interface{}{"a": 1}, "string")
+	result := deepMerge(map[string]any{"a": 1}, "string")
 	if result != "string" {
 		t.Errorf("expected src to win on type mismatch, got %v", result)
 	}
 }
 
 func TestDeepMerge_MapWithNonMapSrc_SrcWins(t *testing.T) {
-	dst := map[string]interface{}{"a": 1}
+	dst := map[string]any{"a": 1}
 	src := "not-a-map"
 	result := deepMerge(dst, src)
 	if result != "not-a-map" {
@@ -351,7 +351,7 @@ func TestDeepMerge_MapWithNonMapSrc_SrcWins(t *testing.T) {
 }
 
 func TestDeepMerge_SliceWithNonSliceSrc_SrcWins(t *testing.T) {
-	dst := []interface{}{1, 2}
+	dst := []any{1, 2}
 	src := "not-a-slice"
 	result := deepMerge(dst, src)
 	if result != "not-a-slice" {
@@ -363,9 +363,9 @@ func TestDeepMerge_ScalarNonZeroWins(t *testing.T) {
 	// When src is zero-valued, dst should be preserved.
 	tests := []struct {
 		name     string
-		dst      interface{}
-		src      interface{}
-		expected interface{}
+		dst      any
+		src      any
+		expected any
 	}{
 		{"empty string doesn't override", "hello", "", "hello"},
 		{"non-empty string overrides", "hello", "world", "world"},
@@ -674,6 +674,86 @@ func TestValidatePostMerge_UniqueNetworks_Pass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for unique networks, got: %v", err)
 	}
+}
+
+func TestValidatePostMerge_Remotes(t *testing.T) {
+	t.Run("valid remotes pass", func(t *testing.T) {
+		conf := &Config{
+			Name:  "test",
+			Image: "ubuntu:24.04",
+			Remotes: map[string]RemoteConfig{
+				"valid-https": {
+					Address:           "https://10.0.0.1:8443",
+					Provider:          "incus",
+					ServerCertificate: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+					ServerFingerprint: "abcdef",
+				},
+				"valid-insecure": {
+					Address:  "https://10.0.0.2:8443",
+					Insecure: true,
+				},
+				"valid-unix": {
+					Address: "unix:///var/lib/incus/unix.socket",
+				},
+			},
+		}
+		if err := ValidatePostMerge(conf); err != nil {
+			t.Fatalf("expected valid remotes to pass ValidatePostMerge, got: %v", err)
+		}
+	})
+
+	t.Run("insecure combined with server_certificate fails", func(t *testing.T) {
+		conf := &Config{
+			Name:  "test",
+			Image: "ubuntu:24.04",
+			Remotes: map[string]RemoteConfig{
+				"bad-remote": {
+					Address:           "https://10.0.0.1:8443",
+					Insecure:          true,
+					ServerCertificate: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+				},
+			},
+		}
+		err := ValidatePostMerge(conf)
+		if err == nil || !strings.Contains(err.Error(), "contradictory configuration") {
+			t.Fatalf("expected contradictory configuration error, got: %v", err)
+		}
+	})
+
+	t.Run("insecure combined with server_fingerprint fails", func(t *testing.T) {
+		conf := &Config{
+			Name:  "test",
+			Image: "ubuntu:24.04",
+			Remotes: map[string]RemoteConfig{
+				"bad-remote": {
+					Address:           "https://10.0.0.1:8443",
+					Insecure:          true,
+					ServerFingerprint: "abcdef",
+				},
+			},
+		}
+		err := ValidatePostMerge(conf)
+		if err == nil || !strings.Contains(err.Error(), "contradictory configuration") {
+			t.Fatalf("expected contradictory configuration error, got: %v", err)
+		}
+	})
+
+	t.Run("unix socket with server_fingerprint fails", func(t *testing.T) {
+		conf := &Config{
+			Name:  "test",
+			Image: "ubuntu:24.04",
+			Remotes: map[string]RemoteConfig{
+				"bad-unix": {
+					Address:           "unix:///run/incus/unix.socket",
+					ServerFingerprint: "abcdef",
+				},
+			},
+		}
+		err := ValidatePostMerge(conf)
+		if err == nil || !strings.Contains(err.Error(), "UNIX socket endpoint") {
+			t.Fatalf("expected UNIX socket endpoint error, got: %v", err)
+		}
+	})
 }
 
 // LoadConfig tests

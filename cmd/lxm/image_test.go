@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -41,7 +40,7 @@ func TestRun_ApplyRemoteImage_FetchesAndCreates(t *testing.T) {
 	if f.RemoteURL != "https://cloud-images.ubuntu.com/releases" || f.Alias != "24.04" || f.LocalAlias != "ubuntu/24.04" {
 		t.Errorf("unexpected fetch record: %+v", f)
 	}
-	inst, _, err := driver.GetInstance(context.Background(), "dev-box")
+	inst, _, err := driver.GetInstance(t.Context(), "dev-box")
 	if err != nil {
 		t.Fatalf("expected dev-box created: %v", err)
 	}
@@ -54,7 +53,7 @@ func TestRun_ApplyCachedRemote_NoFetch(t *testing.T) {
 	driver := fake.New()
 	// Pre-seed the canonical local alias: the image is already cached. The
 	// seeding itself is not an apply-time fetch, so its record is cleared.
-	if err := driver.CopyRemoteImage(context.Background(), "https://cloud-images.ubuntu.com/releases", "24.04", "container", "ubuntu/24.04"); err != nil {
+	if err := driver.CopyRemoteImage(t.Context(), "https://cloud-images.ubuntu.com/releases", "24.04", "container", "ubuntu/24.04"); err != nil {
 		t.Fatalf("seeding fake alias: %v", err)
 	}
 	driver.Fetches = nil
@@ -68,7 +67,7 @@ func TestRun_ApplyCachedRemote_NoFetch(t *testing.T) {
 	if len(driver.Fetches) != 0 {
 		t.Errorf("cached image must not be re-fetched, got %d fetch(es): %+v", len(driver.Fetches), driver.Fetches)
 	}
-	if _, _, err := driver.GetInstance(context.Background(), "dev-box"); err != nil {
+	if _, _, err := driver.GetInstance(t.Context(), "dev-box"); err != nil {
 		t.Errorf("expected dev-box created from cached image: %v", err)
 	}
 }

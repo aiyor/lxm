@@ -1,7 +1,6 @@
 package fleet
 
 import (
-	"context"
 	"testing"
 
 	"github.com/aiyor/lxm/internal/config"
@@ -10,7 +9,7 @@ import (
 )
 
 func TestGetInventory_Basic(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.Instances["c1"] = &provider.Instance{
 		Name:         "c1",
@@ -96,7 +95,7 @@ func TestFindOrphans_ScopedToSelectorAndTarget(t *testing.T) {
 }
 
 func TestGetInventory_FallbacksAndIPs(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.Instances["c3"] = &provider.Instance{
 		Name:         "c3",

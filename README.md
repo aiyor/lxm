@@ -37,7 +37,7 @@
 * Linux (Ubuntu 22.04+ recommended; Linux kernel 5.12+ for idmapped mounts)
 * LXD 5.0+ LTS and/or Incus 6.x/7.x (either is sufficient; `lxm` auto-detects the local daemon)
 * Host user in the `lxd` (LXD) or `incus-admin` (Incus) system group
-* Go 1.26+ to build from source
+* Go 1.27+ to build from source
 
 ---
 
@@ -208,7 +208,7 @@ The `lxm` CLI binary registers the following subcommands:
 | `diff` | `lxm diff <config-file> <container>` | Preview plan for a single container against a config file. |
 | `disk` | `lxm disk gc [file\|dir]` | Garbage-collect managed storage volumes. |
 | `doctor` | `lxm doctor [dir] [--skip-remote]` | Audit host environment, provider (LXD/Incus) daemon, and fleet health. |
-| `include` | `lxm include <config_dir> <include_file>` | Add an include directive to all configs (stub). |
+| `include` | `lxm include <config_dir> <include_file>` | Add an include directive to all configs in directory. |
 | `init` | `lxm init [path] [--force]` | Initialize `_base.yaml` and `config/dev.yaml` structure. |
 | `list` | `lxm list [--name N] [--format]` | List fleet containers, IPs, groups, and status. |
 | `plan` | `lxm plan <file\|dir> [flags]` | Preview deterministic reconciliation plan. |
@@ -236,3 +236,11 @@ The `lxm` CLI binary registers the following subcommands:
 * **`5` (`TARGET_NOT_FOUND`)**: Target container, snapshot, or selector match not found.
 * **`6` (`EXEC_FAILED`)**: Recipe execution error.
 * **`7` (`WAIT_TIMEOUT`)**: Cloud-init or network wait deadline exceeded.
+
+---
+
+## License
+
+Copyright 2026 Tze
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).

@@ -35,7 +35,7 @@ func debianFetchOp() plan.ImageOp {
 }
 
 func TestExecutor_PhaseMinusOne_FetchesBeforeCreate(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -72,7 +72,7 @@ func TestExecutor_PhaseMinusOne_FetchesBeforeCreate(t *testing.T) {
 }
 
 func TestExecutor_PhaseMinusOne_DedupFleet(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -99,7 +99,7 @@ func TestExecutor_PhaseMinusOne_DedupFleet(t *testing.T) {
 }
 
 func TestExecutor_PhaseMinusOne_FetchFailureAborts(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.CopyRemoteImageFunc = func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error {
 		return errors.New("failed resolving alias")
@@ -133,7 +133,7 @@ func TestExecutor_PhaseMinusOne_FetchFailureAborts(t *testing.T) {
 }
 
 func TestExecutor_PhaseMinusOne_AliasAlreadyExistsIsSuccess(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -159,7 +159,7 @@ func TestExecutor_PhaseMinusOne_AliasAlreadyExistsIsSuccess(t *testing.T) {
 }
 
 func TestExecutor_PhaseMinusOne_DryRunSkipsFetch(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -189,7 +189,7 @@ func TestExecutor_PhaseMinusOne_DryRunSkipsFetch(t *testing.T) {
 // executor must re-record the reference on the live instance so the next plan
 // is a no-op.
 func TestExecutor_Rebuild_RefreshesImageRecord(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box1", Config: map[string]string{
 		"user.lxm.managed": "true",
@@ -273,7 +273,7 @@ func TestExecutor_Rebuild_RefreshesImageRecord(t *testing.T) {
 // retryable per spec §7.4, even though ClassifyError only marks ETag/412
 // conflicts.
 func TestExecutor_PhaseMinusOne_DeadlineRetryable(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.CopyRemoteImageFunc = func(ctx context.Context, remoteURL, alias, imageType, localAlias string) error {
 		return context.DeadlineExceeded

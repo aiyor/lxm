@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/aiyor/lxm/internal/fleet"
+	"github.com/aiyor/lxm/internal/output"
 	"github.com/aiyor/lxm/internal/plan"
 	"github.com/aiyor/lxm/internal/provider"
 	"github.com/aiyor/lxm/internal/provider/common"
@@ -228,14 +230,12 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 
 	// Phase 2: instance steps (creates, updates, rebuilds, device detachments).
 	for _, step := range p.Steps {
-		wg.Add(1)
-		go func(s plan.Step) {
-			defer wg.Done()
+		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
 			startTs := time.Now()
-			res, errInfo, warnMsg := e.executeStep(ctx, s, opts)
+			res, errInfo, warnMsg := e.executeStep(ctx, step, opts)
 			res.DurationMS = time.Since(startTs).Milliseconds()
 
 			mu.Lock()
@@ -250,7 +250,7 @@ func (e *defaultExecutor) Apply(ctx context.Context, p *plan.Plan, opts ApplyOpt
 				code := errorCodeToExit(errInfo.Code)
 				worstExitCode = selectWorstExitCode(worstExitCode, code)
 			}
-		}(step)
+		})
 	}
 
 	wg.Wait()
@@ -477,9 +477,9 @@ func (e *defaultExecutor) growIfNeeded(ctx context.Context, op plan.VolumeOp) er
 	if desiredBytes <= liveBytes {
 		return nil
 	}
-	put := provider.StorageVolumeUpdateRequest{Config: make(map[string]string, len(vol.Config)+1)}
-	for k, v := range vol.Config {
-		put.Config[k] = v
+	put := provider.StorageVolumeUpdateRequest{Config: maps.Clone(vol.Config)}
+	if put.Config == nil {
+		put.Config = make(map[string]string)
 	}
 	put.Config["size"] = op.Size
 	return e.driver.UpdateStoragePoolVolume(ctx, op.Pool, "custom", op.Name, put, etag)
@@ -519,15 +519,15 @@ func (e *defaultExecutor) executeStep(ctx context.Context, step plan.Step, opts 
 	select {
 	case <-ctx.Done():
 		return ContainerResult{
-				Container: step.Container,
-				Action:    step.Action,
-				OK:        false,
-				Error:     "operation cancelled by user interrupt",
-			}, &ErrorInfo{
-				Code:      "INTERNAL_ERROR",
-				Container: step.Container,
-				Message:   "operation cancelled by user interrupt",
-			}, ""
+			Container: step.Container,
+			Action:    step.Action,
+			OK:        false,
+			Error:     "operation cancelled by user interrupt",
+		}, &ErrorInfo{
+			Code:      "INTERNAL_ERROR",
+			Container: step.Container,
+			Message:   "operation cancelled by user interrupt",
+		}, ""
 	default:
 	}
 
@@ -941,14 +941,14 @@ func (e *defaultExecutor) checkWaitPolicy(ctx context.Context, step plan.Step, o
 				return nil, fmt.Sprintf("cloud-init wait status exited %d on container %q (soft wait)", out.res.ExitCode, step.Container)
 			}
 		case <-waitCtx.Done():
-			if ctx.Err() != nil || waitCtx.Err() == context.Canceled {
+			if ctx.Err() != nil || errors.Is(waitCtx.Err(), context.Canceled) {
 				return &ErrorInfo{
 					Code:      "INTERNAL_ERROR",
 					Container: step.Container,
 					Message:   "wait policy cancelled by user interrupt",
 				}, ""
 			}
-			if waitCtx.Err() == context.DeadlineExceeded {
+			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
 				if required {
 					return &ErrorInfo{
 						Code:      "WAIT_TIMEOUT",
@@ -1038,7 +1038,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 	needsRun := opts.Force
 	var recipesToRun []*recipe.RecipeMetadata
 	var hashKeys []string
-	var scriptPaths []string
+	var recipeHashes []string
 
 	for _, rStep := range step.Recipes {
 		rMeta, err := recipe.LoadRecipe(rStep.Path, step.ConfigBaseDir)
@@ -1051,11 +1051,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 		}
 
 		hashKey := recipe.PathQualifiedHashKey(rStep.Path, rMeta.Name)
-		scriptFile := rStep.Path
-		if len(rMeta.Scripts) > 0 {
-			scriptFile = rMeta.Scripts[0]
-		}
-		currentHash, err := recipe.ComputeScriptHash(scriptFile, step.ConfigBaseDir)
+		currentHash, err := recipe.ComputeRecipeHash(rMeta, step.ConfigBaseDir)
 		if err != nil {
 			return &ErrorInfo{
 				Code:      "CONFIG_ERROR",
@@ -1070,7 +1066,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 		}
 		recipesToRun = append(recipesToRun, rMeta)
 		hashKeys = append(hashKeys, hashKey)
-		scriptPaths = append(scriptPaths, scriptFile)
+		recipeHashes = append(recipeHashes, currentHash)
 	}
 
 	if !needsRun {
@@ -1079,7 +1075,6 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 
 	snapshotTaken := false
 	for i, rMeta := range recipesToRun {
-		scriptFile := scriptPaths[i]
 		select {
 		case <-ctx.Done():
 			return &ErrorInfo{
@@ -1108,28 +1103,79 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 			runAs = step.Recipes[i].RunAs
 		}
 
-		execRes, hashVal, execErr := recipe.ExecuteRecipeScriptContext(ctx, e.driver, step.Container, scriptFile, step.ConfigBaseDir, runAs, rMeta.Env, rMeta.Retries)
-		if execErr != nil || execRes.ExitCode != 0 {
-			if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) || ctx.Err() != nil {
+		// B6 / N6: Recipe sudo opt-in
+		var sudoerCleanup string
+		if rMeta.Sudo && runAs != "root" && runAs != "" {
+			if !isValidUsername(runAs) {
 				return &ErrorInfo{
-					Code:      "INTERNAL_ERROR",
+					Code:      "CONFIG_ERROR",
 					Container: step.Container,
-					Message:   "recipe execution cancelled by user interrupt",
+					Message:   fmt.Sprintf("invalid recipe run_as username %q", runAs),
 				}
 			}
-			errMsg := execRes.Stderr
-			if errMsg == "" {
-				if execErr != nil {
-					errMsg = execErr.Error()
-				} else {
-					errMsg = fmt.Sprintf("recipe script %q failed with exit code %d", scriptFile, execRes.ExitCode)
+
+			sudoerRule := fmt.Sprintf("%s ALL=(ALL) NOPASSWD:ALL\n", runAs)
+			sudoerPath := fmt.Sprintf("/etc/sudoers.d/99-lxm-recipe-%s", sanitizeSafeFilename(rMeta.Name))
+			if err := e.driver.CreateInstanceFile(ctx, step.Container, sudoerPath, strings.NewReader(sudoerRule), 0440, 0, 0); err != nil {
+				return &ErrorInfo{
+					Code:      "PROVIDER_ERROR",
+					Container: step.Container,
+					Message:   fmt.Sprintf("injecting recipe sudoers drop-in %s: %v", sudoerPath, err),
 				}
 			}
-			return &ErrorInfo{
-				Code:      "EXEC_FAILED",
-				Container: step.Container,
-				Message:   errMsg,
+			sudoerCleanup = sudoerPath
+
+			// Run visudo -c -f <path> to validate syntax inside container if visudo is present
+			visudoRes, visudoErr := e.driver.ExecInstance(ctx, step.Container, []string{"visudo", "-c", "-f", sudoerPath}, 0, nil)
+			if visudoErr == nil && visudoRes.ExitCode != 0 && visudoRes.ExitCode != 127 && !strings.Contains(visudoRes.Stderr, "not found") {
+				_ = e.driver.DeleteInstanceFile(ctx, step.Container, sudoerPath)
+				return &ErrorInfo{
+					Code:      "CONFIG_ERROR",
+					Container: step.Container,
+					Message:   fmt.Sprintf("visudo validation failed for recipe %q: %s", rMeta.Name, strings.TrimSpace(visudoRes.Stderr)),
+				}
 			}
+		}
+
+		scripts := rMeta.Scripts
+		if len(scripts) == 0 {
+			scripts = []string{step.Recipes[i].Path}
+		}
+
+		var recipeErr *ErrorInfo
+		for _, scriptFile := range scripts {
+			execRes, _, execErr := recipe.ExecuteRecipeScriptContext(ctx, e.driver, step.Container, scriptFile, step.ConfigBaseDir, runAs, rMeta.Env, rMeta.Retries)
+			if execErr != nil || execRes.ExitCode != 0 {
+				if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) || ctx.Err() != nil {
+					recipeErr = &ErrorInfo{
+						Code:      "INTERNAL_ERROR",
+						Container: step.Container,
+						Message:   "recipe execution cancelled by user interrupt",
+					}
+					break
+				}
+				errMsg := execRes.Stderr
+				if errMsg == "" {
+					if execErr != nil {
+						errMsg = execErr.Error()
+					} else {
+						errMsg = fmt.Sprintf("recipe script %q failed with exit code %d", scriptFile, execRes.ExitCode)
+					}
+				}
+				recipeErr = &ErrorInfo{
+					Code:      "EXEC_FAILED",
+					Container: step.Container,
+					Message:   errMsg,
+				}
+				break
+			}
+		}
+
+		if sudoerCleanup != "" {
+			_ = e.driver.DeleteInstanceFile(ctx, step.Container, sudoerCleanup)
+		}
+		if recipeErr != nil {
+			return recipeErr
 		}
 
 		// Update metadata hash (H2 safety write check)
@@ -1145,7 +1191,7 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 		if put.Config == nil {
 			put.Config = make(map[string]string)
 		}
-		put.Config[hashKeys[i]] = hashVal
+		put.Config[hashKeys[i]] = recipeHashes[i]
 		if putErr := e.driver.UpdateInstance(ctx, step.Container, put, freshETag); putErr != nil {
 			return &ErrorInfo{
 				Code:      "PROVIDER_ERROR",
@@ -1158,64 +1204,51 @@ func (e *defaultExecutor) executeRecipes(ctx context.Context, step plan.Step, op
 	return nil
 }
 
-// Exit-code Precedence: 1 (internal) > 4 (LXD) > 5 (target) > 6 (execution) > 7 (wait)
+// Exit-code Precedence: 1 (internal) > 4 (provider) > 5 (target) > 6 (execution) > 7 (wait)
 func selectWorstExitCode(current, newCode int) int {
-	if current == 1 || newCode == 1 {
-		return 1
-	}
-	precedence := map[int]int{
-		4: 5,
-		5: 4,
-		6: 3,
-		7: 2,
-		2: 1,
-		3: 1,
-		0: 0,
-	}
-	if precedence[newCode] > precedence[current] {
-		return newCode
-	}
-	return current
+	return output.SelectWorstExitCode(current, newCode)
 }
 
 func errorCodeToExit(code string) int {
-	switch code {
-	case "INTERNAL_ERROR":
-		return 1
-	case "USAGE_ERROR":
-		return 2
-	case "CONFIG_ERROR":
-		return 3
-	case "PROVIDER_ERROR":
-		return 4
-	case "TARGET_NOT_FOUND":
-		return 5
-	case "EXEC_FAILED":
-		return 6
-	case "WAIT_TIMEOUT":
-		return 7
-	default:
-		return 1
-	}
+	return output.ErrorCodeToExitCode(code)
 }
 
 func exitToErrorCode(code int) string {
-	switch code {
-	case 1:
-		return "INTERNAL_ERROR"
-	case 2:
-		return "USAGE_ERROR"
-	case 3:
-		return "CONFIG_ERROR"
-	case 4:
-		return "PROVIDER_ERROR"
-	case 5:
-		return "TARGET_NOT_FOUND"
-	case 6:
-		return "EXEC_FAILED"
-	case 7:
-		return "WAIT_TIMEOUT"
-	default:
-		return "INTERNAL_ERROR"
+	return output.ExitCodeToErrorCode(code)
+}
+
+func isValidUsername(user string) bool {
+	if len(user) == 0 || len(user) > 32 {
+		return false
 	}
+	for i, r := range user {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' {
+			continue
+		}
+		if (r >= '0' && r <= '9') || r == '-' {
+			if i == 0 {
+				return false
+			}
+			continue
+		}
+		if r == '$' && i == len(user)-1 {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func sanitizeSafeFilename(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	res := b.String()
+	if res == "" {
+		return "unnamed"
+	}
+	return res
 }

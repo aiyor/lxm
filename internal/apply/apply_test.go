@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +31,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestExecutor_DryRun(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -54,7 +56,7 @@ func TestExecutor_DryRun(t *testing.T) {
 }
 
 func TestExecutor_SingleFilePrune_Fails(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -72,7 +74,7 @@ func TestExecutor_SingleFilePrune_Fails(t *testing.T) {
 }
 
 func TestExecutor_ETagMismatch_Fails(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
@@ -98,7 +100,7 @@ func TestExecutor_ETagMismatch_Fails(t *testing.T) {
 }
 
 func TestExecutor_RealLXD412PUT_Retryable(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
@@ -129,7 +131,7 @@ func TestExecutor_RealLXD412PUT_Retryable(t *testing.T) {
 }
 
 func TestExecutor_RebuildSnapshotGate(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
@@ -158,7 +160,7 @@ func TestExecutor_RebuildSnapshotGate(t *testing.T) {
 }
 
 func TestExecutor_RecreateFallbackGate(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box1",
@@ -187,7 +189,7 @@ func TestExecutor_RecreateFallbackGate(t *testing.T) {
 }
 
 func TestExecutor_Actions_CreateUpdateDeleteStartStop(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -238,7 +240,7 @@ func TestExecutor_Actions_CreateUpdateDeleteStartStop(t *testing.T) {
 }
 
 func TestExecutor_DeleteRunningContainer_StopsFirst(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-running"})
 	if err := driver.UpdateInstanceState(ctx, "box-running", "start", false); err != nil {
@@ -265,7 +267,7 @@ func TestExecutor_DeleteRunningContainer_StopsFirst(t *testing.T) {
 }
 
 func TestExecutor_DeleteStoppedContainer_SkipsStop(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-stopped"})
 	if driver.Instances["box-stopped"].StatusCode != 102 {
@@ -296,7 +298,7 @@ func TestExecutor_DeleteStoppedContainer_SkipsStop(t *testing.T) {
 }
 
 func TestExecutor_RecreateFallback_StoppedContainer(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-recreate"})
 	if driver.Instances["box-recreate"].StatusCode != 102 {
@@ -322,7 +324,7 @@ func TestExecutor_RecreateFallback_StoppedContainer(t *testing.T) {
 }
 
 func TestExecutor_RecreateFallback_RunningContainer(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box-recreate-running"})
 	if err := driver.UpdateInstanceState(ctx, "box-recreate-running", "start", false); err != nil {
@@ -362,7 +364,7 @@ func TestExecutor_RecreateFallback_RunningContainer(t *testing.T) {
 }
 
 func TestExecutor_DeleteMissingContainer_IsNoop(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 	pDelete := &plan.Plan{
@@ -375,7 +377,7 @@ func TestExecutor_DeleteMissingContainer_IsNoop(t *testing.T) {
 }
 
 func TestExecutor_ErrorPrecedence(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	driver.CreateInstanceFunc = func(req provider.InstanceCreateRequest) error {
 		return errors.New("lxd api failure")
@@ -393,7 +395,7 @@ func TestExecutor_ErrorPrecedence(t *testing.T) {
 }
 
 func TestExecutor_CreateStartsContainer_Idempotent(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -412,7 +414,7 @@ func TestExecutor_CreateStartsContainer_Idempotent(t *testing.T) {
 }
 
 func TestExecutor_CreateStoppedContainer_RemainsStopped_Idempotent(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 
@@ -431,7 +433,7 @@ func TestExecutor_CreateStoppedContainer_RemainsStopped_Idempotent(t *testing.T)
 }
 
 func TestExecutor_RecreateFallback_StoppedContainer_RemainsStopped(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box3"})
 
@@ -454,7 +456,7 @@ func TestExecutor_RecreateFallback_StoppedContainer_RemainsStopped(t *testing.T)
 }
 
 func TestExecutor_RebuildNative_Passes(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "box4"})
 
@@ -473,7 +475,7 @@ func TestExecutor_RebuildNative_Passes(t *testing.T) {
 }
 
 func TestReconcilerToExecutor_Integration_PowerTransitions(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "box5",
@@ -524,7 +526,7 @@ func TestReconcilerToExecutor_Integration_PowerTransitions(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicyTimeout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "waitbox"})
 	exec := apply.NewExecutor(driver)
@@ -550,7 +552,7 @@ func TestExecutor_WaitPolicyTimeout(t *testing.T) {
 }
 
 func TestExecutor_RecipeExecutionAndSnapshot(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	tmpDir := t.TempDir()
 	shFile := "setup.sh"
 	if err := writeTestScript(tmpDir, shFile, "#!/bin/bash\necho hello"); err != nil {
@@ -596,12 +598,299 @@ func TestExecutor_RecipeExecutionAndSnapshot(t *testing.T) {
 	}
 }
 
-func TestExecutor_ContextCancellation(t *testing.T) {
+func TestExecutor_MultiScriptRecipeExecution(t *testing.T) {
+	ctx := t.Context()
+	tmpDir := t.TempDir()
+
+	s1 := filepath.Join(tmpDir, "step1.sh")
+	s2 := filepath.Join(tmpDir, "step2.sh")
+	_ = os.WriteFile(s1, []byte("#!/bin/bash\necho step1"), 0755)
+	_ = os.WriteFile(s2, []byte("#!/bin/bash\necho step2"), 0755)
+
+	recipeYAML := filepath.Join(tmpDir, "recipe.yaml")
+	_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: multi-step
+scripts:
+  - step1.sh
+  - step2.sh
+`), 0644)
+
 	driver := fake.New()
-	_ = driver.CreateInstance(context.Background(), provider.InstanceCreateRequest{Name: "cancelbox"})
+	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "multibox"})
+	driver.Instances["multibox"].Status = "Running"
+	driver.Instances["multibox"].StatusCode = 103
+
+	var executedScripts []string
+	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+		if len(cmd) >= 4 {
+			executedScripts = append(executedScripts, cmd[3])
+		}
+		return provider.ExecResult{ExitCode: 0}, nil
+	}
 
 	exec := apply.NewExecutor(driver)
-	ctx, cancel := context.WithCancel(context.Background())
+	p := &plan.Plan{
+		Steps: []plan.Step{
+			{
+				Container:     "multibox",
+				Action:        "noop",
+				ConfigBaseDir: tmpDir,
+				Recipes: []plan.RecipeStep{
+					{Path: "recipe.yaml", RunAs: "root"},
+				},
+			},
+		},
+	}
+
+	rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
+	if err != nil || rep.ExitCode != 0 {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	if len(executedScripts) != 2 {
+		t.Fatalf("expected 2 scripts executed, got %d: %v", len(executedScripts), executedScripts)
+	}
+
+	// Verify combined hash recorded
+	inst, _, _ := driver.GetInstance(ctx, "multibox")
+	if inst.Config["user.lxm.recipe.multi-step.hash"] == "" {
+		t.Errorf("expected recipe hash stored")
+	}
+}
+
+func TestExecutor_RecipeSudo(t *testing.T) {
+	ctx := t.Context()
+	tmpDir := t.TempDir()
+
+	s1 := filepath.Join(tmpDir, "install.sh")
+	_ = os.WriteFile(s1, []byte("#!/bin/bash\nsudo apt update"), 0755)
+
+	t.Run("safe creation and cleanup", func(t *testing.T) {
+		recipeYAML := filepath.Join(tmpDir, "recipe.yaml")
+		_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: sudo-test
+run_as: dev
+sudo: true
+scripts:
+  - install.sh
+`), 0644)
+
+		driver := fake.New()
+		_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
+		driver.Instances["sudobox"].Status = "Running"
+		driver.Instances["sudobox"].StatusCode = 103
+
+		var createdPath string
+		var createdContent string
+		driver.CreateInstanceFileFunc = func(name, path string, content io.Reader, mode int, uid, gid int64) error {
+			createdPath = path
+			data, _ := io.ReadAll(content)
+			createdContent = string(data)
+			return nil
+		}
+
+		exec := apply.NewExecutor(driver)
+		p := &plan.Plan{
+			Steps: []plan.Step{
+				{
+					Container:     "sudobox",
+					Action:        "noop",
+					ConfigBaseDir: tmpDir,
+					Recipes: []plan.RecipeStep{
+						{Path: "recipe.yaml", RunAs: "dev"},
+					},
+				},
+			},
+		}
+
+		rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
+		if err != nil || rep.ExitCode != 0 {
+			t.Fatalf("apply failed: %v, exit: %d", err, rep.ExitCode)
+		}
+		if createdPath != "/etc/sudoers.d/99-lxm-recipe-sudo-test" {
+			t.Errorf("expected sudoers path /etc/sudoers.d/99-lxm-recipe-sudo-test, got %q", createdPath)
+		}
+		if !strings.Contains(createdContent, "dev ALL=(ALL) NOPASSWD:ALL") {
+			t.Errorf("expected sudo rule for dev, got: %q", createdContent)
+		}
+	})
+
+	t.Run("path sanitization prevents directory traversal", func(t *testing.T) {
+		recipeYAML := filepath.Join(tmpDir, "traversal.yaml")
+		_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: ../../tmp/evil
+run_as: dev
+sudo: true
+scripts:
+  - install.sh
+`), 0644)
+
+		driver := fake.New()
+		_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
+		driver.Instances["sudobox"].Status = "Running"
+		driver.Instances["sudobox"].StatusCode = 103
+
+		var createdPath string
+		driver.CreateInstanceFileFunc = func(name, path string, content io.Reader, mode int, uid, gid int64) error {
+			createdPath = path
+			return nil
+		}
+
+		exec := apply.NewExecutor(driver)
+		p := &plan.Plan{
+			Steps: []plan.Step{
+				{
+					Container:     "sudobox",
+					Action:        "noop",
+					ConfigBaseDir: tmpDir,
+					Recipes: []plan.RecipeStep{
+						{Path: "traversal.yaml", RunAs: "dev"},
+					},
+				},
+			},
+		}
+
+		rep, err := exec.Apply(ctx, p, apply.ApplyOpts{})
+		if err != nil || rep.ExitCode != 0 {
+			t.Fatalf("apply failed: %v", err)
+		}
+		if strings.Contains(createdPath, "..") || !strings.HasPrefix(createdPath, "/etc/sudoers.d/99-lxm-recipe-") {
+			t.Errorf("path was not sanitized: %q", createdPath)
+		}
+	})
+
+	t.Run("invalid username fails with CONFIG_ERROR", func(t *testing.T) {
+		recipeYAML := filepath.Join(tmpDir, "baduser.yaml")
+		_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: baduser
+run_as: "bad user\nevil"
+sudo: true
+scripts:
+  - install.sh
+`), 0644)
+
+		driver := fake.New()
+		_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
+		driver.Instances["sudobox"].Status = "Running"
+		driver.Instances["sudobox"].StatusCode = 103
+
+		exec := apply.NewExecutor(driver)
+		p := &plan.Plan{
+			Steps: []plan.Step{
+				{
+					Container:     "sudobox",
+					Action:        "noop",
+					ConfigBaseDir: tmpDir,
+					Recipes: []plan.RecipeStep{
+						{Path: "baduser.yaml", RunAs: "bad user\nevil"},
+					},
+				},
+			},
+		}
+
+		rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
+		if rep.ExitCode != 3 {
+			t.Errorf("expected exit code 3 (CONFIG_ERROR) for invalid username, got %d", rep.ExitCode)
+		}
+	})
+
+	t.Run("file creation failure fails closed with PROVIDER_ERROR", func(t *testing.T) {
+		recipeYAML := filepath.Join(tmpDir, "failwrite.yaml")
+		_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: failwrite
+run_as: dev
+sudo: true
+scripts:
+  - install.sh
+`), 0644)
+
+		driver := fake.New()
+		_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
+		driver.Instances["sudobox"].Status = "Running"
+		driver.Instances["sudobox"].StatusCode = 103
+		driver.CreateInstanceFileFunc = func(name, path string, content io.Reader, mode int, uid, gid int64) error {
+			return errors.New("read-only filesystem")
+		}
+
+		exec := apply.NewExecutor(driver)
+		p := &plan.Plan{
+			Steps: []plan.Step{
+				{
+					Container:     "sudobox",
+					Action:        "noop",
+					ConfigBaseDir: tmpDir,
+					Recipes: []plan.RecipeStep{
+						{Path: "failwrite.yaml", RunAs: "dev"},
+					},
+				},
+			},
+		}
+
+		rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
+		if rep.ExitCode != 4 {
+			t.Errorf("expected exit code 4 (PROVIDER_ERROR) when sudoers injection fails, got %d", rep.ExitCode)
+		}
+	})
+
+	t.Run("visudo validation failure returns CONFIG_ERROR and cleans up sudoers file", func(t *testing.T) {
+		recipeYAML := filepath.Join(tmpDir, "visudofail.yaml")
+		_ = os.WriteFile(recipeYAML, []byte(`schema: lxm/recipe/v1
+name: visudofail
+run_as: dev
+sudo: true
+scripts:
+  - install.sh
+`), 0644)
+
+		driver := fake.New()
+		_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "sudobox"})
+		driver.Instances["sudobox"].Status = "Running"
+		driver.Instances["sudobox"].StatusCode = 103
+
+		driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
+			if len(cmd) > 0 && cmd[0] == "visudo" {
+				return provider.ExecResult{
+					ExitCode: 1,
+					Stderr:   "visudo: >>> /etc/sudoers.d/99-lxm-recipe-visudofail: syntax error <<<",
+				}, nil
+			}
+			return provider.ExecResult{ExitCode: 0}, nil
+		}
+
+		exec := apply.NewExecutor(driver)
+		p := &plan.Plan{
+			Steps: []plan.Step{
+				{
+					Container:     "sudobox",
+					Action:        "noop",
+					ConfigBaseDir: tmpDir,
+					Recipes: []plan.RecipeStep{
+						{Path: "visudofail.yaml", RunAs: "dev"},
+					},
+				},
+			},
+		}
+
+		rep, _ := exec.Apply(ctx, p, apply.ApplyOpts{})
+		if rep.ExitCode != 3 {
+			t.Errorf("expected exit code 3 (CONFIG_ERROR) on visudo syntax failure, got %d", rep.ExitCode)
+		}
+
+		// Verify sudoers file was deleted
+		for path := range driver.Files["sudobox"] {
+			if strings.HasPrefix(path, "/etc/sudoers.d/99-lxm-recipe-") {
+				t.Errorf("expected sudoers file to be cleaned up on visudo failure, found: %s", path)
+			}
+		}
+	})
+}
+
+func TestExecutor_ContextCancellation(t *testing.T) {
+	driver := fake.New()
+	_ = driver.CreateInstance(t.Context(), provider.InstanceCreateRequest{Name: "cancelbox"})
+
+	exec := apply.NewExecutor(driver)
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // Cancel immediately
 
 	p := &plan.Plan{
@@ -633,7 +922,7 @@ func TestExecutor_DryRun_NoRecipesExecuted(t *testing.T) {
 		t.Fatalf("writing setup.sh: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "drybox"})
 
@@ -679,7 +968,7 @@ func TestExecutor_DryRun_NoRecipesExecuted(t *testing.T) {
 func TestExecutor_NilPlan(t *testing.T) {
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
-	_, err := exec.Apply(context.Background(), nil, apply.ApplyOpts{})
+	_, err := exec.Apply(t.Context(), nil, apply.ApplyOpts{})
 	if err == nil {
 		t.Errorf("expected error when applying nil plan")
 	}
@@ -689,14 +978,14 @@ func TestExecutor_SingleFilePruneRestriction(t *testing.T) {
 	driver := fake.New()
 	exec := apply.NewExecutor(driver)
 	p := &plan.Plan{Steps: []plan.Step{}}
-	rep, err := exec.Apply(context.Background(), p, apply.ApplyOpts{IsSingleFile: true, Prune: true})
+	rep, err := exec.Apply(t.Context(), p, apply.ApplyOpts{IsSingleFile: true, Prune: true})
 	if err == nil || rep.ExitCode != 2 {
 		t.Errorf("expected exit code 2 when pruning with single file target")
 	}
 }
 
 func TestExecutor_WaitPolicy_StopStepNonWaiting(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "stopbox"})
 	driver.Instances["stopbox"].Status = "Running"
@@ -730,7 +1019,7 @@ func TestExecutor_WaitPolicy_StopStepNonWaiting(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_NonCloudInitImage(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "alpinebox"})
 	driver.Instances["alpinebox"].Status = "Running"
@@ -767,7 +1056,7 @@ func TestExecutor_WaitPolicy_NonCloudInitImage(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_SoftWaitWarning(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "softbox"})
 	driver.Instances["softbox"].Status = "Running"
@@ -800,7 +1089,7 @@ func TestExecutor_WaitPolicy_SoftWaitWarning(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_ContextCancelledMidWait(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "cancelbox"})
 	driver.Instances["cancelbox"].Status = "Running"
@@ -841,7 +1130,7 @@ func TestExecutor_WaitPolicy_ContextCancelledMidWait(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_TransportError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "transportbox"})
 	driver.Instances["transportbox"].Status = "Running"
@@ -873,7 +1162,7 @@ func TestExecutor_WaitPolicy_TransportError(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_NetworkSuccess(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "netbox"})
 	driver.Instances["netbox"].Status = "Running"
@@ -904,7 +1193,7 @@ func TestExecutor_WaitPolicy_NetworkSuccess(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_NetworkTimeout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "netfailbox"})
 	driver.Instances["netfailbox"].Status = "Running"
@@ -935,7 +1224,7 @@ func TestExecutor_WaitPolicy_NetworkTimeout(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_NonHostnameImage(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "nohostnamebox"})
 	driver.Instances["nohostnamebox"].Status = "Running"
@@ -969,7 +1258,7 @@ func TestExecutor_WaitPolicy_NonHostnameImage(t *testing.T) {
 }
 
 func TestExecutor_InterruptDuringOperation_ReturnsInternalError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "opcancelbox"})
 	driver.Instances["opcancelbox"].Status = "Running"
@@ -997,7 +1286,7 @@ func TestExecutor_InterruptDuringOperation_ReturnsInternalError(t *testing.T) {
 }
 
 func TestExecutor_InterruptDuringRecipeScript_ReturnsInternalError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{Name: "recipecancelbox"})
 	driver.Instances["recipecancelbox"].Status = "Running"
@@ -1055,7 +1344,7 @@ func TestIsTransientAgentError(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_VMAgentHandshake(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 
 	attempts := 0
@@ -1094,7 +1383,7 @@ func TestExecutor_WaitPolicy_VMAgentHandshake(t *testing.T) {
 }
 
 func TestExecutor_WaitPolicy_VMAgentTimeout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 
 	driver.ExecInstanceFunc = func(name string, cmd []string, uid uint32, env map[string]string) (provider.ExecResult, error) {
@@ -1125,7 +1414,7 @@ func TestExecutor_WaitPolicy_VMAgentTimeout(t *testing.T) {
 }
 
 func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopBeforePUT(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "running-vm",
@@ -1179,7 +1468,7 @@ func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopBeforePUT(t *testing.T) 
 }
 
 func TestExecutor_Update_RunningVM_NonLiveUpdatable_StopPowerTransition(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	driver := fake.New()
 	_ = driver.CreateInstance(ctx, provider.InstanceCreateRequest{
 		Name: "running-vm-stop",

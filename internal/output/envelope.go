@@ -23,8 +23,8 @@ type Envelope struct {
 // PlanSummary represents the plan summary structure within the envelope.
 type PlanSummary struct {
 	Summary      map[string]int `json:"summary"`
-	Steps        interface{}    `json:"steps,omitempty"`
-	NetworkSteps interface{}    `json:"network_steps,omitempty"`
+	Steps        any            `json:"steps,omitempty"`
+	NetworkSteps any            `json:"network_steps,omitempty"`
 }
 
 // ResultItem represents an individual container operation result.
@@ -33,7 +33,7 @@ type ResultItem struct {
 	Action     string `json:"action,omitempty"`
 	Changed    bool   `json:"changed"`
 	OK         bool   `json:"ok"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitzero"`
 }
 
 // NetworkResult represents an individual network-step operation result.
@@ -42,7 +42,7 @@ type NetworkResult struct {
 	Kind       string `json:"kind"`
 	Changed    bool   `json:"changed"`
 	OK         bool   `json:"ok"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitzero"`
 	Error      string `json:"error,omitempty"`
 }
 
@@ -93,6 +93,49 @@ func ExitCodeToErrorCode(code int) string {
 	default:
 		return "INTERNAL_ERROR"
 	}
+}
+
+// ErrorCodeToExitCode maps an error code string (F8 catalog) to its corresponding numeric exit code.
+func ErrorCodeToExitCode(code string) int {
+	switch code {
+	case "INTERNAL_ERROR":
+		return 1
+	case "USAGE_ERROR":
+		return 2
+	case "CONFIG_ERROR":
+		return 3
+	case "PROVIDER_ERROR":
+		return 4
+	case "TARGET_NOT_FOUND":
+		return 5
+	case "EXEC_FAILED":
+		return 6
+	case "WAIT_TIMEOUT":
+		return 7
+	default:
+		return 1
+	}
+}
+
+// SelectWorstExitCode chooses the worse exit code according to precedence:
+// 1 (internal) > 4 (provider) > 5 (target not found) > 6 (execution) > 7 (wait) > 2/3 > 0.
+func SelectWorstExitCode(current, newCode int) int {
+	if current == 1 || newCode == 1 {
+		return 1
+	}
+	precedence := map[int]int{
+		4: 5,
+		5: 4,
+		6: 3,
+		7: 2,
+		2: 1,
+		3: 1,
+		0: 0,
+	}
+	if precedence[newCode] > precedence[current] {
+		return newCode
+	}
+	return current
 }
 
 // SetExitCode sets the numeric exit code, updates the OK flag, and appends an ErrorInfo if code != 0.

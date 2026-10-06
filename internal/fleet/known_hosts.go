@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 )
@@ -142,14 +143,13 @@ func (m *KnownHostsManager) EnsureHostKeyRegisteredContext(ctx context.Context, 
 			return fmt.Errorf("ssh-keyscan on %s (%s) failed: %s: %w", containerName, ip, errBuf.String(), err)
 		}
 
-		lines := strings.Split(outBuf.String(), "\n")
 		var entries []string
-		for _, line := range lines {
+		for line := range strings.SplitSeq(outBuf.String(), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			fields := strings.Fields(line)
+			fields := slices.Collect(strings.FieldsSeq(line))
 			if len(fields) >= 3 {
 				entry := fmt.Sprintf("%s %s %s", containerName, fields[1], fields[2])
 				entries = append(entries, entry)

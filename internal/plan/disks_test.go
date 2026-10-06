@@ -158,8 +158,8 @@ func TestReconciler_Create_ExternalVolumeMissing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected MissingVolumeError for absent external volume")
 	}
-	var mve *plan.MissingVolumeError
-	if !errors.As(err, &mve) {
+	mve, ok := errors.AsType[*plan.MissingVolumeError](err)
+	if !ok {
 		t.Fatalf("expected *plan.MissingVolumeError, got %T: %v", err, err)
 	}
 	if mve.Volume != "web-root-vol" || mve.Disk != "shared-fs" || mve.Instance != "db-vm" {
@@ -572,8 +572,7 @@ func TestReconciler_Update_ExternalMissing_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing external volume")
 	}
-	var mve *plan.MissingVolumeError
-	if !errors.As(err, &mve) {
+	if _, ok := errors.AsType[*plan.MissingVolumeError](err); !ok {
 		t.Fatalf("expected *plan.MissingVolumeError, got %T: %v", err, err)
 	}
 }

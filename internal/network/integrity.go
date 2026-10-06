@@ -2,8 +2,9 @@ package network
 
 import (
 	"fmt"
+	"maps"
 	"net"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
@@ -19,6 +20,12 @@ import (
 //  3. Multi-NIC group-span warning (R10) — NICs on vswitches from ≥2 distinct
 //     groups may bypass network_policy via guest routing.
 func CheckInstances(configs []*config.Config, f *Fleet, liveNetworks map[string]bool) ([]string, error) {
+	return CheckInstancesWithProvider(configs, f, liveNetworks, "")
+}
+
+// CheckInstancesWithProvider is like CheckInstances but defaults NIC parent
+// to incusbr0 when the resolved provider is incus.
+func CheckInstancesWithProvider(configs []*config.Config, f *Fleet, liveNetworks map[string]bool, prov string) ([]string, error) {
 	var warnings []string
 
 	for _, conf := range configs {
@@ -33,7 +40,16 @@ func CheckInstances(configs []*config.Config, f *Fleet, liveNetworks map[string]
 			}
 			parent := nic.Parent
 			if parent == "" {
-				parent = "lxdbr0"
+				switch {
+				case conf.Provider == "incus":
+					parent = "incusbr0"
+				case conf.Provider == "lxd":
+					parent = "lxdbr0"
+				case prov == "incus":
+					parent = "incusbr0"
+				default:
+					parent = "lxdbr0"
+				}
 			}
 
 			vs, declared := f.ByName[parent]
@@ -61,11 +77,7 @@ func CheckInstances(configs []*config.Config, f *Fleet, liveNetworks map[string]
 		}
 
 		if len(groupsSeen) > 1 {
-			groups := make([]string, 0, len(groupsSeen))
-			for g := range groupsSeen {
-				groups = append(groups, g)
-			}
-			sort.Strings(groups)
+			groups := slices.Sorted(maps.Keys(groupsSeen))
 			warnings = append(warnings, fmt.Sprintf("instance %q NICs span network groups [%s]; guest routing may bypass network_policy",
 				conf.Name, strings.Join(groups, ", ")))
 		}

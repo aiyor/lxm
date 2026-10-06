@@ -1,9 +1,10 @@
 package network
 
 import (
+	"cmp"
 	"fmt"
 	"net"
-	"sort"
+	"slices"
 
 	"github.com/aiyor/lxm/internal/config"
 )
@@ -200,14 +201,14 @@ func Union(configs []*config.Config) (*Fleet, error) {
 	for _, r := range policyIndex {
 		f.Allow = append(f.Allow, r)
 	}
-	sort.Slice(f.Allow, func(i, j int) bool {
-		if f.Allow[i].From != f.Allow[j].From {
-			return f.Allow[i].From < f.Allow[j].From
+	slices.SortFunc(f.Allow, func(a, b PolicyRule) int {
+		if c := cmp.Compare(a.From, b.From); c != 0 {
+			return c
 		}
-		if f.Allow[i].To != f.Allow[j].To {
-			return f.Allow[i].To < f.Allow[j].To
+		if c := cmp.Compare(a.To, b.To); c != 0 {
+			return c
 		}
-		return f.Allow[i].Direction < f.Allow[j].Direction
+		return cmp.Compare(a.Direction, b.Direction)
 	})
 
 	// 3. Policy group resolution (exit 3 on unknown group).
@@ -224,7 +225,7 @@ func Union(configs []*config.Config) (*Fleet, error) {
 	}
 
 	// 4. Operator internal_cidrs + managed subnets + defaults -> canonical set.
-	internalSet := append([]string(nil), defaultInternalCIDRs...)
+	internalSet := slices.Clone(defaultInternalCIDRs)
 	internalSet = append(internalSet, f.managedSubnets()...)
 	for _, conf := range configs {
 		if conf.NetworkPolicy != nil {
@@ -250,7 +251,9 @@ func Union(configs []*config.Config) (*Fleet, error) {
 func (f *Fleet) managedSubnets() []string {
 	out := make([]string, 0, len(f.VSwitches))
 	for _, vs := range f.VSwitches {
-		out = append(out, vs.Subnet.String())
+		if vs.Status != "absent" && vs.Subnet != nil {
+			out = append(out, vs.Subnet.String())
+		}
 	}
 	return out
 }
@@ -261,6 +264,6 @@ func (f *Fleet) Groups() []string {
 	for g := range f.ByGroup {
 		out = append(out, g)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
