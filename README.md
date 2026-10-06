@@ -236,3 +236,11 @@ The `lxm` CLI binary registers the following subcommands:
 * **`5` (`TARGET_NOT_FOUND`)**: Target container, snapshot, or selector match not found.
 * **`6` (`EXEC_FAILED`)**: Recipe execution error.
 * **`7` (`WAIT_TIMEOUT`)**: Cloud-init or network wait deadline exceeded.
+
+---
+
+## License
+
+Copyright 2026 Tze
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
