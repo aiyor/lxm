@@ -364,3 +364,39 @@ func TestRun_Ports_ApplyHandoff(t *testing.T) {
 		t.Fatalf("target instance missing proxy-web: %+v", driver.Instances["b"].Devices)
 	}
 }
+
+func TestRun_Ports_NATLifecycle(t *testing.T) {
+	driver := fake.New()
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "nat.yaml")
+	writePortsCLIManifest(t, manifest, `schema: lxm/config/v2
+name: nat-web
+image: ubuntu:24.04
+networks:
+  - {name: eth0, parent: lxdbr0, ipv4: 10.0.0.50}
+ports:
+  - {name: https, listen: "10.0.0.1:8443", connect: "10.0.0.50:443", nat: true}
+`)
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"apply", manifest, "--format", "json"}, &stdout, &stderr, driver); code != 0 {
+		t.Fatalf("NAT apply returned %d, want 0. stderr: %s", code, stderr.String())
+	}
+	dev := driver.Instances["nat-web"].Devices["proxy-https"]
+	if dev == nil || dev["nat"] != "true" {
+		t.Fatalf("NAT proxy device not created: %+v", dev)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"plan", manifest, "--format", "json"}, &stdout, &stderr, driver); code != 0 {
+		t.Fatalf("NAT re-plan returned %d, want 0. stderr: %s", code, stderr.String())
+	}
+	env := parsePortsEnvelope(t, stdout.Bytes())
+	if len(env.Plan.Steps) != 1 || env.Plan.Steps[0].Action != "noop" {
+		t.Fatalf("expected NAT noop after apply, got %+v", env.Plan.Steps)
+	}
+	if len(env.Plan.Steps[0].Diff) != 0 {
+		t.Fatalf("expected no NAT diff after apply, got %+v", env.Plan.Steps[0].Diff)
+	}
+}
