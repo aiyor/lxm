@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/netip"
 	"slices"
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
+	"github.com/aiyor/lxm/internal/ports"
 )
 
 // CheckInstances enforces the instance-NIC integration rules (§4):
@@ -20,15 +22,26 @@ import (
 //  3. Multi-NIC group-span warning (R10) — NICs on vswitches from ≥2 distinct
 //     groups may bypass network_policy via guest routing.
 //  4. NAT+OVN rejection (issue #11) — a published port with nat: true cannot
-//     work when its NIC is attached to an OVN vswitch: the daemon's NAT setup
-//     only considers bridged/routed NICs, so the device fails at instance start.
+//     use a connect address whose NIC is attached to an OVN network: the
+//     daemon's NAT setup only considers bridged/routed NICs, so the device
+//     fails at instance start. The check follows the connect address to its
+//     specific NIC, so a bridged NIC on a multi-NIC instance does not trip it.
 func CheckInstances(configs []*config.Config, f *Fleet, liveNetworks map[string]bool) ([]string, error) {
 	return CheckInstancesWithProvider(configs, f, liveNetworks, "")
 }
 
 // CheckInstancesWithProvider is like CheckInstances but defaults NIC parent
-// to incusbr0 when the resolved provider is incus.
+// to incusbr0 when the resolved provider is incus. Live network types are not
+// available through this entry point (see CheckInstancesWithProviderAndNetworkTypes).
 func CheckInstancesWithProvider(configs []*config.Config, f *Fleet, liveNetworks map[string]bool, prov string) ([]string, error) {
+	return CheckInstancesWithProviderAndNetworkTypes(configs, f, liveNetworks, nil, prov)
+}
+
+// CheckInstancesWithProviderAndNetworkTypes is CheckInstancesWithProvider with
+// the live network type catalogue (name -> provider network type, e.g. "ovn",
+// "bridge"). It lets NAT validation catch an OVN parent that is not declared in
+// vswitches: rather than only trusting the loaded manifest set.
+func CheckInstancesWithProviderAndNetworkTypes(configs []*config.Config, f *Fleet, liveNetworks map[string]bool, liveNetworkTypes map[string]string, prov string) ([]string, error) {
 	var warnings []string
 
 	for _, conf := range configs {
@@ -36,6 +49,14 @@ func CheckInstancesWithProvider(configs []*config.Config, f *Fleet, liveNetworks
 			continue
 		}
 		groupsSeen := make(map[string]bool)
+		// Static IPv4 -> every parent network that NIC is attached to, with the
+		// OVN classification needed by the NAT follow-up below.
+		type nicParent struct {
+			parent string
+			ovn    bool
+		}
+		ipv4Parents := make(map[netip.Addr][]nicParent)
+
 		for _, nic := range conf.Networks {
 			name := nic.Name
 			if name == "" {
@@ -62,13 +83,16 @@ func CheckInstancesWithProvider(configs []*config.Config, f *Fleet, liveNetworks
 					conf.Name, name, parent)
 			}
 
-			if declared && vs != nil && vs.EffectiveType() == "ovn" {
-				for i := range conf.Ports {
-					if conf.Ports[i].NAT {
-						return nil, fmt.Errorf("port %q of instance %q: nat: true is not supported on OVN-backed network %q (NAT requires a bridged/routed NIC)",
-							conf.Ports[i].Name, conf.Name, parent)
-					}
-				}
+			isOVN := false
+			switch {
+			case declared && vs != nil:
+				isOVN = vs.EffectiveType() == "ovn"
+			case liveNetworkTypes != nil:
+				isOVN = liveNetworkTypes[parent] == "ovn"
+			}
+
+			if addr, err := netip.ParseAddr(strings.TrimSpace(nic.IPv4)); err == nil && addr.Is4() {
+				ipv4Parents[addr] = append(ipv4Parents[addr], nicParent{parent: parent, ovn: isOVN})
 			}
 
 			if nic.IPv4 != "" && declared && vs != nil && vs.Subnet != nil {
@@ -85,6 +109,25 @@ func CheckInstancesWithProvider(configs []*config.Config, f *Fleet, liveNetworks
 
 			if declared && vs != nil && vs.Group != "" {
 				groupsSeen[vs.Group] = true
+			}
+		}
+
+		// NAT requires a bridged/routed NIC reachable at the connect address.
+		for i := range conf.Ports {
+			port := &conf.Ports[i]
+			if !port.NAT {
+				continue
+			}
+			connect, err := ports.ParseEndpoint(port.Proto, port.Connect)
+			if err != nil {
+				continue // config validation reports the endpoint error
+			}
+			for _, parent := range ipv4Parents[connect.Addr] {
+				if !parent.ovn {
+					continue
+				}
+				return nil, fmt.Errorf("port %q of instance %q: nat: true cannot use connect address %s on OVN-backed network %q (NAT requires a bridged/routed NIC)",
+					port.Name, conf.Name, connect.HostPort(), parent.parent)
 			}
 		}
 

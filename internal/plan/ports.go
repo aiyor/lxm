@@ -53,7 +53,6 @@ func findPortOwnershipConflicts(manifest *config.Config, live *InstanceSnapshot)
 // under a name that is not proxy-<port-name>).
 type livePort struct {
 	Device    string
-	Name      string // derived port name ("" for a non-proxy-<name> device)
 	Config    config.PortConfig
 	Malformed bool
 	Raw       map[string]string
@@ -71,7 +70,6 @@ func getLivePorts(live *InstanceSnapshot) []livePort {
 		if dev, ok := ports.ParseProxy(devName, props); ok {
 			out = append(out, livePort{
 				Device: devName,
-				Name:   dev.Name,
 				Config: config.PortConfig{
 					Name:    dev.Name,
 					Listen:  dev.Listen.HostPort(),
@@ -115,14 +113,15 @@ func normalizePorts(in []config.PortConfig) ([]config.PortConfig, error) {
 	return out, nil
 }
 
-// portNameFromDevice derives the manifest-facing port name from a device name;
-// non-proxy-<name> managed devices fall back to the raw device name so their
-// removal is still attributable.
-func portNameFromDevice(device string) string {
+// portRemovalField names a removed device. Canonical proxy-<name> devices use
+// the port-diff namespace; anomalous marked devices under any other name are
+// not declared ports, so they use a device-qualified field to avoid colliding
+// with a real port's ports[<name>] entry in the same plan.
+func portRemovalField(device string) string {
 	if name, ok := strings.CutPrefix(device, ports.DevicePrefix); ok && name != "" {
-		return name
+		return "ports[" + name + "]"
 	}
-	return device
+	return "devices[" + device + "]"
 }
 
 // unmanagedProxyProps returns the device properties lxm does not own. Such
@@ -225,12 +224,12 @@ func diffPorts(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff, er
 	}
 	sort.Strings(removed)
 	for _, devName := range removed {
-		fieldName := portNameFromDevice(devName)
+		fieldName := portRemovalField(devName)
 		if lp, ok := liveParsed[devName]; ok {
-			diffs = append(diffs, FieldDiff{Field: "ports[" + fieldName + "]", Old: lp, New: nil})
+			diffs = append(diffs, FieldDiff{Field: fieldName, Old: lp, New: nil})
 			continue
 		}
-		diffs = append(diffs, FieldDiff{Field: "ports[" + fieldName + "]", Old: liveMalformed[devName], New: nil})
+		diffs = append(diffs, FieldDiff{Field: fieldName, Old: liveMalformed[devName], New: nil})
 	}
 
 	return diffs, nil

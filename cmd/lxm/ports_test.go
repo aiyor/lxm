@@ -426,6 +426,15 @@ ports:
 	if len(env.Plan.Steps[0].Diff) != 0 {
 		t.Fatalf("expected no NAT diff after apply, got %+v", env.Plan.Steps[0].Diff)
 	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"status", "nat-web"}, &stdout, &stderr, driver); code != 0 {
+		t.Fatalf("NAT status returned %d, want 0. stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "(nat)") || !strings.Contains(stdout.String(), "(managed)") {
+		t.Fatalf("status text must mark NAT ownership: %s", stdout.String())
+	}
 }
 
 func TestRun_Ports_RebuildSecondApplyConverges(t *testing.T) {

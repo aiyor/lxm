@@ -80,7 +80,7 @@ violations ⇒ `3` (`CONFIG_ERROR`); LXD API/extension errors (including `create
 Manifests that declare `ports:` extend `ResultItem` without changing existing consumers:
 
 * **`results[].published_ports`** (`array`, `omitempty`): present on `lxm list` and `lxm status`
-  results for every proxy device visible on the instance:
+  results for every proxy device in the instance's effective device set (local + profile-provided):
   `{device, name?, proto, listen, connect, nat, managed}` (sorted by `device`).
   `managed` reflects the `user.lxm.managed` marker (foreign proxy devices are included with
   `managed: false`); `name` is derived from a `proxy-<name>` device name and omitted otherwise.

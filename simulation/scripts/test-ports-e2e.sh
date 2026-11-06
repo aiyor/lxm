@@ -203,7 +203,10 @@ write_web_manifest "${HOST_PORT}"
 wait_running "${WEB}"
 start_http_server "${WEB}"
 wait_http "http://${LISTEN_IP}:${HOST_PORT}/" "e2e-ok" "published port"
-pass "Container non-NAT proxy device serves host-side traffic."
+"${LXM_BIN}" plan "${TEST_DIR}/web.yaml" --format json | jq -e --arg inst "${WEB}" \
+  '.plan.steps[] | select(.container == $inst) | .action == "noop"' >/dev/null \
+  || fail "re-plan after create is not a noop (live idempotency failure)"
+pass "Container non-NAT proxy device serves host-side traffic; re-plan is a noop."
 
 info "2. Verifying list/status output surfaces..."
 "${LXM_BIN}" list --format json | jq -e --arg inst "${WEB}" \

@@ -209,7 +209,8 @@ dev-station  virtual-machine    Running  true     dev     ubuntu  10.171.13.47  
 ```
 
 The `PORTS` column lists lxm-managed published ports only (`udp:`-prefixed for UDP, ` (nat)` for
-DNAT); `--format json` adds an additive `published_ports` array to each result.
+DNAT); `--format json` adds an additive `published_ports` array covering the effective proxy set
+(local + profile-provided devices).
 
 ---
 
@@ -230,7 +231,7 @@ Usage:
 
 **Exit codes:** `0` success · `2` invalid `--format` · `4` LXD error · `5` container not found.
 
-**Notes:** the recipe hash trail lists the stored idempotency hashes lxm uses to decide whether a recipe needs to run again. The `Published Ports:` block lists managed and foreign proxy devices with an ownership marker; `--format json` carries the same data as `results[0].published_ports`.
+**Notes:** the recipe hash trail lists the stored idempotency hashes lxm uses to decide whether a recipe needs to run again. The `Published Ports:` block lists the effective local + profile proxy devices with ownership and NAT markers; `--format json` carries the same data as `results[0].published_ports`.
 
 Example (text):
 

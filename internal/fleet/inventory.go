@@ -48,6 +48,12 @@ func GetInventory(ctx context.Context, svc provider.Driver) (*FleetInventory, er
 		if instType == "" {
 			instType = "container"
 		}
+		// Prefer expanded devices: list/status should show the effective proxy
+		// set (local + profile-provided), with profile devices marked unmanaged.
+		devices := full.ExpandedDevices
+		if len(devices) == 0 {
+			devices = full.Devices
+		}
 		status := InstanceStatus{
 			Name:           full.Name,
 			Type:           instType,
@@ -56,7 +62,7 @@ func GetInventory(ctx context.Context, svc provider.Driver) (*FleetInventory, er
 			Architecture:   full.Architecture,
 			Config:         full.Config,
 			RecipeHashes:   make(map[string]string),
-			PublishedPorts: ports.Published(full.Devices),
+			PublishedPorts: ports.Published(devices),
 		}
 
 		if status.Config == nil {

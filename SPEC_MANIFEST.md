@@ -198,7 +198,7 @@ replace:
 
 * **`remove` Matching**: `remove.mounts` matches by normalized destination path (`filepath.Clean`), `remove.networks` matches by network interface `name`, `remove.recipes` matches by exact resolved script path or recipe metadata `name`, `remove.disks` matches by disk `name`, and `remove.ports` matches by port `name`. Non-matching `remove` directives fail compilation with **exit code 3**.
 * **`replace` Directive**: Completely replaces inherited list items with the newly declared items.
-* **`ports` merge**: same-named entries replace wholesale (omitted fields reset to defaults; `nat` does not leak from the base); duplicate names within one source layer are rejected before merging. An empty `replace.ports: []` is a no-op (the list-directive convention); use `remove.ports` to clear an inherited list.
+* **`ports` merge**: same-named entries replace wholesale (omitted fields reset to defaults; `nat` does not leak from the base); duplicate names within one source layer are rejected before merging. An empty `replace.ports: []` is a no-op (the list-directive convention); use `remove.ports` to clear an inherited list. A non-empty `replace.ports` wins over the same manifest's local `ports:` list, matching the other list fields.
 
 ### 3.9 Data Disks (`disks` / VM-only)
 

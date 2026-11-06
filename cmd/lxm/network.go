@@ -88,11 +88,15 @@ func computeNetworkPlan(ctx context.Context, svc provider.Driver, loaded []*conf
 
 	// Instance-NIC integrity (§4) against the FULL loaded fleet.
 	liveNetNames := make(map[string]bool)
-	for n := range live.Networks {
+	liveNetTypes := make(map[string]string, len(live.Networks))
+	for n, netInfo := range live.Networks {
 		liveNetNames[n] = true
+		if netInfo != nil {
+			liveNetTypes[n] = netInfo.Type
+		}
 	}
 	provType := resolveProviderType(nil, svc, loaded)
-	nicWarnings, err := network.CheckInstancesWithProvider(loaded, fleet, liveNetNames, provType)
+	nicWarnings, err := network.CheckInstancesWithProviderAndNetworkTypes(loaded, fleet, liveNetNames, liveNetTypes, provType)
 	if err != nil {
 		return nil, nil, &exitError{code: 3, err: err}
 	}

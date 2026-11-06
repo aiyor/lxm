@@ -589,7 +589,11 @@ func newStatusCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				return &exitError{code: 5, err: fmt.Errorf("container %q not found: %w", name, err)}
 			}
 
-			publishedPorts := ports.Published(inst.Devices)
+			devices := inst.ExpandedDevices
+			if len(devices) == 0 {
+				devices = inst.Devices
+			}
+			publishedPorts := ports.Published(devices)
 
 			lastCommandResults = []output.ResultItem{
 				{
@@ -632,7 +636,11 @@ func newStatusCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 						if p.Managed {
 							ownership = "managed"
 						}
-						fmt.Fprintf(w, "  - %s: %s %s -> %s (%s)\n", label, p.Proto, p.Listen, p.Connect, ownership)
+						nat := ""
+						if p.NAT {
+							nat = " (nat)"
+						}
+						fmt.Fprintf(w, "  - %s: %s %s -> %s%s (%s)\n", label, p.Proto, p.Listen, p.Connect, nat, ownership)
 					}
 				}
 

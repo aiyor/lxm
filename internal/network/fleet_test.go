@@ -222,9 +222,11 @@ func TestCheckInstancesWithProvider_IncusDefaultBridge(t *testing.T) {
 
 func TestCheckInstancesWithProvider_NATOnOVNRejected(t *testing.T) {
 	conf := &config.Config{
-		Name:     "vm1",
-		Type:     "virtual-machine",
-		Networks: []config.NetworkConfig{{Name: "eth0", Parent: "ovn0"}},
+		Name: "vm1",
+		Type: "virtual-machine",
+		Networks: []config.NetworkConfig{
+			{Name: "eth0", Parent: "ovn0", IPv4: "10.10.10.31"},
+		},
 		Ports: []config.PortConfig{{
 			Name:    "https",
 			Listen:  "10.10.10.1:8443",
@@ -245,5 +247,72 @@ func TestCheckInstancesWithProvider_NATOnOVNRejected(t *testing.T) {
 	f.ByName["ovn0"] = &VSwitch{VSwitchConfig: config.VSwitchConfig{Name: "ovn0", Type: "bridge"}}
 	if _, err := CheckInstancesWithProvider([]*config.Config{conf}, f, nil, "lxd"); err != nil {
 		t.Fatalf("bridge-backed NAT must not be rejected by the network layer: %v", err)
+	}
+}
+
+func TestCheckInstancesWithProvider_NATFollowsConnectNIC(t *testing.T) {
+	// A multi-NIC instance may have an OVN NIC while its NAT connect address
+	// lives on a bridged NIC; the daemon selects the NIC matching connect, so
+	// the bridged case must be accepted and the OVN case rejected.
+	mkConf := func(connect string) *config.Config {
+		return &config.Config{
+			Name: "vm1",
+			Type: "virtual-machine",
+			Networks: []config.NetworkConfig{
+				{Name: "eth0", Parent: "br0", IPv4: "10.10.10.31"},
+				{Name: "eth1", Parent: "ovn0", IPv4: "10.60.0.50"},
+			},
+			Ports: []config.PortConfig{{
+				Name:    "https",
+				Listen:  "10.10.10.1:8443",
+				Connect: connect,
+				Proto:   "tcp",
+				NAT:     true,
+			}},
+		}
+	}
+	f := &Fleet{ByName: map[string]*VSwitch{
+		"br0":  {VSwitchConfig: config.VSwitchConfig{Name: "br0", Type: "bridge"}},
+		"ovn0": {VSwitchConfig: config.VSwitchConfig{Name: "ovn0", Type: "ovn"}},
+	}}
+	if _, err := CheckInstancesWithProvider([]*config.Config{mkConf("10.10.10.31:443")}, f, nil, "lxd"); err != nil {
+		t.Fatalf("NAT on the bridged NIC must be accepted despite an OVN NIC: %v", err)
+	}
+	if _, err := CheckInstancesWithProvider([]*config.Config{mkConf("10.60.0.50:443")}, f, nil, "lxd"); err == nil {
+		t.Fatal("NAT on the OVN-backed NIC must be rejected")
+	}
+}
+
+func TestCheckInstancesWithProviderAndNetworkTypes_NATOnLiveOVN(t *testing.T) {
+	conf := &config.Config{
+		Name: "vm1",
+		Type: "virtual-machine",
+		Networks: []config.NetworkConfig{
+			{Name: "eth0", Parent: "live-ovn", IPv4: "10.70.0.5"},
+		},
+		Ports: []config.PortConfig{{
+			Name:    "https",
+			Listen:  "10.70.0.1:8443",
+			Connect: "10.70.0.5:443",
+			Proto:   "tcp",
+			NAT:     true,
+		}},
+	}
+	f := &Fleet{ByName: map[string]*VSwitch{}}
+
+	// The OVN parent is not declared in vswitches:, so only the live network
+	// type can reveal the incompatibility.
+	if _, err := CheckInstancesWithProvider([]*config.Config{conf}, f, map[string]bool{"live-ovn": true}, "lxd"); err != nil {
+		t.Fatalf("without live types the declared-only layer cannot detect it: %v", err)
+	}
+	if _, err := CheckInstancesWithProviderAndNetworkTypes(
+		[]*config.Config{conf}, f, map[string]bool{"live-ovn": true}, map[string]string{"live-ovn": "ovn"}, "lxd",
+	); err == nil || !strings.Contains(err.Error(), "OVN-backed network") {
+		t.Fatalf("expected live-OVN NAT rejection, got: %v", err)
+	}
+	if _, err := CheckInstancesWithProviderAndNetworkTypes(
+		[]*config.Config{conf}, f, map[string]bool{"live-ovn": true}, map[string]string{"live-ovn": "bridge"}, "lxd",
+	); err != nil {
+		t.Fatalf("bridged live network must be accepted: %v", err)
 	}
 }

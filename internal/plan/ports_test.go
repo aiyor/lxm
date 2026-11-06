@@ -517,8 +517,8 @@ func TestCompute_Ports_MarkedDeviceNameNamespace(t *testing.T) {
 			t.Fatalf("iteration %d: marked junk device must be retired, got %v", i, step.InstancePut.Devices)
 		}
 	}
-	if !containsField(firstFields, "ports[web].listen") || !containsField(firstFields, "ports[web]") {
-		t.Fatalf("expected listen change and junk removal, got %v", firstFields)
+	if !containsField(firstFields, "ports[web].listen") || !containsField(firstFields, "devices[web]") {
+		t.Fatalf("expected listen change and device-qualified junk removal, got %v", firstFields)
 	}
 }
 

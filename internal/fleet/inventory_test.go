@@ -201,3 +201,29 @@ func TestGetInventory_PublishedPorts(t *testing.T) {
 		t.Fatalf("unexpected managed entry: %+v", ports[1])
 	}
 }
+
+func TestGetInventory_ProfilePublishedPorts(t *testing.T) {
+	ctx := t.Context()
+	driver := fake.New()
+	driver.Instances["web"] = &provider.Instance{
+		Name:    "web",
+		Status:  "Running",
+		Config:  map[string]string{"user.lxm.managed": "true"},
+		Devices: map[string]map[string]string{},
+		ExpandedDevices: map[string]map[string]string{
+			"profile-proxy": {
+				"type":    "proxy",
+				"listen":  "tcp:127.0.0.1:9090",
+				"connect": "tcp:127.0.0.1:90",
+			},
+		},
+	}
+	inv, err := GetInventory(ctx, driver)
+	if err != nil {
+		t.Fatalf("GetInventory: %v", err)
+	}
+	ports := inv.Instances[0].PublishedPorts
+	if len(ports) != 1 || ports[0].Device != "profile-proxy" || ports[0].Managed || ports[0].Name != "" {
+		t.Fatalf("expected profile-provided foreign proxy in published ports, got %+v", ports)
+	}
+}
