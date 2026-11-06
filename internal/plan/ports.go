@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/ports"
@@ -47,20 +48,15 @@ func findPortOwnershipConflicts(manifest *config.Config, live *InstanceSnapshot)
 
 // livePort is the plan-layer view of a marker-carrying proxy device. Malformed
 // managed devices are retained so the diff can repair or remove them rather
-// than failing the plan.
+// than failing the plan. Device names are the canonical identity used for
+// matching (ownership is marker-based, so a managed device can legally exist
+// under a name that is not proxy-<port-name>).
 type livePort struct {
 	Device    string
-	Name      string
+	Name      string // derived port name ("" for a non-proxy-<name> device)
 	Config    config.PortConfig
 	Malformed bool
 	Raw       map[string]string
-}
-
-func (lp livePort) key() string {
-	if lp.Name != "" {
-		return lp.Name
-	}
-	return lp.Device
 }
 
 func getLivePorts(live *InstanceSnapshot) []livePort {
@@ -83,12 +79,13 @@ func getLivePorts(live *InstanceSnapshot) []livePort {
 					Proto:   dev.Listen.Proto,
 					NAT:     dev.NAT,
 				},
+				Raw: props,
 			})
 			continue
 		}
 		out = append(out, livePort{Device: devName, Malformed: true, Raw: props})
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].key() < out[j].key() })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Device < out[j].Device })
 	return out
 }
 
@@ -118,9 +115,43 @@ func normalizePorts(in []config.PortConfig) ([]config.PortConfig, error) {
 	return out, nil
 }
 
+// portNameFromDevice derives the manifest-facing port name from a device name;
+// non-proxy-<name> managed devices fall back to the raw device name so their
+// removal is still attributable.
+func portNameFromDevice(device string) string {
+	if name, ok := strings.CutPrefix(device, ports.DevicePrefix); ok && name != "" {
+		return name
+	}
+	return device
+}
+
+// unmanagedProxyProps returns the device properties lxm does not own. Such
+// properties are left behind by hand edits or future daemon options; the next
+// rewrite of the device drops them, so a drift-aware plan repairs the device
+// instead of reporting a false noop.
+func unmanagedProxyProps(props map[string]string) []string {
+	allowed := map[string]bool{
+		"type":           true,
+		"listen":         true,
+		"connect":        true,
+		"nat":            true,
+		ports.ManagedKey: true,
+	}
+	extra := make([]string, 0)
+	for k := range props {
+		if !allowed[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	return extra
+}
+
 // diffPorts compares desired ports with managed live proxy devices and emits
-// per-port FieldDiff entries (mirroring diffDisks naming). It also rejects
-// unmarked ownership collisions.
+// per-port FieldDiff entries (mirroring diffDisks naming). Both sides are keyed
+// by canonical device name (proxy-<name>); a marker-carrying device under any
+// other name is removable junk and can never satisfy a manifest port. It also
+// rejects unmarked ownership collisions.
 func diffPorts(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff, error) {
 	if err := findPortOwnershipConflicts(manifest, live); err != nil {
 		return nil, err
@@ -130,26 +161,29 @@ func diffPorts(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff, er
 	if err != nil {
 		return nil, err
 	}
-	desiredByName := make(map[string]config.PortConfig, len(desired))
+	desiredByDevice := make(map[string]config.PortConfig, len(desired))
 	for _, p := range desired {
-		desiredByName[p.Name] = p
+		desiredByDevice[ports.DeviceName(p.Name)] = p
 	}
 
 	liveParsed := make(map[string]config.PortConfig)
+	liveRaw := make(map[string]map[string]string)
 	liveMalformed := make(map[string]map[string]string)
 	for _, lp := range getLivePorts(live) {
 		if lp.Malformed {
-			liveMalformed[lp.key()] = lp.Raw
+			liveMalformed[lp.Device] = lp.Raw
 			continue
 		}
-		liveParsed[lp.key()] = lp.Config
+		liveParsed[lp.Device] = lp.Config
+		liveRaw[lp.Device] = lp.Raw
 	}
 
-	diffs := make([]FieldDiff, 0, len(desired)+len(liveParsed))
+	diffs := make([]FieldDiff, 0, len(desired)+len(liveParsed)+len(liveMalformed))
 	for _, dp := range desired {
-		lp, exists := liveParsed[dp.Name]
+		devName := ports.DeviceName(dp.Name)
+		lp, exists := liveParsed[devName]
 		if !exists {
-			if raw, bad := liveMalformed[dp.Name]; bad {
+			if raw, bad := liveMalformed[devName]; bad {
 				// Repair a malformed managed device in place.
 				diffs = append(diffs, FieldDiff{Field: "ports[" + dp.Name + "]", Old: raw, New: dp})
 				continue
@@ -157,6 +191,13 @@ func diffPorts(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff, er
 			diffs = append(diffs, FieldDiff{Field: "ports[" + dp.Name + "]", Old: nil, New: dp})
 			continue
 		}
+
+		// Out-of-band device properties would be silently dropped by the next
+		// rewrite; surface the device repair so the plan is honest.
+		if extra := unmanagedProxyProps(liveRaw[devName]); len(extra) > 0 {
+			diffs = append(diffs, FieldDiff{Field: "ports[" + dp.Name + "]", Old: liveRaw[devName], New: dp})
+		}
+
 		if lp.Listen != dp.Listen {
 			diffs = append(diffs, FieldDiff{Field: "ports[" + dp.Name + "].listen", Old: lp.Listen, New: dp.Listen})
 		}
@@ -172,23 +213,24 @@ func diffPorts(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff, er
 	}
 
 	removed := make([]string, 0)
-	for name := range liveParsed {
-		if _, keep := desiredByName[name]; !keep {
-			removed = append(removed, name)
+	for devName := range liveParsed {
+		if _, keep := desiredByDevice[devName]; !keep {
+			removed = append(removed, devName)
 		}
 	}
-	for name := range liveMalformed {
-		if _, keep := desiredByName[name]; !keep {
-			removed = append(removed, name)
+	for devName := range liveMalformed {
+		if _, keep := desiredByDevice[devName]; !keep {
+			removed = append(removed, devName)
 		}
 	}
 	sort.Strings(removed)
-	for _, name := range removed {
-		if lp, ok := liveParsed[name]; ok {
-			diffs = append(diffs, FieldDiff{Field: "ports[" + name + "]", Old: lp, New: nil})
+	for _, devName := range removed {
+		fieldName := portNameFromDevice(devName)
+		if lp, ok := liveParsed[devName]; ok {
+			diffs = append(diffs, FieldDiff{Field: "ports[" + fieldName + "]", Old: lp, New: nil})
 			continue
 		}
-		diffs = append(diffs, FieldDiff{Field: "ports[" + name + "]", Old: liveMalformed[name], New: nil})
+		diffs = append(diffs, FieldDiff{Field: "ports[" + fieldName + "]", Old: liveMalformed[devName], New: nil})
 	}
 
 	return diffs, nil
@@ -224,7 +266,15 @@ func appendManifestWarnings(p *Plan, manifest *config.Config, live *InstanceSnap
 			continue
 		}
 		devName := ports.DeviceName(port.Name)
-		if _, local := live.Devices[devName]; local {
+		if localProps, local := live.Devices[devName]; local {
+			// Managed devices with extra properties are rewritten canonically on
+			// the next update; warn so the drop is not silent.
+			if ports.IsManagedProxy(devName, localProps) {
+				if extra := unmanagedProxyProps(localProps); len(extra) > 0 {
+					p.Warnings = append(p.Warnings, fmt.Sprintf("port %q of instance %q: proxy device %q has unmanaged properties %v; the next update rewrites the device without them",
+						port.Name, manifest.Name, devName, extra))
+				}
+			}
 			continue
 		}
 		if _, profileProvided := live.ExpandedDevices[devName]; profileProvided {

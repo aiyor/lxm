@@ -439,3 +439,134 @@ func TestCompute_Ports_IdempotentNAT(t *testing.T) {
 		t.Fatalf("expected NAT noop, got %q with diff %+v", p.Steps[0].Action, p.Steps[0].Diff)
 	}
 }
+
+func TestCompute_Ports_MalformedRepairDiffShape(t *testing.T) {
+	manifest := baseContainer("web-a")
+	manifest.Ports = []config.PortConfig{portSpec("web", "127.0.0.1:8080", "127.0.0.1:80")}
+	live := &plan.InstanceSnapshot{
+		Name:   "web-a",
+		Status: "Running",
+		Config: map[string]string{"user.lxm.user": "ubuntu"},
+		Devices: map[string]map[string]string{
+			"proxy-web": {
+				"type":           "proxy",
+				"listen":         "tcp:127.0.0.1:8080",
+				"connect":        "tcp:127.0.0.1:80",
+				"nat":            "maybe",
+				ports.ManagedKey: ports.ManagedValue,
+			},
+		},
+	}
+	p, err := plan.NewReconciler().Compute(manifest, map[string]*plan.InstanceSnapshot{"web-a": live}, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	step := p.Steps[0]
+	if step.Action != "update" {
+		t.Fatalf("action = %q, want update", step.Action)
+	}
+	if len(step.Diff) != 1 || step.Diff[0].Field != "ports[web]" {
+		t.Fatalf("expected a single in-place repair diff ports[web], got %+v", step.Diff)
+	}
+	if step.Diff[0].Old == nil || step.Diff[0].New == nil {
+		t.Fatalf("repair diff must carry old and new values: %+v", step.Diff[0])
+	}
+	if step.InstancePut == nil || step.InstancePut.Devices["proxy-web"] == nil {
+		t.Fatalf("repair PUT missing proxy-web: %+v", step.InstancePut)
+	}
+}
+
+func TestCompute_Ports_MarkedDeviceNameNamespace(t *testing.T) {
+	// Ownership is marker-based: a marked device under a non-proxy-<name>
+	// device name must never satisfy the desired proxy-web device, and the
+	// decision must be deterministic regardless of map iteration order.
+	manifest := baseContainer("web-a")
+	manifest.Ports = []config.PortConfig{portSpec("web", "127.0.0.1:8080", "127.0.0.1:80")}
+	live := &plan.InstanceSnapshot{
+		Name:   "web-a",
+		Status: "Running",
+		Config: map[string]string{"user.lxm.user": "ubuntu"},
+		Devices: map[string]map[string]string{
+			"proxy-web": managedDevice(t, "127.0.0.1:8081", "127.0.0.1:80", false),
+			"web":       managedDevice(t, "127.0.0.1:9999", "127.0.0.1:99", false),
+		},
+	}
+	var firstFields []string
+	for i := 0; i < 25; i++ {
+		p, err := plan.NewReconciler().Compute(manifest, map[string]*plan.InstanceSnapshot{"web-a": live}, nil, nil, nil, true)
+		if err != nil {
+			t.Fatalf("Compute: %v", err)
+		}
+		step := p.Steps[0]
+		if step.Action != "update" {
+			t.Fatalf("iteration %d: action = %q, want update", i, step.Action)
+		}
+		fields := make([]string, 0, len(step.Diff))
+		for _, d := range step.Diff {
+			fields = append(fields, d.Field)
+		}
+		if i == 0 {
+			firstFields = fields
+		} else if strings.Join(fields, ",") != strings.Join(firstFields, ",") {
+			t.Fatalf("nondeterministic diffs: %v vs %v", firstFields, fields)
+		}
+		if step.InstancePut == nil || step.InstancePut.Devices["proxy-web"] == nil {
+			t.Fatalf("iteration %d: desired proxy-web missing from PUT", i)
+		}
+		if step.InstancePut.Devices["web"] != nil {
+			t.Fatalf("iteration %d: marked junk device must be retired, got %v", i, step.InstancePut.Devices)
+		}
+	}
+	if !containsField(firstFields, "ports[web].listen") || !containsField(firstFields, "ports[web]") {
+		t.Fatalf("expected listen change and junk removal, got %v", firstFields)
+	}
+}
+
+func containsField(fields []string, want string) bool {
+	for _, f := range fields {
+		if f == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCompute_Ports_UnmanagedPropertiesRepaired(t *testing.T) {
+	manifest := baseContainer("web-a")
+	manifest.Ports = []config.PortConfig{portSpec("web", "127.0.0.1:8080", "127.0.0.1:80")}
+	live := &plan.InstanceSnapshot{
+		Name:   "web-a",
+		Status: "Running",
+		Config: map[string]string{"user.lxm.user": "ubuntu"},
+		Devices: map[string]map[string]string{
+			"proxy-web": {
+				"type":           "proxy",
+				"listen":         "tcp:127.0.0.1:8080",
+				"connect":        "tcp:127.0.0.1:80",
+				ports.ManagedKey: ports.ManagedValue,
+				"proxy_protocol": "true",
+			},
+		},
+	}
+	p, err := plan.NewReconciler().Compute(manifest, map[string]*plan.InstanceSnapshot{"web-a": live}, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	step := p.Steps[0]
+	if step.Action != "update" || len(step.Diff) != 1 || step.Diff[0].Field != "ports[web]" {
+		t.Fatalf("expected a single repair diff for unmanaged properties, got action=%q diff=%+v", step.Action, step.Diff)
+	}
+	repaired := step.InstancePut.Devices["proxy-web"]
+	if repaired == nil || repaired["proxy_protocol"] != "" {
+		t.Fatalf("repair PUT must drop unmanaged properties: %v", repaired)
+	}
+	warned := false
+	for _, w := range p.Warnings {
+		if strings.Contains(w, "unmanaged properties") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("expected unmanaged-properties warning, got %v", p.Warnings)
+	}
+}

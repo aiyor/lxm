@@ -504,7 +504,8 @@ ports:
 Removal from the manifest retires the device on the next apply. `remove.ports: [name]` drops
 inherited entries and `replace.ports` replaces the inherited list; same-named entries replace
 wholesale (omitted fields reset to defaults, so an inherited `nat: true` does not leak into an
-override). Listener uniqueness is enforced across the whole loaded fleet — the same protocol,
+override). An empty `replace.ports: []` is a no-op (list-directive convention); use `remove.ports`
+to clear inherited entries. Listener uniqueness is enforced across the whole loaded fleet — the same protocol,
 address and port may be declared by only one instance (wildcard binds are dual-stack and therefore
 conflict with both families). `nat: true` on an OVN-backed vswitch NIC is rejected.
 

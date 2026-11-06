@@ -31,6 +31,14 @@ Ownership is **marker-based, not name-based**. A marker-carrying `proxy` device 
 name is considered lxm-owned and is diffed/repaired/removed; an unmarked `proxy-<name>` is a
 foreign device and is preserved verbatim. Devices with a different `type` are never touched.
 
+For reconciliation identity lxm uses the canonical **device name** (`proxy-<name>`): a marked
+proxy device under any other name can never satisfy a manifest port and is retired on the next
+apply (it appears as `ports[<device>]`). Malformed marked `proxy-<name>` devices are repaired in
+place (`ports[<name>]`, old raw device map → new `PortConfig`), never surfaced as a plan error.
+Additional daemon properties on a managed device that lxm does not emit (`proxy_protocol`, `bind`,
+`security.*`, extra `user.*`) are outside the declarative contract: the plan reports a repair diff
+with a warning, and the rewrite drops them.
+
 ## 3. Endpoint grammar & canonicalization
 
 Endpoints are explicit IP literals with a port. `internal/ports.ParseEndpoint` is authoritative:
@@ -69,7 +77,9 @@ ports:
 | `nat` | bool | `false` | `true` enables DNAT mode (required for VMs). |
 
 `remove.ports: [name]` drops inherited entries (error if unmatched). `replace.ports` wholistically
-replaces the inherited list. Merge is **name-identity, whole-entry replacement**: an overlay entry
+replaces the inherited list; as with every list directive in this schema, an empty
+`replace.ports: []` is a **no-op** (use `remove.ports` to clear inherited entries). Merge is
+**name-identity, whole-entry replacement**: an overlay entry
 with the same `name` replaces the base entry entirely (unspecified fields reset to their defaults —
 in particular, omitting `nat` turns a previously-NAT port back to non-NAT). Duplicate names within
 one source layer are rejected before merging, including in a layer that has an inherited base.
@@ -141,9 +151,10 @@ Daemon behaviour (verified against LXD and Incus sources):
 * `buildInstancePut` preserves foreign devices, skips all marker-carrying proxies in the preserve
   loop, then merges the desired port devices last; omission from the PUT deletes retired devices
   because the daemon replaces the local device set.
-* `Compute` diffs only marker-carrying proxies. A malformed marked device is still owned:
-  it produces a synthetic repair (present in manifest) or removal diff (absent) — never a plan
-  error and never a silent noop.
+* `Compute` diffs only marker-carrying proxies, keyed by canonical device name. A malformed marked
+  device is still owned: it produces a synthetic repair (present in manifest) or removal diff
+  (absent) — never a plan error and never a silent noop. Out-of-band properties are repaired the
+  same way (see §2), so a device rewrite never drops them silently.
 * An unmarked `proxy-<name>` collision is a **plan-time error** (exit 3). lxm never adopts and
   never emits a marker-only update: Incus rejects marker-only device changes (`ErrCannotUpdate`),
   and silent remove+add causes a listener blip.

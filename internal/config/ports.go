@@ -163,8 +163,8 @@ func ValidateFleetPorts(configs []*Config) (warnings []string, err error) {
 			current := ports.NewListener(listen, p.NAT)
 
 			for _, prev := range entries {
-				if prev.instance == conf.Name {
-					continue // same-instance duplicates are a validatePorts error
+				if prev.instance == conf.Name && prev.file == file {
+					continue // same-instance duplicates within one file are a validatePorts error
 				}
 				if !ports.ListenersConflict(prev.listener, current) {
 					continue

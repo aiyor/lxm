@@ -198,7 +198,7 @@ replace:
 
 * **`remove` Matching**: `remove.mounts` matches by normalized destination path (`filepath.Clean`), `remove.networks` matches by network interface `name`, `remove.recipes` matches by exact resolved script path or recipe metadata `name`, `remove.disks` matches by disk `name`, and `remove.ports` matches by port `name`. Non-matching `remove` directives fail compilation with **exit code 3**.
 * **`replace` Directive**: Completely replaces inherited list items with the newly declared items.
-* **`ports` merge**: same-named entries replace wholesale (omitted fields reset to defaults; `nat` does not leak from the base); duplicate names within one source layer are rejected before merging.
+* **`ports` merge**: same-named entries replace wholesale (omitted fields reset to defaults; `nat` does not leak from the base); duplicate names within one source layer are rejected before merging. An empty `replace.ports: []` is a no-op (the list-directive convention); use `remove.ports` to clear an inherited list.
 
 ### 3.9 Data Disks (`disks` / VM-only)
 
@@ -334,7 +334,8 @@ Each `ports:` entry compiles to one native LXD/Incus `proxy` device named `proxy
 | `nat` | bool | `false` | DNAT mode; required for `type: virtual-machine`. IPv4 only, explicit non-loopback `listen`, explicit `connect` equal to a declared `networks[].ipv4`. Loopback + NAT is rejected (runtime-broken on both daemons). |
 
 Inheritance: merged by `name` with **whole-entry replacement** (`replace.ports` replaces the list,
-`remove.ports: [name]` drops entries; unmatched removes are errors). Duplicate names within one
+`remove.ports: [name]` drops entries; unmatched removes are errors; an empty `replace.ports: []` is
+a no-op like every list directive — use `remove.ports` to clear). Duplicate names within one
 source layer are rejected before merging. Cross-field rules: a NIC named `proxy-<name>` collides
 with the port device; same-instance listeners must not conflict (wildcard-aware); `nat: true`
 requires a static IPv4 NIC; VMs require `nat: true`; `nat: true` on an OVN-backed vswitch NIC is a

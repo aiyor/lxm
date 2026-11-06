@@ -427,3 +427,87 @@ ports:
 		t.Fatalf("expected no NAT diff after apply, got %+v", env.Plan.Steps[0].Diff)
 	}
 }
+
+func TestRun_Ports_RebuildSecondApplyConverges(t *testing.T) {
+	// Native daemon rebuild (instances_rebuild) does not PUT devices. A port
+	// change in the same step as an image recreate therefore lands on the next
+	// apply; this pins the documented convergence behaviour (PORTS-SPEC §8).
+	driver := fake.New()
+	driver.Instances["web-a"] = &provider.Instance{
+		Name:   "web-a",
+		Status: "Running",
+		Config: map[string]string{
+			"user.lxm.user":  "ubuntu",
+			"user.lxm.image": "debian:12",
+			"image.os":       "debian",
+			"image.release":  "12",
+		},
+		Devices: map[string]map[string]string{
+			"proxy-web": {
+				"type":             "proxy",
+				"listen":           "tcp:127.0.0.1:8079",
+				"connect":          "tcp:127.0.0.1:80",
+				"user.lxm.managed": "true",
+			},
+		},
+	}
+	driver.RebuildInstanceFunc = func(name string, req provider.InstanceRebuildRequest) error {
+		inst := driver.Instances[name]
+		inst.Config["user.lxm.image"] = "jammy"
+		delete(inst.Config, "image.os")
+		delete(inst.Config, "image.release")
+		driver.ETags[name] = "fake-etag-rebuilt"
+		return nil
+	}
+
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "web.yaml")
+	writePortsCLIManifest(t, manifest, `schema: lxm/config/v2
+name: web-a
+image: jammy
+user: ubuntu
+ports:
+  - {name: web, listen: "127.0.0.1:8080", connect: "127.0.0.1:80"}
+`)
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"apply", manifest, "--format", "json"}, &stdout, &stderr, driver); code != 0 {
+		t.Fatalf("first apply returned %d, want 0. stderr: %s", code, stderr.String())
+	}
+	first := parsePortsEnvelope(t, stdout.Bytes())
+	if len(first.Plan.Steps) != 1 || first.Plan.Steps[0].Action != "recreate" {
+		t.Fatalf("expected recreate step, got %+v", first.Plan.Steps)
+	}
+	if got := driver.Instances["web-a"].Devices["proxy-web"]["listen"]; got != "tcp:127.0.0.1:8079" {
+		t.Fatalf("fake rebuild should leave devices untouched, got listen %q", got)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"plan", manifest, "--format", "json"}, &stdout, &stderr, driver); code != 0 {
+		t.Fatalf("second plan returned %d, want 0. stderr: %s", code, stderr.String())
+	}
+	second := parsePortsEnvelope(t, stdout.Bytes())
+	if len(second.Plan.Steps) != 1 || second.Plan.Steps[0].Action != "update" {
+		t.Fatalf("expected a deferred port update, got %+v", second.Plan.Steps)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"apply", manifest, "--format", "json"}, &stdout, &stderr, driver); code != 0 {
+		t.Fatalf("second apply returned %d, want 0. stderr: %s", code, stderr.String())
+	}
+	if got := driver.Instances["web-a"].Devices["proxy-web"]["listen"]; got != "tcp:127.0.0.1:8080" {
+		t.Fatalf("second apply did not converge device listen, got %q", got)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"plan", manifest, "--format", "json"}, &stdout, &stderr, driver); code != 0 {
+		t.Fatalf("third plan returned %d, want 0. stderr: %s", code, stderr.String())
+	}
+	third := parsePortsEnvelope(t, stdout.Bytes())
+	if len(third.Plan.Steps) != 1 || third.Plan.Steps[0].Action != "noop" {
+		t.Fatalf("expected noop after second apply, got %+v", third.Plan.Steps)
+	}
+}

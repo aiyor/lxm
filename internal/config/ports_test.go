@@ -524,3 +524,79 @@ func TestPortConfig_String(t *testing.T) {
 		t.Fatalf("String() = %q", got)
 	}
 }
+
+func TestLoadConfig_Ports_EmptyReplaceIsNoop(t *testing.T) {
+	// List-directive convention (shared with mounts/networks/disks/recipes): an
+	// empty replace list is a no-op; remove.ports is the way to clear inherited
+	// ports. Pinned so the documented behaviour cannot silently diverge.
+	dir := t.TempDir()
+	writePortsManifestInDir(t, dir, "_base.yaml", `schema: lxm/config/v2
+base: true
+image: ubuntu:24.04
+ports:
+  - {name: api, listen: "127.0.0.1:8080", connect: "127.0.0.1:80"}
+`)
+	leaf := writePortsManifestInDir(t, dir, "leaf.yaml", `schema: lxm/config/v2
+name: leaf
+image: ubuntu:24.04
+include: [_base.yaml]
+replace:
+  ports: []
+`)
+	conf, err := config.LoadConfig(leaf)
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	if len(conf.Ports) != 1 || conf.Ports[0].Name != "api" {
+		t.Fatalf("empty replace.ports must be a no-op, got %+v", conf.Ports)
+	}
+}
+
+func TestValidateFleetPorts_DuplicateInstanceNamesAcrossFiles(t *testing.T) {
+	port := config.PortConfig{Name: "web", Listen: "127.0.0.1:8080", Connect: "127.0.0.1:80", Proto: "tcp"}
+	configs := []*config.Config{
+		{Schema: "lxm/config/v2", Name: "a", Status: "present", ConfigFile: "/m/a1.yaml", Ports: []config.PortConfig{port}},
+		{Schema: "lxm/config/v2", Name: "a", Status: "present", ConfigFile: "/m/a2.yaml", Ports: []config.PortConfig{port}},
+	}
+	_, err := config.ValidateFleetPorts(configs)
+	if err == nil || !strings.Contains(err.Error(), "published by both") {
+		t.Fatalf("duplicate instance names must not bypass fleet validation, got: %v", err)
+	}
+}
+
+func TestValidateFleetPorts_NATVsNonNATSameAddress(t *testing.T) {
+	nat := config.PortConfig{Name: "web", Listen: "10.0.0.1:8443", Connect: "10.0.0.31:443", Proto: "tcp", NAT: true}
+	plain := config.PortConfig{Name: "web", Listen: "10.0.0.1:8443", Connect: "10.0.0.31:443", Proto: "tcp"}
+	configs := []*config.Config{
+		{Schema: "lxm/config/v2", Name: "a", Status: "present", ConfigFile: "/m/a.yaml", Ports: []config.PortConfig{nat}},
+		{Schema: "lxm/config/v2", Name: "b", Status: "present", ConfigFile: "/m/b.yaml", Ports: []config.PortConfig{plain}},
+	}
+	if _, err := config.ValidateFleetPorts(configs); err == nil {
+		t.Fatal("NAT and non-NAT explicit listeners on the same address must conflict")
+	}
+}
+
+func TestLoadConfig_Ports_BaseFragmentNICCollision(t *testing.T) {
+	dir := t.TempDir()
+	writePortsManifestInDir(t, dir, "_base.yaml", `schema: lxm/config/v2
+base: true
+image: ubuntu:24.04
+networks:
+  - {name: proxy-web, parent: lxdbr0}
+`)
+	leaf := writePortsManifestInDir(t, dir, "leaf.yaml", `schema: lxm/config/v2
+name: leaf
+image: ubuntu:24.04
+include: [_base.yaml]
+ports:
+  - {name: web, listen: "127.0.0.1:8080", connect: "127.0.0.1:80"}
+`)
+	conf, err := config.LoadConfig(leaf)
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	err = conf.Validate(dir)
+	if err == nil || !strings.Contains(err.Error(), "would collide with device") {
+		t.Fatalf("expected cross-layer NIC/proxy collision, got: %v", err)
+	}
+}
