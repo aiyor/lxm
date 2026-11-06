@@ -1,6 +1,7 @@
 package plan_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -562,11 +563,70 @@ func TestCompute_Ports_UnmanagedPropertiesRepaired(t *testing.T) {
 	}
 	warned := false
 	for _, w := range p.Warnings {
-		if strings.Contains(w, "unmanaged properties") {
+		if strings.Contains(w, "non-canonical device properties") {
 			warned = true
 		}
 	}
 	if !warned {
 		t.Fatalf("expected unmanaged-properties warning, got %v", p.Warnings)
+	}
+}
+
+func TestCompute_Ports_NonCanonicalNATRepresentationRepaired(t *testing.T) {
+	// nat: "false" parses as false and the modeled fields match, but the daemon
+	// map differs from the canonical managed payload; a later rewrite would
+	// change it unplanned, so the plan must repair it now.
+	manifest := baseContainer("web-a")
+	manifest.Ports = []config.PortConfig{portSpec("web", "127.0.0.1:8080", "127.0.0.1:80")}
+	live := &plan.InstanceSnapshot{
+		Name:   "web-a",
+		Status: "Running",
+		Config: map[string]string{"user.lxm.user": "ubuntu"},
+		Devices: map[string]map[string]string{
+			"proxy-web": {
+				"type":           "proxy",
+				"listen":         "tcp:127.0.0.1:8080",
+				"connect":        "tcp:127.0.0.1:80",
+				"nat":            "false",
+				ports.ManagedKey: ports.ManagedValue,
+			},
+		},
+	}
+	p, err := plan.NewReconciler().Compute(manifest, map[string]*plan.InstanceSnapshot{"web-a": live}, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	step := p.Steps[0]
+	if step.Action != "update" || len(step.Diff) != 1 || step.Diff[0].Field != "ports[web]" {
+		t.Fatalf("expected canonical repair diff, got action=%q diff=%+v", step.Action, step.Diff)
+	}
+	if _, ok := step.InstancePut.Devices["proxy-web"]["nat"]; ok {
+		t.Fatalf("canonical device must omit nat when false: %v", step.InstancePut.Devices["proxy-web"])
+	}
+}
+
+func TestCompute_Ports_DevicesFieldJSONNamespace(t *testing.T) {
+	manifest := baseContainer("web-a")
+	live := &plan.InstanceSnapshot{
+		Name:   "web-a",
+		Status: "Running",
+		Config: map[string]string{"user.lxm.user": "ubuntu"},
+		Devices: map[string]map[string]string{
+			"junk": managedDevice(t, "127.0.0.1:9999", "127.0.0.1:99", false),
+		},
+	}
+	p, err := plan.NewReconciler().Compute(manifest, map[string]*plan.InstanceSnapshot{"web-a": live}, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if len(p.Steps) != 1 || len(p.Steps[0].Diff) != 1 || p.Steps[0].Diff[0].Field != "devices[junk]" {
+		t.Fatalf("expected a devices[junk] removal diff, got %+v", p.Steps)
+	}
+	data, err := json.Marshal(p.Steps[0].Diff)
+	if err != nil {
+		t.Fatalf("marshal diff: %v", err)
+	}
+	if !strings.Contains(string(data), `"field":"devices[junk]"`) {
+		t.Fatalf("JSON diff missing device-qualified field: %s", data)
 	}
 }

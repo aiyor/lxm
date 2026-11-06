@@ -520,3 +520,28 @@ ports:
 		t.Fatalf("expected noop after second apply, got %+v", third.Plan.Steps)
 	}
 }
+
+func TestRun_Ports_StatusShowsProfileProxy(t *testing.T) {
+	driver := fake.New()
+	driver.Instances["web"] = &provider.Instance{
+		Name:    "web",
+		Status:  "Running",
+		Config:  map[string]string{"user.lxm.managed": "true"},
+		Devices: map[string]map[string]string{},
+		ExpandedDevices: map[string]map[string]string{
+			"profile-proxy": {
+				"type":    "proxy",
+				"listen":  "tcp:127.0.0.1:9090",
+				"connect": "tcp:127.0.0.1:90",
+			},
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"status", "web"}, &stdout, &stderr, driver); code != 0 {
+		t.Fatalf("status returned %d, want 0. stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "profile-proxy") || !strings.Contains(out, "(foreign)") {
+		t.Fatalf("status must show profile-provided proxy devices as foreign: %s", out)
+	}
+}

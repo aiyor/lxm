@@ -18,7 +18,7 @@ All notable changes to this project will be documented in this file.
     exposure warnings, and profile-shadow warnings.
   - Surface published ports in `lxm list` (PORTS column), `lxm status` (`Published Ports:` block),
     `lxm diff`/`lxm plan` field diffs, and the additive `published_ports` `lxm/result/v1` field.
-  - Reject `nat: true` on OVN-backed vswitch NICs in the network layer.
+  - Reject `nat: true` on non-bridged/routed NICs (OVN, macvlan, physical, sriov) in the network layer.
 
 ### Documentation
 - **ports**: add `PORTS-SPEC.md`, manifest/CLI/result spec sections, a publishing-ports how-to guide,

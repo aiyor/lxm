@@ -1265,6 +1265,11 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 	// before merging; ValidatePostMerge alone cannot see them because the
 	// merge collapses duplicates once an inherited layer exists.
 	if overlay.Replace != nil && len(overlay.Replace.Ports) > 0 {
+		// Validate the ignored local list too: a non-empty replace wins, but a
+		// malformed/duplicate local ports list is still an authoring error.
+		if err := validatePortLayer(overlay.Ports); err != nil {
+			return nil, err
+		}
 		if err := validatePortLayer(overlay.Replace.Ports); err != nil {
 			return nil, err
 		}

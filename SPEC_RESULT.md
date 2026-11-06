@@ -88,7 +88,8 @@ Manifests that declare `ports:` extend `ResultItem` without changing existing co
   existing consumers see byte-identical envelopes for port-free fleets.
 * `plan.steps[].diff` uses `ports[<name>]` (add/remove) and
   `ports[<name>].listen|connect|proto|nat` (change) field names; create/update payloads
-  (`instances_post`/`instance_put`) carry the `proxy-*` device maps.
+  (`instances_post`/`instance_put`) carry the `proxy-*` device maps. An anomalous marker-carrying
+  proxy device under a non-`proxy-<name>` name is retired with a `devices[<device>]` diff.
 * Port plan warnings (non-loopback/wildcard exposure, profile shadow, listener handoff) use the
   existing top-level `warnings` array; port config errors use the existing exit-3
   `CONFIG_ERROR` path with the messages catalogued in [`PORTS-SPEC.md`](PORTS-SPEC.md) §13.

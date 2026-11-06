@@ -508,7 +508,7 @@ override). An empty `replace.ports: []` is a no-op (list-directive convention); 
 to clear inherited entries. A non-empty `replace.ports` takes precedence over the same manifest's
 local `ports:` list (matching the other list fields). Listener uniqueness is enforced across the whole loaded fleet — the same protocol,
 address and port may be declared by only one instance (wildcard binds are dual-stack and therefore
-conflict with both families). `nat: true` on an OVN-backed vswitch NIC is rejected.
+conflict with both families). `nat: true` is rejected when the connect address's NIC is not bridged/routed (declared OVN vswitch or live `ovn`/`macvlan`/`physical`/`sriov` network).
 
 Foreign `proxy-*` devices without `user.lxm.managed: "true"` are preserved and never adopted; a
 declared port whose device name collides with an unmarked device is a plan-time error.

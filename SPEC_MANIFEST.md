@@ -338,8 +338,8 @@ Inheritance: merged by `name` with **whole-entry replacement** (`replace.ports` 
 a no-op like every list directive — use `remove.ports` to clear). Duplicate names within one
 source layer are rejected before merging. Cross-field rules: a NIC named `proxy-<name>` collides
 with the port device; same-instance listeners must not conflict (wildcard-aware); `nat: true`
-requires a static IPv4 NIC; VMs require `nat: true`; `nat: true` on an OVN-backed vswitch NIC is a
-hard error at the network layer. Fleet-wide, the same `(proto, addr, port)` listener may be
+requires a static IPv4 NIC; VMs require `nat: true`; `nat: true` on a non-bridged/routed NIC (OVN,
+macvlan, physical, sriov) is a hard error at the network layer. Fleet-wide, the same `(proto, addr, port)` listener may be
 declared by only one instance (wildcard dual-stack rules; exit 3 citing both files), validated
 over the full loaded manifest set before selector filtering.
 

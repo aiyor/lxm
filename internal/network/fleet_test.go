@@ -316,3 +316,85 @@ func TestCheckInstancesWithProviderAndNetworkTypes_NATOnLiveOVN(t *testing.T) {
 		t.Fatalf("bridged live network must be accepted: %v", err)
 	}
 }
+
+func TestCheckInstancesWithProviderAndNetworkTypes_NATParentTypes(t *testing.T) {
+	mkConf := func(connect string) *config.Config {
+		return &config.Config{
+			Name: "vm1",
+			Type: "virtual-machine",
+			Networks: []config.NetworkConfig{
+				{Name: "eth0", Parent: "net0", IPv4: "10.80.0.5"},
+			},
+			Ports: []config.PortConfig{{
+				Name:    "https",
+				Listen:  "10.80.0.1:8443",
+				Connect: connect,
+				Proto:   "tcp",
+				NAT:     true,
+			}},
+		}
+	}
+	f := &Fleet{ByName: map[string]*VSwitch{}}
+	liveNames := map[string]bool{"net0": true}
+
+	for _, tc := range []struct {
+		typ  string
+		want bool // NAT rejected
+	}{
+		{typ: "bridge", want: false},
+		{typ: "routed", want: false},
+		{typ: "ovn", want: true},
+		{typ: "macvlan", want: true},
+		{typ: "physical", want: true},
+		{typ: "sriov", want: true},
+	} {
+		_, err := CheckInstancesWithProviderAndNetworkTypes(
+			[]*config.Config{mkConf("10.80.0.5:443")}, f, liveNames, map[string]string{"net0": tc.typ}, "lxd",
+		)
+		if tc.want && err == nil {
+			t.Errorf("NAT on live %q network must be rejected", tc.typ)
+		}
+		if !tc.want && err != nil {
+			t.Errorf("NAT on live %q network must be accepted: %v", tc.typ, err)
+		}
+	}
+
+	// Unknown live type: warn, do not hard-fail.
+	warns, err := CheckInstancesWithProviderAndNetworkTypes(
+		[]*config.Config{mkConf("10.80.0.5:443")}, f, liveNames, map[string]string{"net0": "mystery"}, "lxd",
+	)
+	if err != nil {
+		t.Fatalf("unknown live network type must warn, not fail: %v", err)
+	}
+	found := false
+	for _, w := range warns {
+		if strings.Contains(w, "cannot determine whether network") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected unknown-type NAT warning, got %v", warns)
+	}
+}
+
+func TestCheckInstancesWithProvider_SkipsBaseConfigs(t *testing.T) {
+	base := &config.Config{
+		Base: true,
+		Networks: []config.NetworkConfig{
+			{Name: "eth0", Parent: "ovn0", IPv4: "10.90.0.5"},
+		},
+		Ports: []config.PortConfig{{
+			Name:    "https",
+			Listen:  "10.90.0.1:8443",
+			Connect: "10.90.0.5:443",
+			Proto:   "tcp",
+			NAT:     true,
+		}},
+	}
+	f := &Fleet{ByName: map[string]*VSwitch{
+		"ovn0": {VSwitchConfig: config.VSwitchConfig{Name: "ovn0", Type: "ovn"}},
+	}}
+	if _, err := CheckInstancesWithProvider([]*config.Config{base}, f, nil, "lxd"); err != nil {
+		t.Fatalf("base fragments must not be validated as instances: %v", err)
+	}
+}

@@ -20,6 +20,13 @@ func (conf *Config) validatePorts() error {
 	if conf.Base {
 		return nil
 	}
+	// A deletion does not publish ports; keep cross-field port validation out
+	// of the way of removing an instance whose inherited (or stale) port list
+	// would not be usable on a live instance. Endpoint grammar and name rules
+	// are still validated during load/ValidatePostMerge.
+	if conf.Status == "absent" {
+		return nil
+	}
 
 	instance := conf.Name
 	if instance == "" {

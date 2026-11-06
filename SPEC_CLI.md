@@ -67,7 +67,7 @@ The following persistent flags are defined on the `lxm` root command:
 
 Ports-specific `CONFIG_ERROR` (exit 3) cases: duplicate listener across instances (wildcard deltas
 included), unmarked `proxy-<name>` ownership collision, invalid/non-canonical endpoint, NAT
-policy violations, VM without `nat: true`, and NAT on an OVN-backed NIC. See
+policy violations, VM without `nat: true`, and NAT on a non-bridged/routed NIC (OVN, macvlan, physical, sriov). See
 [`PORTS-SPEC.md`](PORTS-SPEC.md) §13.
 
 ---
@@ -97,7 +97,9 @@ lxm plan <file|dir> [--name N] [--prune] [--format json|text]
   * `--format`: Output format (`text` or `json`).
 * **Exit Codes**: `0` (success), `2` (single-file `--prune` or usage error), `3` (config error), `4` (LXD error), `5` (empty match or missing file).
 * **Published ports**: diffs appear as `ports[<name>]` (add/remove) and
-  `ports[<name>].listen|connect|proto|nat` (change); create payloads include the `proxy-*` devices.
+  `ports[<name>].listen|connect|proto|nat` (change); an anomalous marker-carrying device under a
+  non-`proxy-<name>` name is retired with `devices[<device>]`; create payloads include the
+  `proxy-*` devices.
   Non-loopback/wildcard listens, profile-shadowed proxies, and listener handoffs produce warnings.
   Offline plans cannot detect an unmarked device collision (apply always can).
 

@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"sort"
@@ -124,26 +125,29 @@ func portRemovalField(device string) string {
 	return "devices[" + device + "]"
 }
 
-// unmanagedProxyProps returns the device properties lxm does not own. Such
-// properties are left behind by hand edits or future daemon options; the next
-// rewrite of the device drops them, so a drift-aware plan repairs the device
-// instead of reporting a false noop.
-func unmanagedProxyProps(props map[string]string) []string {
-	allowed := map[string]bool{
-		"type":           true,
-		"listen":         true,
-		"connect":        true,
-		"nat":            true,
-		ports.ManagedKey: true,
+// canonicalPortDevice renders the exact device payload lxm would write for a
+// port. Comparing it with the live device map catches extra properties and
+// non-canonical representations (for example nat: "false" or uppercase
+// endpoints) that the scalar field diffs do not model; those would otherwise
+// be silently dropped by a later rewrite.
+func canonicalPortDevice(p config.PortConfig) (map[string]string, bool) {
+	listen, err := ports.ParseEndpoint(p.Proto, p.Listen)
+	if err != nil {
+		return nil, false
 	}
-	extra := make([]string, 0)
-	for k := range props {
-		if !allowed[k] {
-			extra = append(extra, k)
-		}
+	connect, err := ports.ParseEndpoint(p.Proto, p.Connect)
+	if err != nil {
+		return nil, false
 	}
-	sort.Strings(extra)
-	return extra
+	return ports.BuildDevice(listen, connect, p.NAT), true
+}
+
+func portDeviceDrift(desired config.PortConfig, raw map[string]string) bool {
+	want, ok := canonicalPortDevice(desired)
+	if !ok {
+		return false
+	}
+	return !maps.Equal(want, raw)
 }
 
 // diffPorts compares desired ports with managed live proxy devices and emits
@@ -191,9 +195,10 @@ func diffPorts(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff, er
 			continue
 		}
 
-		// Out-of-band device properties would be silently dropped by the next
+		// Non-canonical device representation (extra properties, alternate
+		// nat/endpoint spellings) would be silently dropped by the next
 		// rewrite; surface the device repair so the plan is honest.
-		if extra := unmanagedProxyProps(liveRaw[devName]); len(extra) > 0 {
+		if portDeviceDrift(dp, liveRaw[devName]) {
 			diffs = append(diffs, FieldDiff{Field: "ports[" + dp.Name + "]", Old: liveRaw[devName], New: dp})
 		}
 
@@ -266,13 +271,11 @@ func appendManifestWarnings(p *Plan, manifest *config.Config, live *InstanceSnap
 		}
 		devName := ports.DeviceName(port.Name)
 		if localProps, local := live.Devices[devName]; local {
-			// Managed devices with extra properties are rewritten canonically on
-			// the next update; warn so the drop is not silent.
-			if ports.IsManagedProxy(devName, localProps) {
-				if extra := unmanagedProxyProps(localProps); len(extra) > 0 {
-					p.Warnings = append(p.Warnings, fmt.Sprintf("port %q of instance %q: proxy device %q has unmanaged properties %v; the next update rewrites the device without them",
-						port.Name, manifest.Name, devName, extra))
-				}
+			// Managed devices with a non-canonical representation are rewritten
+			// canonically on the next update; warn so the change is not silent.
+			if ports.IsManagedProxy(devName, localProps) && portDeviceDrift(*port, localProps) {
+				p.Warnings = append(p.Warnings, fmt.Sprintf("port %q of instance %q: proxy device %q has non-canonical device properties; the next update rewrites them to the managed form",
+					port.Name, manifest.Name, devName))
 			}
 			continue
 		}

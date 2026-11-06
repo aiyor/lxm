@@ -46,8 +46,9 @@ ports:
 lxm plan web.yaml
 ```
 
-The plan shows an `update`/`create` step with a `ports[web]` diff. With `--format json` the create
-payload contains the generated device:
+The plan shows a create step whose create payload contains the generated device (port field diffs
+such as `ports[web].listen` appear when updating an existing instance). With `--format json` the
+create payload is visible as `instances_post.devices`:
 
 ```json
 {
@@ -121,8 +122,8 @@ rejected because the resulting rules cannot deliver host-local traffic.
   wildcard listener (`0.0.0.0` or `::`) conflicts with every same-port address of either family
   because Go and the daemons create a dual-stack socket. Violations fail at plan time with exit 3,
   before anything is mutated.
-* **NAT + OVN is rejected.** `nat: true` requires a bridged/routed NIC; an OVN-attached NIC cannot
-  use the daemon's NAT path.
+* **Unsupported NIC types are rejected.** `nat: true` requires a bridged/routed NIC; OVN, macvlan,
+  physical and sriov parents cannot use the daemon NAT path.
 * **Non-loopback listens bypass `network_policy`.** Proxy-listening traffic terminates on the host
   and does not traverse network ACLs; allow it in the host firewall deliberately. lxm emits a plan
   warning for every non-loopback or wildcard listen.

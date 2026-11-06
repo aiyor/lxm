@@ -600,3 +600,47 @@ ports:
 		t.Fatalf("expected cross-layer NIC/proxy collision, got: %v", err)
 	}
 }
+
+func TestConfigValidate_Ports_AbsentInstanceSkipsCrossFieldRules(t *testing.T) {
+	// Deleting an instance must not be blocked by a NAT port that no longer has
+	// a usable network pairing.
+	conf := &config.Config{
+		Name:   "gone",
+		Status: "absent",
+		Ports: []config.PortConfig{{
+			Name:    "https",
+			Listen:  "10.0.0.1:8443",
+			Connect: "10.0.0.5:443",
+			Proto:   "tcp",
+			NAT:     true,
+		}},
+	}
+	if err := conf.Validate(""); err != nil {
+		t.Fatalf("absent instance port validation must be skipped, got: %v", err)
+	}
+}
+
+func TestLoadConfig_Ports_IgnoredLocalListStillValidated(t *testing.T) {
+	dir := t.TempDir()
+	writePortsManifestInDir(t, dir, "_base.yaml", `schema: lxm/config/v2
+base: true
+image: ubuntu:24.04
+ports:
+  - {name: base, listen: "127.0.0.1:8080", connect: "127.0.0.1:80"}
+`)
+	leaf := writePortsManifestInDir(t, dir, "leaf.yaml", `schema: lxm/config/v2
+name: leaf
+image: ubuntu:24.04
+include: [_base.yaml]
+ports:
+  - {name: dup, listen: "127.0.0.1:8081", connect: "127.0.0.1:81"}
+  - {name: dup, listen: "127.0.0.1:8082", connect: "127.0.0.1:82"}
+replace:
+  ports:
+    - {name: web, listen: "127.0.0.1:9090", connect: "127.0.0.1:90"}
+`)
+	_, err := config.LoadConfig(leaf)
+	if err == nil || !strings.Contains(err.Error(), `duplicate port name "dup"`) {
+		t.Fatalf("ignored local ports list must still be validated, got: %v", err)
+	}
+}

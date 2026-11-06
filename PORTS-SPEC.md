@@ -33,7 +33,9 @@ foreign device and is preserved verbatim. Devices with a different `type` are ne
 
 For reconciliation identity lxm uses the canonical **device name** (`proxy-<name>`): a marked
 proxy device under any other name can never satisfy a manifest port and is retired on the next
-apply (it appears as `devices[<device>]`, outside the port-field namespace). Malformed marked `proxy-<name>` devices are repaired in
+apply. A canonical-shaped but undeclared device (`proxy-foo` with no `foo` port) is removed with a
+`ports[foo]` diff; an anomalous marker-carrying device whose name is not `proxy-<name>` is removed
+with a `devices[<device>]` diff so it cannot collide with a real port's `ports[<name>]` field. Malformed marked `proxy-<name>` devices are repaired in
 place (`ports[<name>]`, old raw device map → new `PortConfig`), never surfaced as a plan error.
 Additional daemon properties on a managed device that lxm does not emit (`proxy_protocol`, `bind`,
 `security.*`, extra `user.*`) are outside the declarative contract: the plan reports a repair diff
@@ -109,10 +111,12 @@ one source layer are rejected before merging, including in a layer that has an i
    files and instances. Wildcard listeners conflict with the other family; specific addresses do
    not.
 6. **Network layer** (`network.CheckInstancesWithProviderAndNetworkTypes`): `nat: true` is a hard
-   error when the NIC providing the `connect` address is **OVN**-backed — either a declared OVN
-   vswitch or a live provider network whose type is `ovn`. The check follows the connect address to
-   its specific NIC, so a multi-NIC instance with a bridged `connect` NIC is unaffected. The daemon's
-   NAT setup only considers bridged/routed NICs, so the device otherwise fails at instance start.
+   error when the NIC providing the `connect` address is not bridged/routed. That covers a declared
+   OVN vswitch, and a live provider network of type `ovn`, `macvlan`, `physical`, `sriov`,
+   `loopback` or `none` (the daemons' NAT setup only accepts bridged/routed NICs). The check
+   follows the connect address to its specific NIC, so a multi-NIC instance with a bridged `connect`
+   NIC is unaffected. An undeclared/unknown parent type produces a plan warning instead of a hard
+   error, since it cannot be classified offline.
 
 ## 6. Listener conflict semantics
 
@@ -148,6 +152,9 @@ Daemon behaviour (verified against LXD and Incus sources):
   `7.1.0` and all 6.x).
 * the static IPv4 must be declared in the manifest (`networks[].ipv4`); profile-provided static
   addresses are not considered in v1.
+* LXD/Incus reject NAT in a non-default project that enables `features.networks`; the provider
+  interface does not expose project feature flags, so lxm cannot gate this at plan time — it
+  surfaces as a provider error at apply.
 
 ## 8. Plan, apply and ownership
 
@@ -182,7 +189,9 @@ ordering is future work.
 ## 9. Output
 
 * `lxm plan`/`lxm apply`: text warnings; JSON plan diffs `ports[<name>]` and
-  `ports[<name>].listen|connect|proto|nat`; create/update payloads contain the proxy devices.
+  `ports[<name>].listen|connect|proto|nat`; create/update payloads contain the proxy devices. An
+  anomalous marker-carrying device under a non-`proxy-<name>` name is removed with a
+  `devices[<device>]` diff (outside the port-field namespace).
 * `lxm diff`: the same field diffs; port add/remove values render via `PortConfig.String()`
   (`tcp 127.0.0.1:8080 -> 127.0.0.1:80 (nat)`).
 * `lxm list`: text gains a `PORTS` column (managed ports only); JSON `results[].published_ports[]`
@@ -243,7 +252,8 @@ dynamic-DHCP NAT; NAT wildcard listens; apply-phase handoff ordering.
 | unmarked device collision | 3 | `device %q for instance %q exists but is not lxm-managed; remove it or rename the port` |
 | `nat: true` wildcard/loopback/IPv6/no-static/mismatch | 3 | see §5 |
 | VM without `nat: true` | 3 | `virtual machines require nat: true (daemon limitation)` |
-| NAT + OVN NIC | 3 | `nat: true is not supported on OVN-backed network %q` |
+| NAT on unsupported parent type | 3 | `nat: true cannot use connect address %s on %s network %q (NAT requires a bridged/routed NIC)` |
+| NAT parent type unknown | warning | `cannot determine whether network %q supports NAT` |
 
 ## 14. Examples
 

@@ -259,7 +259,7 @@ suites exercise the plan/apply/CLI surfaces deterministically (`internal/ports`,
 2. **Idempotency**: re-plan after apply ⇒ `noop`; device map byte-identical.
 3. **Fleet conflict & ownership**: two manifests declaring the same listener ⇒ `lxm plan` exit 3 citing both files; a hand-created unmarked `proxy-web` device ⇒ plan/apply exit 3 (no adoption); a malformed marker-carrying device is repaired/removed rather than failing the plan.
 4. **VM NAT**: apply a VM with a static bridged IPv4 and `nat: true`; assert the host listen address forwards to the guest service. VM without `nat: true` and loopback+NAT manifests are rejected with exit 3 before any daemon mutation.
-5. **OVN guard**: `nat: true` with a NIC on a declared OVN vswitch ⇒ exit 3 (daemon NAT path cannot support it).
+5. **Unsupported NAT parent guard**: `nat: true` with the connect NIC on a declared OVN vswitch or a live OVN/macvlan/physical/sriov network ⇒ exit 3 (daemon NAT path only supports bridged/routed NICs).
 6. **Listener handoff warning**: move a listener from instance A to B in one plan; assert the warning in text/JSON; with default concurrency, allow `-j 1` to guarantee ordering, or re-run apply.
 7. **Output surfaces**: `lxm list`/`lxm status` text and `--format json` expose `published_ports`; `lxm diff` shows `ports[...]` fields; envelopes remain valid `lxm/result/v1` without a version bump.
 
