@@ -108,6 +108,16 @@ func TestCompute_Ports_UpdateDiffAndPayload(t *testing.T) {
 	if !found {
 		t.Fatalf("missing %s diff: %+v", wantField, step.Diff)
 	}
+	// A canonical live device that is simply outdated must produce a field diff
+	// only — no repair entry and no non-canonical warning.
+	if len(step.Diff) != 1 {
+		t.Fatalf("canonical live device must yield exactly one field diff, got %+v", step.Diff)
+	}
+	for _, w := range p.Warnings {
+		if strings.Contains(w, "non-canonical device properties") {
+			t.Fatalf("canonical live device must not warn about representation drift: %v", p.Warnings)
+		}
+	}
 	if step.InstancePut == nil || step.InstancePut.Devices["proxy-web"] == nil {
 		t.Fatalf("update payload missing proxy-web: %+v", step.InstancePut)
 	}

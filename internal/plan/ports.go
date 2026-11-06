@@ -142,8 +142,22 @@ func canonicalPortDevice(p config.PortConfig) (map[string]string, bool) {
 	return ports.BuildDevice(listen, connect, p.NAT), true
 }
 
-func portDeviceDrift(desired config.PortConfig, raw map[string]string) bool {
-	want, ok := canonicalPortDevice(desired)
+// liveDeviceDrift reports whether the live device map differs from the
+// canonical representation of the same live device. Semantic changes (a
+// different listen/connect/nat) are ordinary field diffs, not drift; only
+// alternate spellings and extra properties count here.
+func liveDeviceDrift(device string, raw map[string]string) bool {
+	dev, ok := ports.ParseProxy(device, raw)
+	if !ok {
+		return false // malformed devices are repaired/removed via their own path
+	}
+	want, ok := canonicalPortDevice(config.PortConfig{
+		Name:    dev.Name,
+		Listen:  dev.Listen.HostPort(),
+		Connect: dev.Connect.HostPort(),
+		Proto:   dev.Listen.Proto,
+		NAT:     dev.NAT,
+	})
 	if !ok {
 		return false
 	}
@@ -198,7 +212,7 @@ func diffPorts(manifest *config.Config, live *InstanceSnapshot) ([]FieldDiff, er
 		// Non-canonical device representation (extra properties, alternate
 		// nat/endpoint spellings) would be silently dropped by the next
 		// rewrite; surface the device repair so the plan is honest.
-		if portDeviceDrift(dp, liveRaw[devName]) {
+		if liveDeviceDrift(devName, liveRaw[devName]) {
 			diffs = append(diffs, FieldDiff{Field: "ports[" + dp.Name + "]", Old: liveRaw[devName], New: dp})
 		}
 
@@ -273,7 +287,7 @@ func appendManifestWarnings(p *Plan, manifest *config.Config, live *InstanceSnap
 		if localProps, local := live.Devices[devName]; local {
 			// Managed devices with a non-canonical representation are rewritten
 			// canonically on the next update; warn so the change is not silent.
-			if ports.IsManagedProxy(devName, localProps) && portDeviceDrift(*port, localProps) {
+			if ports.IsManagedProxy(devName, localProps) && liveDeviceDrift(devName, localProps) {
 				p.Warnings = append(p.Warnings, fmt.Sprintf("port %q of instance %q: proxy device %q has non-canonical device properties; the next update rewrites them to the managed form",
 					port.Name, manifest.Name, devName))
 			}

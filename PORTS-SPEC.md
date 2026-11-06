@@ -105,7 +105,9 @@ one source layer are rejected before merging, including in a layer that has an i
      runtime-broken: the daemon installs DNAT-only rules and the host drops locally generated
      packets), a declared static IPv4 in `networks:`, and `connect` equal to that address;
    * `type: virtual-machine` requires `nat: true`; containers may use either mode;
-   * base fragments (`base: true`) skip the cross-field rules; the resolved leaf is validated.
+   * base fragments (`base: true`) skip the cross-field rules; the resolved leaf is validated;
+   * `status: absent` skips the cross-field NAT/NIC/listener rules (a deletion publishes nothing),
+     while endpoint grammar and name rules still apply at load/`ValidatePostMerge`.
 5. **Fleet-scoped** (`config.ValidateFleetPorts`): same protocol/port listeners must be unique
    across all loaded manifests (full loaded set, before selector filtering), exit 3 citing both
    files and instances. Wildcard listeners conflict with the other family; specific addresses do
