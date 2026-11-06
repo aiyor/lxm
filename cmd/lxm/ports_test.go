@@ -122,6 +122,33 @@ func TestRun_Ports_PlanApplyRemoveLifecycle(t *testing.T) {
 		t.Fatalf("expected noop after apply, got %+v", env.Plan.Steps)
 	}
 
+	// 3b. A port change is a field-level diff in plan JSON.
+	writePortsCLIManifest(t, manifest, containerManifest("web-a", `  - {name: web, listen: "127.0.0.1:8080", connect: "127.0.0.1:81"}
+`))
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"plan", manifest, "--format", "json"}, &stdout, &stderr, driver)
+	if code != 0 {
+		t.Fatalf("port-change plan returned %d, want 0. stderr: %s", code, stderr.String())
+	}
+	env = parsePortsEnvelope(t, stdout.Bytes())
+	if len(env.Plan.Steps) != 1 {
+		t.Fatalf("expected one port-change step, got %+v", env.Plan.Steps)
+	}
+	changeFound := false
+	for _, d := range env.Plan.Steps[0].Diff {
+		if d["field"] == "ports[web].connect" && d["new"] == "127.0.0.1:81" {
+			changeFound = true
+		}
+	}
+	if !changeFound {
+		t.Fatalf("plan JSON missing ports[web].connect diff: %+v", env.Plan.Steps[0].Diff)
+	}
+	// Restore the underlying port for the list/status assertions below (they
+	// inspect live state, which the apply above left at connect :80).
+	writePortsCLIManifest(t, manifest, containerManifest("web-a", `  - {name: web, listen: "127.0.0.1:8080", connect: "127.0.0.1:80"}
+`))
+
 	// 4. List JSON surfaces the published port.
 	stdout.Reset()
 	stderr.Reset()
