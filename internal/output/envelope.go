@@ -2,6 +2,8 @@ package output
 
 import (
 	"fmt"
+
+	"github.com/aiyor/lxm/internal/ports"
 )
 
 const SchemaVersion = "lxm/result/v1"
@@ -29,11 +31,12 @@ type PlanSummary struct {
 
 // ResultItem represents an individual container operation result.
 type ResultItem struct {
-	Container  string `json:"container,omitempty"`
-	Action     string `json:"action,omitempty"`
-	Changed    bool   `json:"changed"`
-	OK         bool   `json:"ok"`
-	DurationMS int64  `json:"duration_ms,omitzero"`
+	Container      string                `json:"container,omitempty"`
+	Action         string                `json:"action,omitempty"`
+	Changed        bool                  `json:"changed"`
+	OK             bool                  `json:"ok"`
+	DurationMS     int64                 `json:"duration_ms,omitzero"`
+	PublishedPorts []ports.PublishedPort `json:"published_ports,omitempty"`
 }
 
 // NetworkResult represents an individual network-step operation result.

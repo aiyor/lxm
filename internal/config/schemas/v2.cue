@@ -205,6 +205,33 @@ import (
 	config?:   {[string]: string}
 })
 
+// Published ports (issue #11): a host -> instance proxy device.
+// #PortEndpoint is a coarse authoring gate only; internal/ports.ParseEndpoint
+// is authoritative (explicit IP literal, port 1-65535, no protocol prefix).
+#PortProto:    "tcp" | "udp"
+#PortEndpoint: string & =~"^.+:[0-9]{1,5}$"
+
+// Port names must be valid device names on BOTH daemons: Incus requires
+// device names to start and end with an alphanumeric character.
+#PortName: string & =~"^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$"
+
+#PortObjAuthoring: close({
+	name:    #PortName
+	listen:  #PortEndpoint
+	connect: #PortEndpoint
+	proto?:  #PortProto | *"tcp"
+	nat?:    bool | *false
+})
+
+// Defaults are materialized Go-side in LoadConfig before this schema is used.
+#PortObjResolved: close({
+	name:    #PortName
+	listen:  string
+	connect: string
+	proto:   #PortProto
+	nat:     bool
+})
+
 // One inter-group allowance in network_policy.
 #PolicyRuleAuthoring: close({
 	from:      string
@@ -254,6 +281,9 @@ import (
 	// Data disks (VM-only, STORAGE-SPEC §3)
 	disks?: [...#DiskObjAuthoring]
 
+	// Published host -> instance ports (issue #11)
+	ports?: [...#PortObjAuthoring]
+
 	// Fleet-scoped managed virtual switches (unioned across loaded manifests)
 	vswitches?: [...#VSwitchObjAuthoring]
 
@@ -300,12 +330,14 @@ import (
 		networks?: [...string]
 		recipes?:  [...string]
 		disks?:    [...string]
+		ports?:    [...string]
 	})
 	replace?: close({
 		mounts?:   [...(#MountStr | #MountObjAuthoring)]
 		networks?: [...]
 		recipes?:  [...]
 		disks?:    [...#DiskObjAuthoring]
+		ports?:    [...#PortObjAuthoring]
 	})
 
 	groups?: [...string]
@@ -352,6 +384,8 @@ import (
 	})]
 
 	disks?: [...#DiskObjResolved]
+
+	ports?: [...#PortObjResolved]
 
 	vswitches?: [...close({
 		name:      string

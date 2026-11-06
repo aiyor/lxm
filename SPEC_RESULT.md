@@ -75,6 +75,24 @@ Exit-code mapping is unchanged and shared with the instance plane: manifest/poli
 violations ⇒ `3` (`CONFIG_ERROR`); LXD API/extension errors (including `create_acl`/
 `create_vswitch`) ⇒ `4` (`PROVIDER_ERROR`).
 
+### Port-Scoped Additive Fields
+
+Manifests that declare `ports:` extend `ResultItem` without changing existing consumers:
+
+* **`results[].published_ports`** (`array`, `omitempty`): present on `lxm list` and `lxm status`
+  results for every proxy device visible on the instance:
+  `{device, name?, proto, listen, connect, nat, managed}` (sorted by `device`).
+  `managed` reflects the `user.lxm.managed` marker (foreign proxy devices are included with
+  `managed: false`); `name` is derived from a `proxy-<name>` device name and omitted otherwise.
+* No envelope version bump; the field is omitted entirely when there are no proxy devices, so
+  existing consumers see byte-identical envelopes for port-free fleets.
+* `plan.steps[].diff` uses `ports[<name>]` (add/remove) and
+  `ports[<name>].listen|connect|proto|nat` (change) field names; create/update payloads
+  (`instances_post`/`instance_put`) carry the `proxy-*` device maps.
+* Port plan warnings (non-loopback/wildcard exposure, profile shadow, listener handoff) use the
+  existing top-level `warnings` array; port config errors use the existing exit-3
+  `CONFIG_ERROR` path with the messages catalogued in [`PORTS-SPEC.md`](PORTS-SPEC.md) §13.
+
 ---
 
 ## 3. Exit Code to Error Code Mapping Catalog

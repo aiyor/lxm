@@ -160,3 +160,44 @@ func TestGetInventory_FallbacksAndIPs(t *testing.T) {
 		t.Errorf("expected c4 image unknown, got %q", c4.Image)
 	}
 }
+
+func TestGetInventory_PublishedPorts(t *testing.T) {
+	ctx := t.Context()
+	driver := fake.New()
+	driver.Instances["web"] = &provider.Instance{
+		Name:   "web",
+		Status: "Running",
+		Config: map[string]string{"user.lxm.managed": "true"},
+		Devices: map[string]map[string]string{
+			"proxy-web": {
+				"type":             "proxy",
+				"listen":           "tcp:127.0.0.1:8080",
+				"connect":          "tcp:127.0.0.1:80",
+				"user.lxm.managed": "true",
+			},
+			"outside": {
+				"type":    "proxy",
+				"listen":  "tcp:127.0.0.1:9090",
+				"connect": "tcp:127.0.0.1:90",
+			},
+		},
+	}
+
+	inv, err := GetInventory(ctx, driver)
+	if err != nil {
+		t.Fatalf("GetInventory: %v", err)
+	}
+	if len(inv.Instances) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(inv.Instances))
+	}
+	ports := inv.Instances[0].PublishedPorts
+	if len(ports) != 2 {
+		t.Fatalf("expected 2 published ports, got %+v", ports)
+	}
+	if ports[0].Device != "outside" || ports[0].Managed || ports[0].Name != "" {
+		t.Fatalf("unexpected foreign entry: %+v", ports[0])
+	}
+	if ports[1].Device != "proxy-web" || !ports[1].Managed || ports[1].Name != "web" {
+		t.Fatalf("unexpected managed entry: %+v", ports[1])
+	}
+}

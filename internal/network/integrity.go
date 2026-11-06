@@ -19,6 +19,9 @@ import (
 //     nor a declared vswitch.
 //  3. Multi-NIC group-span warning (R10) — NICs on vswitches from ≥2 distinct
 //     groups may bypass network_policy via guest routing.
+//  4. NAT+OVN rejection (issue #11) — a published port with nat: true cannot
+//     work when its NIC is attached to an OVN vswitch: the daemon's NAT setup
+//     only considers bridged/routed NICs, so the device fails at instance start.
 func CheckInstances(configs []*config.Config, f *Fleet, liveNetworks map[string]bool) ([]string, error) {
 	return CheckInstancesWithProvider(configs, f, liveNetworks, "")
 }
@@ -57,6 +60,15 @@ func CheckInstancesWithProvider(configs []*config.Config, f *Fleet, liveNetworks
 			if declared && vs != nil && vs.Status == "absent" {
 				return nil, fmt.Errorf("instance %q: NIC %q parent vswitch %q is declared with status: absent; cannot delete a vswitch currently attached to active instances",
 					conf.Name, name, parent)
+			}
+
+			if declared && vs != nil && vs.EffectiveType() == "ovn" {
+				for i := range conf.Ports {
+					if conf.Ports[i].NAT {
+						return nil, fmt.Errorf("port %q of instance %q: nat: true is not supported on OVN-backed network %q (NAT requires a bridged/routed NIC)",
+							conf.Ports[i].Name, conf.Name, parent)
+					}
+				}
 			}
 
 			if nic.IPv4 != "" && declared && vs != nil && vs.Subnet != nil {

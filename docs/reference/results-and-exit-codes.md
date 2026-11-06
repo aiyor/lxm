@@ -33,7 +33,7 @@ Pass `--format json` to any command (except the interactive `shell` and `ssh` ca
 | `ok` | bool | `true` if and only if `exit_code` is `0`. |
 | `target` | string | The first positional argument passed to the command, when any. |
 | `plan` | object | `summary` (per-action counts) and `steps` for `plan`/`apply`; otherwise an empty `summary`. |
-| `results` | array | Per-container operation results (`container`, `action`, `changed`, `ok`, `duration_ms`). |
+| `results` | array | Per-container operation results (`container`, `action`, `changed`, `ok`, `duration_ms`); `list`/`status` add the additive `published_ports` array |
 | `warnings` | array | Warning message strings emitted during execution. |
 | `errors` | array | Error objects (`code`, `container`, `message`, `retryable`) when `exit_code != 0`. |
 | `exit_code` | int | The categorized process exit code (0–7). |

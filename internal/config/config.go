@@ -14,9 +14,13 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/aiyor/lxm/internal/ports"
 )
 
 var cpuRegex = regexp.MustCompile(`^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$`)
+
+var portNameRe = regexp.MustCompile(PortNameRegexp)
 
 // imageRemoteNameRe locks the image_remotes remote-name charset, mirroring the
 // remote part of #RemoteAlias (IMAGE-SPEC §2.2). CUE enforces the rule as the
@@ -160,6 +164,7 @@ type RemoveDirective struct {
 	Networks []string `yaml:"networks,omitempty"`
 	Recipes  []string `yaml:"recipes,omitempty"`
 	Disks    []string `yaml:"disks,omitempty"`
+	Ports    []string `yaml:"ports,omitempty"`
 }
 
 // ReplaceDirective defines wholesale replacements for inherited lists.
@@ -168,6 +173,7 @@ type ReplaceDirective struct {
 	Networks []NetworkConfig `yaml:"networks,omitempty"`
 	Recipes  []RecipeGroup   `yaml:"recipes,omitempty"`
 	Disks    []DiskConfig    `yaml:"disks,omitempty"`
+	Ports    []PortConfig    `yaml:"ports,omitempty"`
 }
 
 // RemoteConfig models remote daemon connection metadata declared in a manifest.
@@ -202,6 +208,7 @@ type Config struct {
 	Mounts           Mounts                  `yaml:"mounts,omitempty"`
 	Networks         []NetworkConfig         `yaml:"networks,omitempty"`
 	Disks            []DiskConfig            `yaml:"disks,omitempty"`
+	Ports            []PortConfig            `yaml:"ports,omitempty"`
 	VSwitches        []VSwitchConfig         `yaml:"vswitches,omitempty"`
 	NetworkPolicy    *NetworkPolicy          `yaml:"network_policy,omitempty"`
 	ImageRemotes     map[string]string       `yaml:"image_remotes,omitempty"`
@@ -337,6 +344,29 @@ type NetworkConfig struct {
 	Name   string `yaml:"name"`             // Defaults to eth0
 	IPv4   string `yaml:"ipv4,omitempty"`   // e.g., 10.0.0.10
 	Parent string `yaml:"parent,omitempty"` // Defaults to lxdbr0
+}
+
+// PortConfig models one published host -> instance port (issue #11). Each entry
+// compiles to a native LXD/Incus proxy device named proxy-<name>.
+type PortConfig struct {
+	Name    string `yaml:"name" json:"name"`
+	Listen  string `yaml:"listen" json:"listen"`   // canonical "<ip>:<port>" (IPv6 bracketed)
+	Connect string `yaml:"connect" json:"connect"` // canonical
+	Proto   string `yaml:"proto" json:"proto"`     // materialized "tcp"|"udp"
+	NAT     bool   `yaml:"nat" json:"nat"`         // materialized; no omitempty (false must marshal)
+}
+
+// PortNameRegexp constrains port names to valid device names on both daemons.
+// Incus requires device names to start and end with an alphanumeric character.
+const PortNameRegexp = `^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$`
+
+// String renders a port for human-readable plan/diff output.
+func (p PortConfig) String() string {
+	nat := ""
+	if p.NAT {
+		nat = " (nat)"
+	}
+	return fmt.Sprintf("%s %s -> %s%s", p.Proto, p.Listen, p.Connect, nat)
 }
 
 // DiskConfig models an additional managed storage disk (VMs only). The two
@@ -605,6 +635,10 @@ func (conf *Config) validateCommon(configBaseDir string) error {
 		return err
 	}
 
+	if err := conf.validatePorts(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -656,6 +690,20 @@ func ValidatePostMerge(conf *Config) error {
 			return fmt.Errorf("duplicate disk name %q (disk %d)", d.Name, i)
 		}
 		seenDisks[d.Name] = true
+	}
+
+	seenPorts := make(map[string]bool)
+	for i, p := range conf.Ports {
+		if p.Name == "" {
+			return fmt.Errorf("port %d: name is required", i)
+		}
+		if !portNameRe.MatchString(p.Name) {
+			return fmt.Errorf("port %q: name must match %s", p.Name, PortNameRegexp)
+		}
+		if seenPorts[p.Name] {
+			return fmt.Errorf("duplicate port name %q (port %d)", p.Name, i)
+		}
+		seenPorts[p.Name] = true
 	}
 
 	// image_remotes validation + canonicalization (§7.2): every value must be
@@ -1212,6 +1260,23 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 		res.Disks = mergeDisksByName(base.Disks, overlay.Disks)
 	}
 
+	// ports: name-identity merge within an include chain (whole-entry
+	// replacement, like disks). Duplicate names are rejected per source layer
+	// before merging; ValidatePostMerge alone cannot see them because the
+	// merge collapses duplicates once an inherited layer exists.
+	if overlay.Replace != nil && len(overlay.Replace.Ports) > 0 {
+		if err := validatePortLayer(overlay.Replace.Ports); err != nil {
+			return nil, err
+		}
+		res.Ports = slices.Clone(overlay.Replace.Ports)
+	} else {
+		merged, err := mergePortsByName(base.Ports, overlay.Ports)
+		if err != nil {
+			return nil, err
+		}
+		res.Ports = merged
+	}
+
 	if overlay.Replace != nil && len(overlay.Replace.Recipes) > 0 {
 		res.Recipes = overlay.Replace.Recipes
 	} else {
@@ -1334,6 +1399,22 @@ func applyRemoveDirectives(res *Config, remove *RemoveDirective) error {
 		res.Disks = filtered
 	}
 
+	for _, dropName := range remove.Ports {
+		matched := false
+		var filtered []PortConfig
+		for _, p := range res.Ports {
+			if p.Name == dropName {
+				matched = true
+			} else {
+				filtered = append(filtered, p)
+			}
+		}
+		if !matched {
+			return fmt.Errorf("remove.ports: name %q matched no port", dropName)
+		}
+		res.Ports = filtered
+	}
+
 	return nil
 }
 
@@ -1348,6 +1429,59 @@ func copyNetworkPolicy(p *NetworkPolicy) *NetworkPolicy {
 		Allow:         slices.Clone(p.Allow),
 	}
 	return cp
+}
+
+// validatePortLayer rejects malformed or duplicate port names within a single
+// source layer before merging. The merged list is name-deduplicated, so this is
+// the only place duplicates can be detected reliably.
+func validatePortLayer(ports []PortConfig) error {
+	seen := make(map[string]bool, len(ports))
+	for i, p := range ports {
+		if p.Name == "" {
+			return fmt.Errorf("port %d: name is required", i)
+		}
+		if seen[p.Name] {
+			return fmt.Errorf("duplicate port name %q (port %d)", p.Name, i)
+		}
+		seen[p.Name] = true
+	}
+	return nil
+}
+
+// mergePortsByName merges base and overlay published ports using name-identity:
+// an overlay entry whose Name matches a base entry replaces it wholesale, while
+// new entries are appended. Duplicate names within the overlay layer are an
+// error (see validatePortLayer).
+func mergePortsByName(base, overlay []PortConfig) ([]PortConfig, error) {
+	// Validate both layers so direct MergeConfigs callers cannot smuggle
+	// duplicates in through the base (the loader has already checked it once,
+	// so this is a cheap idempotent guard).
+	if err := validatePortLayer(base); err != nil {
+		return nil, err
+	}
+	if err := validatePortLayer(overlay); err != nil {
+		return nil, err
+	}
+	if len(base) == 0 {
+		return slices.Clone(overlay), nil
+	}
+	if len(overlay) == 0 {
+		return slices.Clone(base), nil
+	}
+	res := slices.Clone(base)
+	indexByName := make(map[string]int, len(res))
+	for i, p := range res {
+		indexByName[p.Name] = i
+	}
+	for _, op := range overlay {
+		if idx, ok := indexByName[op.Name]; ok {
+			res[idx] = op
+			continue
+		}
+		indexByName[op.Name] = len(res)
+		res = append(res, op)
+	}
+	return res, nil
 }
 
 // mergeDisksByName merges base and overlay disks using name-identity: an overlay
@@ -1523,6 +1657,28 @@ func LoadConfig(configFile string) (*Config, error) {
 			t := true
 			vs.Internet = &t
 		}
+	}
+
+	// port default normalization + endpoint canonicalization (mirrors
+	// #LXM_RESOLVED defaults so the strict resolved schema round-trips
+	// deterministically, and guarantees canonical strings for plan and fleet
+	// comparisons).
+	for i := range conf.Ports {
+		p := &conf.Ports[i]
+		if p.Proto == "" {
+			p.Proto = "tcp"
+		}
+		listen, err := ports.ParseEndpoint(p.Proto, p.Listen)
+		if err != nil {
+			return nil, fmt.Errorf("port %q of instance %q: invalid listen %q: %w", p.Name, conf.Name, p.Listen, err)
+		}
+		connect, err := ports.ParseEndpoint(p.Proto, p.Connect)
+		if err != nil {
+			return nil, fmt.Errorf("port %q of instance %q: invalid connect %q: %w", p.Name, conf.Name, p.Connect, err)
+		}
+		p.Proto = listen.Proto
+		p.Listen = listen.HostPort()
+		p.Connect = connect.HostPort()
 	}
 
 	// network_policy rule direction default ("both").

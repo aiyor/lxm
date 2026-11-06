@@ -233,7 +233,7 @@ name: dev-station
 
 ### `remove`
 
-Removes specific items from an inherited list. Matching rules: `remove.mounts` matches by normalized container path, `remove.networks` by interface name, `remove.recipes` by exact script path, `remove.disks` by disk name. A `remove` entry that matches nothing fails compilation.
+Removes specific items from an inherited list. Matching rules: `remove.mounts` matches by normalized container path, `remove.networks` by interface name, `remove.recipes` by exact script path, `remove.disks` by disk name, `remove.ports` by port name. A `remove` entry that matches nothing fails compilation.
 
 ```yaml
 remove:
@@ -241,6 +241,8 @@ remove:
     - /mnt/shared
   recipes:
     - recipes/common.sh
+  ports:
+    - dns
 ```
 
 ### `replace`
@@ -253,6 +255,8 @@ replace:
     - name: eth0
       ipv4: 10.0.0.50
       parent: lxdbr0
+  ports:
+    - {name: web, listen: 127.0.0.1:8080, connect: 127.0.0.1:80}
 ```
 
 Complete example for `include` + `remove` + `replace` + presence-wins `wait`: [`inheritance-demo.yaml`](../examples/inheritance-demo.yaml) inherits [`_inheritance-base.yaml`](../examples/_inheritance-base.yaml).
@@ -472,6 +476,43 @@ shrinking is rejected at plan time (`exit 3`). Removing a disk from the manifest
 only — lxm never deletes storage volumes.
 
 See `STORAGE-SPEC.md` (repository root) for the authoritative feature specification.
+
+## Published ports (`ports`)
+
+Each entry publishes a host port to a service inside the instance by compiling to one native
+LXD/Incus `proxy` device named `proxy-<name>`:
+
+```yaml
+ports:
+  - name: web                 # device proxy-web
+    listen: 127.0.0.1:8080    # host side
+    connect: 127.0.0.1:80     # instance side (for containers; wildcard forbidden)
+  - name: dns
+    listen: 127.0.0.1:5353
+    connect: 127.0.0.1:53
+    proto: udp                # default tcp
+```
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `name` | string | — (required) | `^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$` — starts **and ends** alphanumeric (Incus device-name rule), unique per instance. |
+| `listen` | string | — (required) | Explicit `IP:port` (IPv6 bracketed, 1–65535). Hostnames, zones, 4-in-6 literals, and protocol prefixes are rejected. |
+| `connect` | string | — (required) | Explicit `IP:port`; a wildcard is rejected. |
+| `proto` | string | `"tcp"` | `tcp` or `udp`. |
+| `nat` | bool | `false` | DNAT mode. Required for `type: virtual-machine`; IPv4 only; explicit non-loopback `listen`; explicit `connect` equal to a declared static `networks[].ipv4`. Loopback + NAT is rejected (unusable on both daemons). |
+
+Removal from the manifest retires the device on the next apply. `remove.ports: [name]` drops
+inherited entries and `replace.ports` replaces the inherited list; same-named entries replace
+wholesale (omitted fields reset to defaults, so an inherited `nat: true` does not leak into an
+override). Listener uniqueness is enforced across the whole loaded fleet — the same protocol,
+address and port may be declared by only one instance (wildcard binds are dual-stack and therefore
+conflict with both families). `nat: true` on an OVN-backed vswitch NIC is rejected.
+
+Foreign `proxy-*` devices without `user.lxm.managed: "true"` are preserved and never adopted; a
+declared port whose device name collides with an unmarked device is a plan-time error.
+
+See [`PORTS-SPEC.md`](https://github.com/aiyor/lxm/blob/main/PORTS-SPEC.md) for the authoritative
+feature specification and the LXD/Incus version matrix.
 
 ## Recipes
 

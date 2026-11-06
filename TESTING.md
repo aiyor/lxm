@@ -55,6 +55,7 @@ All core LXM features must be validated across the supported hypervisors and con
 | **VSwitch (Bridge)** | Supported (`bridge`) | Supported (`bridge`) | N/A | Bridge creation & IPAM |
 | **VSwitch (OVN)** | Supported | Supported | Supported (`ovn`) | `test-ovn-e2e.sh`, run per provider (§2.1) |
 | **Network ACLs / Policies** | Supported (`network_acl`) | Supported (`network_acl`) | Supported | Kernel / OVN packet drop & ping test |
+| **Published Ports (`ports:`)** | Supported (`proxy`, `nat`) | Supported (`proxy`, `nat`; ≥6.15 for `user.*` device-key semantics) | N/A | `test-ports-e2e.sh`; host-side TCP/UDP connect, device inspect, idempotency |
 | **In-Guest Script Execution** | Supported | Supported | Supported | `lxm script` exit codes |
 | **Interactive Terminal Raw Mode** | Supported | Supported | Supported | `lxm shell` window resize / signals |
 | **Remote HTTPS / mTLS** | Supported | Supported | Supported | Token trust handoff & remote apply |
@@ -78,6 +79,7 @@ gate has passed live against **each** supported provider it touches.
 | Dual-provider engine (Incus) | `internal/provider/{fake,incus,lxd}` | `simulation/scripts/test-incus-e2e.sh`; `simulation/incus` Makefile (`test-local` / `test-remote` / `test-cluster-placement`) | Incus | §4 Step 3 |
 | OVN virtual switches & microsegmentation (`type: ovn`) | `internal/network` (G0/G8 golden + decomposition property), `internal/plan` (immutable drift), `internal/config` (parent/driver/MTU) | `simulation/scripts/test-ovn-e2e.sh` | LXD **and** Incus (run per provider) | §4 Step 2 / Step 3 |
 | VM data disks (`disks:`) | `internal/config`, `internal/apply` | `test-lxd-e2e.sh` (disk lifecycle steps) | LXD | §4 Step 2 |
+| Declarative port publishing (`ports:`) | `internal/ports`, `internal/config`, `internal/plan`, `internal/fleet`, `internal/network`, `cmd/lxm` | `simulation/scripts/test-ports-e2e.sh` | LXD **and** Incus (run per provider) | §4 Step 2 / Step 3 + Pillar 6 |
 | Declarative deletion & `--prune` | `internal/plan`, `internal/apply` | **(gap — no E2E gate yet)** | — | Pillar 1 §3 scenario 4 |
 | Cloud images (`image_remotes`) | `internal/config/image.go` | **(gap — no E2E gate yet)** | — | — |
 
@@ -243,6 +245,23 @@ flowchart TD
    - **Dynamic Hotplug**: Append an additional managed disk to a live instance manifest. Verify disk volume is created and attached without recreation.
    - **Disk Detachment (`attach: false`)**: Set `attach: false` on an attached disk. Verify device is removed from instance while underlying storage volume remains preserved in the storage pool.
    - **Disk & Volume Deletion (`status: absent`)**: Set `status: absent` on a managed disk. Verify instance device is detached and custom storage volume is deleted from the storage pool.
+
+### Pillar 6: Declarative Port Publishing (`ports:`)
+
+Validates proxy-device reconciliation, host-side reachability, fleet-wide listener constraints, and
+the NAT/VM path. Live coverage lives in `simulation/scripts/test-ports-e2e.sh`; the fake-driver
+suites exercise the plan/apply/CLI surfaces deterministically (`internal/ports`,
+`internal/config/ports_test.go`, `internal/plan/ports_test.go`, `internal/fleet`,
+`internal/network`, `cmd/lxm/ports_test.go`).
+
+#### Test Scenarios:
+1. **Container non-NAT create/update/remove**: apply `ports: [{name: web, listen: 127.0.0.1:PORT, connect: 127.0.0.1:80}]` to a container running a local HTTP server; assert host `curl 127.0.0.1:PORT` returns the served body; change `listen`, apply, assert old port closes and new one serves; remove the entry, apply, assert the `proxy-web` device is gone and the port is closed.
+2. **Idempotency**: re-plan after apply ⇒ `noop`; device map byte-identical.
+3. **Fleet conflict & ownership**: two manifests declaring the same listener ⇒ `lxm plan` exit 3 citing both files; a hand-created unmarked `proxy-web` device ⇒ plan/apply exit 3 (no adoption); a malformed marker-carrying device is repaired/removed rather than failing the plan.
+4. **VM NAT**: apply a VM with a static bridged IPv4 and `nat: true`; assert the host listen address forwards to the guest service. VM without `nat: true` and loopback+NAT manifests are rejected with exit 3 before any daemon mutation.
+5. **OVN guard**: `nat: true` with a NIC on a declared OVN vswitch ⇒ exit 3 (daemon NAT path cannot support it).
+6. **Listener handoff warning**: move a listener from instance A to B in one plan; assert the warning in text/JSON; with default concurrency, allow `-j 1` to guarantee ordering, or re-run apply.
+7. **Output surfaces**: `lxm list`/`lxm status` text and `--format json` expose `published_ports`; `lxm diff` shows `ports[...]` fields; envelopes remain valid `lxm/result/v1` without a version bump.
 
 ---
 

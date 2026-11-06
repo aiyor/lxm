@@ -20,6 +20,7 @@ import (
 	"github.com/aiyor/lxm/internal/fleet"
 	"github.com/aiyor/lxm/internal/output"
 	"github.com/aiyor/lxm/internal/plan"
+	"github.com/aiyor/lxm/internal/ports"
 	"github.com/aiyor/lxm/internal/provider"
 	"github.com/aiyor/lxm/internal/provider/remote"
 	"github.com/aiyor/lxm/internal/recipe"
@@ -87,6 +88,11 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 					conf.WaitPolicy.Required = true
 				}
 				loaded = append(loaded, conf)
+			}
+
+			portWarnings, err := config.ValidateFleetPorts(loaded)
+			if err != nil {
+				return &exitError{code: 3, err: err}
 			}
 
 			sel, err := fleet.NewSelector(fleet.SelectorOpts{
@@ -189,6 +195,11 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 				}
 			}
 
+			combinedPlan.Warnings = append(combinedPlan.Warnings, portWarnings...)
+			if svc != nil {
+				combinedPlan.Warnings = append(combinedPlan.Warnings, plan.DetectListenerHandoffs(loaded, liveSnapshots, combinedPlan.Steps)...)
+			}
+
 			combinedPlan.Summary = computePlanSummary(combinedPlan.Steps)
 			lastComputedPlan = combinedPlan
 
@@ -282,6 +293,11 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 					return &exitError{code: 3, err: fmt.Errorf("config validation %q: %w", configFile, err)}
 				}
 				loaded = append(loaded, conf)
+			}
+
+			portWarnings, err := config.ValidateFleetPorts(loaded)
+			if err != nil {
+				return &exitError{code: 3, err: err}
 			}
 
 			sel, err := fleet.NewSelector(fleet.SelectorOpts{
@@ -382,6 +398,11 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 						combinedPlan.Steps = append(combinedPlan.Steps, orphanStep)
 					}
 				}
+			}
+
+			combinedPlan.Warnings = append(combinedPlan.Warnings, portWarnings...)
+			if svc != nil {
+				combinedPlan.Warnings = append(combinedPlan.Warnings, plan.DetectListenerHandoffs(loaded, liveSnapshots, combinedPlan.Steps)...)
 			}
 
 			combinedPlan.Summary = computePlanSummary(combinedPlan.Steps)
@@ -516,15 +537,16 @@ func newListCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			lastCommandResults = nil
 			for _, inst := range filtered {
 				lastCommandResults = append(lastCommandResults, output.ResultItem{
-					Container: inst.Name,
-					Action:    inst.Status,
-					OK:        true,
+					Container:      inst.Name,
+					Action:         inst.Status,
+					OK:             true,
+					PublishedPorts: inst.PublishedPorts,
 				})
 			}
 
 			if opts.format == "text" {
 				w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(w, "NAME\tTYPE\tSTATUS\tMANAGED\tGROUPS\tIMAGE\tIP")
+				fmt.Fprintln(w, "NAME\tTYPE\tSTATUS\tMANAGED\tGROUPS\tIMAGE\tIP\tPORTS")
 				for _, inst := range filtered {
 					managedStr := "false"
 					if inst.Managed {
@@ -538,7 +560,7 @@ func newListCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 					if ipStr == "" {
 						ipStr = "-"
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", inst.Name, inst.Type, inst.Status, managedStr, groupsStr, inst.Image, ipStr)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", inst.Name, inst.Type, inst.Status, managedStr, groupsStr, inst.Image, ipStr, formatPublishedPorts(inst.PublishedPorts, true))
 				}
 				_ = w.Flush()
 			}
@@ -567,11 +589,14 @@ func newStatusCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				return &exitError{code: 5, err: fmt.Errorf("container %q not found: %w", name, err)}
 			}
 
+			publishedPorts := ports.Published(inst.Devices)
+
 			lastCommandResults = []output.ResultItem{
 				{
-					Container: inst.Name,
-					Action:    inst.Status,
-					OK:        true,
+					Container:      inst.Name,
+					Action:         inst.Status,
+					OK:             true,
+					PublishedPorts: publishedPorts,
 				},
 			}
 
@@ -593,6 +618,23 @@ func newStatusCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				fmt.Fprintf(w, "IP Address:\t%s\n", ip)
 				fmt.Fprintf(w, "Managed:\t%s\n", inst.Config["user.lxm.managed"])
 				fmt.Fprintf(w, "Groups:\t%s\n", inst.Config["user.lxm.groups"])
+
+				fmt.Fprintln(w, "\nPublished Ports:")
+				if len(publishedPorts) == 0 {
+					fmt.Fprintln(w, "  (none)")
+				} else {
+					for _, p := range publishedPorts {
+						label := p.Name
+						if label == "" {
+							label = p.Device
+						}
+						ownership := "foreign"
+						if p.Managed {
+							ownership = "managed"
+						}
+						fmt.Fprintf(w, "  - %s: %s %s -> %s (%s)\n", label, p.Proto, p.Listen, p.Connect, ownership)
+					}
+				}
 
 				fmt.Fprintln(w, "\nRecipe Hash Trail:")
 				if len(recipeHashes) == 0 {
@@ -2144,4 +2186,28 @@ func resolveProviderType(opts *cmdOptions, svc provider.Driver, configs []*confi
 		return string(svc.ProviderType())
 	}
 	return ""
+}
+
+// formatPublishedPorts renders published ports for list/table output. When
+// managedOnly is true, foreign proxy devices are omitted (list shows only
+// lxm-managed publishers; status shows all with an ownership marker).
+func formatPublishedPorts(published []ports.PublishedPort, managedOnly bool) string {
+	parts := make([]string, 0, len(published))
+	for _, p := range published {
+		if managedOnly && !p.Managed {
+			continue
+		}
+		entry := p.Listen + "->" + p.Connect
+		if p.Proto != "tcp" {
+			entry = p.Proto + ":" + entry
+		}
+		if p.NAT {
+			entry += " (nat)"
+		}
+		parts = append(parts, entry)
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ",")
 }

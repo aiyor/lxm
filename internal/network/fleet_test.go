@@ -219,3 +219,31 @@ func TestCheckInstancesWithProvider_IncusDefaultBridge(t *testing.T) {
 		t.Errorf("expected warning mentioning lxdbr0 on lxd, got: %v", warnsLXD)
 	}
 }
+
+func TestCheckInstancesWithProvider_NATOnOVNRejected(t *testing.T) {
+	conf := &config.Config{
+		Name:     "vm1",
+		Type:     "virtual-machine",
+		Networks: []config.NetworkConfig{{Name: "eth0", Parent: "ovn0"}},
+		Ports: []config.PortConfig{{
+			Name:    "https",
+			Listen:  "10.10.10.1:8443",
+			Connect: "10.10.10.31:443",
+			Proto:   "tcp",
+			NAT:     true,
+		}},
+	}
+	f := &Fleet{ByName: map[string]*VSwitch{
+		"ovn0": {VSwitchConfig: config.VSwitchConfig{Name: "ovn0", Type: "ovn"}},
+	}}
+	if _, err := CheckInstancesWithProvider([]*config.Config{conf}, f, nil, "lxd"); err == nil || !strings.Contains(err.Error(), "OVN-backed network") {
+		t.Fatalf("expected NAT+OVN error, got: %v", err)
+	}
+
+	// A bridge-backed vswitch with the same NAT port is allowed by this layer
+	// (config.validatePorts validates the static-IPv4 pairing separately).
+	f.ByName["ovn0"] = &VSwitch{VSwitchConfig: config.VSwitchConfig{Name: "ovn0", Type: "bridge"}}
+	if _, err := CheckInstancesWithProvider([]*config.Config{conf}, f, nil, "lxd"); err != nil {
+		t.Fatalf("bridge-backed NAT must not be rejected by the network layer: %v", err)
+	}
+}

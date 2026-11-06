@@ -175,13 +175,14 @@ entries must be valid CIDRs, are additive to the locked default internal set (RF
 silently.
 
 ### 3.8 List Directives (`remove` and `replace`)
-List fields (`mounts`, `networks`, `recipes`, `disks`) concatenate by default. Inheritance behavior can be modified using directives:
+List fields (`mounts`, `networks`, `recipes`, `disks`, `ports`) concatenate by default; `ports` and `disks` use name-identity merging (a same-named overlay entry replaces the base entry wholesale), while the other lists concatenate. Inheritance behavior can be modified using directives:
 
 ```yaml
 remove:
   mounts: ["/var/data"]
   recipes: ["recipes/db/install.sh"]
   disks: ["data"]
+  ports: ["dns"]
 replace:
   networks:
     - name: eth0
@@ -191,10 +192,13 @@ replace:
     - name: data
       size: 100GiB
       path: /var/lib/postgresql
+  ports:
+    - {name: web, listen: 127.0.0.1:8080, connect: 127.0.0.1:80}
 ```
 
-* **`remove` Matching**: `remove.mounts` matches by normalized destination path (`filepath.Clean`), `remove.networks` matches by network interface `name`, `remove.recipes` matches by exact resolved script path or recipe metadata `name`, and `remove.disks` matches by disk `name`. Non-matching `remove` directives fail compilation with **exit code 3**.
+* **`remove` Matching**: `remove.mounts` matches by normalized destination path (`filepath.Clean`), `remove.networks` matches by network interface `name`, `remove.recipes` matches by exact resolved script path or recipe metadata `name`, `remove.disks` matches by disk `name`, and `remove.ports` matches by port `name`. Non-matching `remove` directives fail compilation with **exit code 3**.
 * **`replace` Directive**: Completely replaces inherited list items with the newly declared items.
+* **`ports` merge**: same-named entries replace wholesale (omitted fields reset to defaults; `nat` does not leak from the base); duplicate names within one source layer are rejected before merging.
 
 ### 3.9 Data Disks (`disks` / VM-only)
 
@@ -312,6 +316,42 @@ remote name); across sibling manifests identical `(name, url)` duplicates dedup 
 same name with a different canonical URL fails with **exit code 3** citing both files. Referencing
 an undeclared remote in `image:` fails at plan time with **exit code 3**; disabling fetch
 (`LXM_IMAGE_FETCH=0`) turns an uncached remote reference into the same plan-time error.
+
+### 3.11 Published Ports (`ports:` / fleet-scoped listener uniqueness)
+
+> Canonical feature specification: [`PORTS-SPEC.md`](PORTS-SPEC.md). This section is the manifest
+> schema reference and must stay in sync with `internal/config/schemas/v2.cue`.
+
+Each `ports:` entry compiles to one native LXD/Incus `proxy` device named `proxy-<name>` carrying
+`user.lxm.managed: "true"`. Omission from the manifest deletes the device on the next apply.
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `name` | string | — (required) | `^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$` (valid device name on both daemons), unique per instance/layer. |
+| `listen` | string | — (required) | Explicit `IP:port` literal (IPv6 bracketed, port 1–65535, no hostname/zone/4-in-6/protocol prefix). |
+| `connect` | string | — (required) | Explicit `IP:port` literal; wildcard is rejected. |
+| `proto` | string | `"tcp"` | `tcp` \| `udp`; materialized by the loader. |
+| `nat` | bool | `false` | DNAT mode; required for `type: virtual-machine`. IPv4 only, explicit non-loopback `listen`, explicit `connect` equal to a declared `networks[].ipv4`. Loopback + NAT is rejected (runtime-broken on both daemons). |
+
+Inheritance: merged by `name` with **whole-entry replacement** (`replace.ports` replaces the list,
+`remove.ports: [name]` drops entries; unmatched removes are errors). Duplicate names within one
+source layer are rejected before merging. Cross-field rules: a NIC named `proxy-<name>` collides
+with the port device; same-instance listeners must not conflict (wildcard-aware); `nat: true`
+requires a static IPv4 NIC; VMs require `nat: true`; `nat: true` on an OVN-backed vswitch NIC is a
+hard error at the network layer. Fleet-wide, the same `(proto, addr, port)` listener may be
+declared by only one instance (wildcard dual-stack rules; exit 3 citing both files), validated
+over the full loaded manifest set before selector filtering.
+
+```yaml
+ports:
+  - {name: web, listen: 127.0.0.1:8080, connect: 127.0.0.1:80}
+  - {name: dns, listen: 127.0.0.1:5353, connect: 127.0.0.1:53, proto: udp}
+```
+
+Unmarked pre-existing `proxy-<name>` devices are never adopted: a declared collision is a plan-time
+error (exit 3). Foreign proxy devices without the marker are preserved untouched; profile-provided
+proxies are unmanaged and produce a plan warning when shadowed. See PORTS-SPEC.md §5–§11 for the
+full validation, NAT, conflict, output and version-compatibility contracts.
 
 ---
 

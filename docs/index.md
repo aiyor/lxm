@@ -13,6 +13,7 @@ Every mutation is **previewed first** as a pure, deterministic diff (`lxm plan`)
 * **A whole fleet from one directory.** One base manifest + one small manifest per container. Teams share and version them like code.
 * **Provisioning built in.** Recipes (shell scripts) run after the container boots, guarded by wait-for-cloud-init, snapshotted before they run, and safe to roll back.
 * **Safe by default.** Snapshot-before-mutation, host-key-verified SSH, opt-in sudo and key injection, and scoped orphan pruning.
+* **Port publishing under control.** Declare `ports:` host → instance mappings; lxm manages the native `proxy` devices idempotently, validates listeners fleet-wide, and supports VM DNAT.
 * **Automation-ready.** Every command emits structured JSON and categorized exit codes, and honors `LXM_*` environment variables.
 
 ## Where do you want to start?

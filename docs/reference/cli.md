@@ -136,6 +136,8 @@ Usage:
 
 * `plan` never mutates state. If LXD is unreachable it plans against an empty live state rather than failing, so you can preview what a fresh host would create.
 * With `--format json` the full step list is emitted in the envelope's `plan` field.
+* Published ports appear as `ports[<name>]` diffs; non-loopback listens, profile-shadowed proxy devices and listener handoffs add warnings.
+* A duplicate published listener across manifests, an unmarked `proxy-<name>` collision, or an invalid NAT/endpoint configuration exits `3` before any daemon mutation.
 
 Example (text):
 
@@ -165,7 +167,7 @@ Usage:
 
 **Exit codes:** `0` success · `2` invalid `--format` · `3` config error.
 
-**Notes:** `diff` loads one manifest, applies it to the named container, and prints the field-level differences for that container's first step.
+**Notes:** `diff` loads one manifest, applies it to the named container, and prints the field-level differences for that container's first step. Port diffs use `ports[<name>]` and `ports[<name>].listen|connect|proto|nat` field names.
 
 Example (text):
 
@@ -202,9 +204,12 @@ Example (text):
 
 ```text
 $ lxm list --name dev-station
-NAME         TYPE               STATUS   MANAGED  GROUPS  IMAGE   IP
-dev-station  virtual-machine    Running  true     dev     ubuntu  10.171.13.47
+NAME         TYPE               STATUS   MANAGED  GROUPS  IMAGE   IP              PORTS
+dev-station  virtual-machine    Running  true     dev     ubuntu  10.171.13.47   127.0.0.1:8080->127.0.0.1:80
 ```
+
+The `PORTS` column lists lxm-managed published ports only (`udp:`-prefixed for UDP, ` (nat)` for
+DNAT); `--format json` adds an additive `published_ports` array to each result.
 
 ---
 
@@ -225,7 +230,7 @@ Usage:
 
 **Exit codes:** `0` success · `2` invalid `--format` · `4` LXD error · `5` container not found.
 
-**Notes:** the recipe hash trail lists the stored idempotency hashes lxm uses to decide whether a recipe needs to run again.
+**Notes:** the recipe hash trail lists the stored idempotency hashes lxm uses to decide whether a recipe needs to run again. The `Published Ports:` block lists managed and foreign proxy devices with an ownership marker; `--format json` carries the same data as `results[0].published_ports`.
 
 Example (text):
 
@@ -237,6 +242,9 @@ Architecture:  x86_64
 IP Address:    10.171.13.47
 Managed:       true
 Groups:        dev
+
+Published Ports:
+  - web: tcp 127.0.0.1:8080 -> 127.0.0.1:80 (managed)
 
 Recipe Hash Trail:
   (none)
