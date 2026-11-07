@@ -34,7 +34,8 @@ All notable changes to this project will be documented in this file.
 - **release**: automate the release PR, changelog update, and tag via release-please
   (`release-please.yml`, `release-please-config.json`, `.release-please-manifest.json`);
   the existing tag-triggered GoReleaser workflow still builds artifacts. Add `RELEASING.md`.
-  Requires the `RELEASE_PLEASE_TOKEN` repository secret.
+  Uses a short-lived GitHub App installation token (`RELEASE_APP_ID` variable +
+  `RELEASE_APP_PRIVATE_KEY` environment secret), not a long-lived PAT.
 
 ## [1.6.0] - 2026-11-07
 
