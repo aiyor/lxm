@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Features
+- **network**: host access and external ingress grants for default-deny ACL networks (#14)
+  - Add `vswitches[].host_access` (bridge-only, default `false`) to emit an ingress allow from the
+    vswitch gateway (`<ipv4>/32`) to its subnet, so the host is not blocked by the ACL default-reject.
+    Requires a group; rejected with a clear error on `type: ovn`. Live-verified on LXD 6.10.1:
+    default host block, restore after `host_access`, tailnet-source `ingress_allow` (TCP/22),
+    revocation after removal, and idempotent re-plan.
+  - Add fleet-scoped `network_policy.ingress_allow` entries (`to`, explicit IPv4 `source`,
+    optional `protocol` tcp/udp and `ports`) compiled to per-vswitch ingress allows. Canonicalizes
+    CIDRs with `net/netip`, normalizes/dedupes LXD port syntax, rejects malformed sources/ports and
+    duplicate rules, rejects sources overlapping the target subnet, and warns on wildcard
+    `0.0.0.0/0` or sources overlapping another managed vswitch subnet.
+  - Add additive rule-level ACL plan diffs (`ingress.added`/`ingress.removed`/
+    `egress.added`/`egress.removed`) so grant changes are visible without diffing raw payloads.
+  - Keep existing manifests compatible: omitted fields compile no additional ACL rules; plan
+    JSON for existing ACL updates gains additive rule-level diffs and more accurate tightened
+    detection (protocol/port-aware).
+  - Enforce `host_access` and `ingress_allow` validation/canonicalization on the `lxm compile`
+    path as well as plan/apply, so invalid sources, protocols, ports, or OVN/ungrouped
+    `host_access` cannot pass the compile gate.
+
+### Documentation
+- **network**: document host access, external ingress grants, the IPv4/port validation matrix,
+  the bridge-only OVN restriction, rule-level plan diffs, and a worked lab-behind-a-subnet-router
+  example (`docs/examples/lab-ingress/lab-ingress-demo.yaml`).
+
+### Maintenance
+- **release**: automate the release PR, changelog update, and tag via release-please
+  (`release-please.yml`, `release-please-config.json`, `.release-please-manifest.json`);
+  the existing tag-triggered GoReleaser workflow still builds artifacts. Add `RELEASING.md`.
+  Uses a short-lived GitHub App installation token (`RELEASE_APP_ID` variable +
+  `RELEASE_APP_PRIVATE_KEY` environment secret), not a long-lived PAT.
+
 ## [1.6.0] - 2026-11-07
 
 ### Features

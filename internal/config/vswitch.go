@@ -45,6 +45,10 @@ func (conf *Config) validateVSwitches() error {
 			return fmt.Errorf("vswitch %q: internet: false requires a group (ungrouped vswitches are not policy-managed)", vs.Name)
 		}
 
+		if err := vs.ValidateHostAccess(); err != nil {
+			return err
+		}
+
 		_, ipnet, err := net.ParseCIDR(vs.IPv4)
 		if err != nil {
 			return fmt.Errorf("vswitch %q: invalid ipv4 %q: %w", vs.Name, vs.IPv4, err)
@@ -100,6 +104,29 @@ func incrementIPv4(ip net.IP) {
 			break
 		}
 	}
+}
+
+// ValidateHostAccess checks the cross-field constraints for
+// vswitches[].host_access. The validation is shared by manifest validation and
+// the fleet union so the two paths cannot drift.
+func (vs VSwitchConfig) ValidateHostAccess() error {
+	if !vs.HostAccess || vs.Status == "absent" {
+		return nil
+	}
+	if vs.Group == "" {
+		return fmt.Errorf(
+			"vswitch %q: host_access: true requires a group (ungrouped vswitches are not policy-managed)",
+			vs.Name,
+		)
+	}
+	if vs.EffectiveType() == "ovn" {
+		return fmt.Errorf(
+			"vswitch %q: host_access: true is not supported on type: ovn in v1 "+
+				"(host traffic traverses the OVN logical router; use a bridge, or leave the vswitch ungrouped and manage its ACL manually)",
+			vs.Name,
+		)
+	}
+	return nil
 }
 
 // cidrsOverlap reports whether two IPv4 networks share any address.

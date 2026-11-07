@@ -515,15 +515,10 @@ func MigrateManifest(rawYAML []byte) ([]byte, []string, error) {
 		}
 	}
 
-	var buf bytes.Buffer
-	encoder := yaml.NewEncoder(&buf)
-	encoder.SetIndent(2)
-	if err := encoder.Encode(&root); err != nil {
+	migratedBytes, err := encodeYAMLNode(&root)
+	if err != nil {
 		return nil, nil, fmt.Errorf("encoding migrated YAML: %w", err)
 	}
-	_ = encoder.Close()
-
-	migratedBytes := buf.Bytes()
 
 	// Precise remote-name diagnostic on the compile path: the resolved-schema
 	// _|_ rejection does not name the offending key, and the authoring fallback
@@ -531,18 +526,42 @@ func MigrateManifest(rawYAML []byte) ([]byte, []string, error) {
 	// charset but does not enforce map keys under close()). Check the emitted
 	// manifest directly so lxm compile fails with an actionable message.
 	var migratedCfg Config
-	if yaml.Unmarshal(migratedBytes, &migratedCfg) == nil {
-		if err := validateImageRemoteNames(migratedCfg.ImageRemotes); err != nil {
-			return nil, warnings, err
-		}
+	if err := yaml.Unmarshal(migratedBytes, &migratedCfg); err != nil {
+		return nil, warnings, fmt.Errorf("decoding migrated manifest: %w", err)
+	}
+	if err := validateImageRemoteNames(migratedCfg.ImageRemotes); err != nil {
+		return nil, warnings, err
 	}
 
 	// Validate migrated output against resolved schema to ensure CUE compliance
-	validator, err := NewValidator()
-	if err == nil {
+	validator, validatorErr := NewValidator()
+	if validatorErr == nil {
 		if valErr := validator.ValidateResolved(migratedBytes); valErr != nil {
 			if valAuthoringErr := validator.ValidateAuthoring(migratedBytes); valAuthoringErr != nil {
 				return nil, warnings, fmt.Errorf("migrated manifest failed CUE validation: %w", valAuthoringErr)
+			}
+		}
+	}
+
+	// Go-side cross-field validation/normalization that is intentionally not
+	// expressible in CUE. The compile path must match plan/apply (LoadConfig):
+	// reject invalid host_access and ingress_allow values, and emit canonical
+	// ingress sources/protocol/ports rather than the authoring fallback's raw
+	// strings.
+	changed, err := normalizeCompiledManifest(&migratedCfg, &root)
+	if err != nil {
+		return nil, warnings, err
+	}
+	if changed {
+		migratedBytes, err = encodeYAMLNode(&root)
+		if err != nil {
+			return nil, warnings, fmt.Errorf("encoding normalized manifest: %w", err)
+		}
+		if validator != nil {
+			if valErr := validator.ValidateResolved(migratedBytes); valErr != nil {
+				if valAuthoringErr := validator.ValidateAuthoring(migratedBytes); valAuthoringErr != nil {
+					return nil, warnings, fmt.Errorf("normalized manifest failed CUE validation: %w", valAuthoringErr)
+				}
 			}
 		}
 	}
@@ -552,6 +571,119 @@ func MigrateManifest(rawYAML []byte) ([]byte, []string, error) {
 	}
 
 	return migratedBytes, warnings, nil
+}
+
+// encodeYAMLNode renders a YAML document with the project's 2-space indentation.
+func encodeYAMLNode(root *yaml.Node) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(root); err != nil {
+		return nil, err
+	}
+	_ = encoder.Close()
+	return buf.Bytes(), nil
+}
+
+// normalizeCompiledManifest runs the Go-side validation/normalization that
+// LoadConfig applies at plan/apply time. It mutates the YAML document for
+// normalized ingress rules so `lxm compile` emits the resolved surface.
+func normalizeCompiledManifest(cfg *Config, root *yaml.Node) (bool, error) {
+	for i := range cfg.VSwitches {
+		if err := cfg.VSwitches[i].ValidateHostAccess(); err != nil {
+			return false, err
+		}
+	}
+	if cfg.NetworkPolicy == nil || len(cfg.NetworkPolicy.IngressAllow) == 0 {
+		return false, nil
+	}
+
+	rules, err := NormalizeIngressAllow(cfg.NetworkPolicy.IngressAllow)
+	if err != nil {
+		return false, err
+	}
+	cfg.NetworkPolicy.IngressAllow = rules
+	if err := applyIngressNormalization(root, rules); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// applyIngressNormalization rewrites network_policy.ingress_allow nodes with
+// canonical source/protocol/ports values.
+func applyIngressNormalization(root *yaml.Node, rules []IngressAllowRule) error {
+	if root == nil || len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("internal: migrated manifest root is not a mapping")
+	}
+	doc := root.Content[0]
+	policy := mappingValue(doc, "network_policy")
+	if policy == nil || policy.Kind != yaml.MappingNode {
+		return fmt.Errorf("internal: network_policy node missing during ingress normalization")
+	}
+	seq := mappingValue(policy, "ingress_allow")
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return fmt.Errorf("internal: ingress_allow node missing during normalization")
+	}
+	if len(seq.Content) != len(rules) {
+		return fmt.Errorf("internal: ingress_allow node count %d != normalized rule count %d", len(seq.Content), len(rules))
+	}
+	for i, rule := range rules {
+		node := seq.Content[i]
+		if node.Kind != yaml.MappingNode {
+			return fmt.Errorf("internal: ingress_allow[%d] is not a mapping", i)
+		}
+		setMappingString(node, "to", rule.To)
+		setMappingString(node, "source", rule.Source)
+		setMappingString(node, "protocol", rule.Protocol)
+		if len(rule.Ports) == 0 {
+			removeMappingKey(node, "ports")
+			continue
+		}
+		ports := make([]*yaml.Node, len(rule.Ports))
+		for j, port := range rule.Ports {
+			ports[j] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: port}
+		}
+		setMappingNode(node, "ports", &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: ports})
+	}
+	return nil
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func setMappingString(node *yaml.Node, key, value string) {
+	setMappingNode(node, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
+}
+
+func setMappingNode(node *yaml.Node, key string, value *yaml.Node) {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			node.Content[i+1] = value
+			return
+		}
+	}
+	node.Content = append(node.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		value,
+	)
+}
+
+func removeMappingKey(node *yaml.Node, key string) {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			return
+		}
+	}
 }
 
 // SaveMigratedFile writes the migrated manifest content either non-destructively to .lxm/compiled/

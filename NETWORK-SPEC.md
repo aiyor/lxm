@@ -68,8 +68,10 @@ Constraints were verified against the LXD 6.x reference documentation:
 | C6 | With the `iptables` firewall driver, IP-range subjects (a–b form) are unsupported. | Only CIDR subjects are generated. (The backend is chosen daemon-side and is not API-observable per network; CIDR-only rules make the backend choice irrelevant.) |
 | C7 | ACLs are available for bridge and OVN networks (`network_acl` API extension, LXD ≥ 4.10). | Prerequisite gate + `lxm doctor` bridge-ACL probe (§8.4). |
 | C8 | LXD validates `security.acls` references at network create/update time — referencing a missing ACL is an API error. | Execution ordering: ACLs must exist before the vswitches that reference them (§8.3). |
+| C9 | The ACL default ingress `reject` also applies to **host→instance** traffic on a bridge; the host is not implicitly exempt. Verified by the issue-#14 reporter on LXD 5.21.9 (default reject blocks host SSH; gateway-`/32` ingress allow restores it) and consistent with bridge ACL enforcement being host-boundary traffic. | Host access needs an explicit ingress allow from the gateway ⇒ `vswitches[].host_access` (R11/G10), default off. |
 
-> **Version pinning.** C1–C8 were verified against LXD 6.9. The `network_acl` extension's 4.10
+> **Version pinning.** C1–C8 were verified against LXD 6.9; C9 was verified on LXD 5.21.9 as part
+> of the issue-#14 evidence and is exercised by the host_access feature. The `network_acl` extension's 4.10
 > floor reflects its **OVN** origin; **bridge** ACL support arrived in a later LXD release. The
 > authoritative capability check is the `lxm doctor` probe, which creates and deletes a throwaway
 > bridge ACL for real (§8.4).
@@ -101,10 +103,12 @@ vswitches:
     ipv4: 10.50.0.1/24
     group: services
 
-  # Quarantine: outbound internet only, cannot reach any internal network
+  # Quarantine: outbound internet only, cannot reach any internal network.
+  # host_access keeps the LXD host able to reach instances (e.g. a reverse proxy).
   - name: labbr0
     ipv4: 10.60.0.1/24
     group: quarantine
+    host_access: true
 
 network_policy:
   internal_cidrs:             # additive to the locked default internal set (§5.2)
@@ -115,6 +119,11 @@ network_policy:
     - from: containers
       to: services
       direction: egress       # one-way: containers may initiate; services may not
+  ingress_allow:              # external clients (e.g. a tailnet) -> selected group ports
+    - to: quarantine
+      source: 100.99.45.41/32 # explicit IPv4 CIDR; no hostnames
+      protocol: tcp
+      ports: ["22", "3000-3999"]
 ```
 
 ### 3.1 `vswitches` field reference
@@ -131,6 +140,7 @@ network_policy:
 | `group` | string | — | Optional group membership. Absence ⇒ managed for addressing only (no ACLs). Removing `group` later detaches the ACL (§8.2). |
 | `internet` | bool | `true` | Only meaningful with `group`. `true` ⇒ egress to the internet allowed. `false` ⇒ fully internal group (internet-bound egress rejected). |
 | `mtu` | int | — | Optional MTU override (maps to `bridge.mtu` on OVN; must be ∈ [576, 65535]). |
+| `host_access` | bool | `false` | Bridge-only opt-in: emit ingress `allow source=<gateway>/32 destination=<subnet>` so the LXD host is not blocked by the ACL default-reject (R11/G10). Requires `group`; rejected on `type: ovn` (host traffic traverses the OVN logical router; use a bridge, or leave the OVN vswitch ungrouped and manage its ACL manually in v1). |
 | `config` | map[string]string | — | Optional backend-specific passthrough options (managed keys take strict precedence). Passthrough keys are reconciled additively on create and update: keys declared in `config` set or update live provider network options, while omitted keys are preserved (to delete an unmanaged passthrough key, use `lxc/incus network unset`). On adopted networks, manifest passthrough keys overwrite existing live values. |
 
 Fixed, non-configurable (locked for determinism): `ipv4.dhcp: true`, `dns.domain: lxd`, no
@@ -153,13 +163,37 @@ network_policy:
     - from: <group>            # required; a group with ≥1 vswitch
       to: <group>              # required; a group with ≥1 vswitch
       direction: both          # "both" (default, mutual) | "egress" (one-way initiation)
+  ingress_allow:               # optional; external source -> target group
+    - to: <group>              # required; a group with ≥1 vswitch
+      source: <ipv4-cidr>      # required; canonical IPv4 CIDR (netip), no hostnames/zones/4-in-6
+      protocol: tcp            # "tcp" (default) | "udp"
+      ports: ["22", "3000-3999"] # optional; omitted = all ports
 ```
+
+`ingress_allow` fields:
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `to` | string | — (required) | Target group; must have ≥1 present vswitch (unknown ⇒ exit 3). The rule is compiled into every vswitch of that group. |
+| `source` | string | — (required) | Explicit IPv4 CIDR. Canonicalized with `net/netip` to the masked prefix; bare addresses, hostnames, zones, 4-in-6 literals, and IPv6 are rejected. A source overlapping a target vswitch subnet is rejected (intra-switch traffic is unfiltered, C1); a source overlapping **another** managed vswitch subnet warns (use a group-to-group allow for managed peers); `0.0.0.0/0` is allowed but produces a plan warning. |
+| `protocol` | string | `"tcp"` | `"tcp"` \| `"udp"`. |
+| `ports` | []string | — | Optional LXD ACL destination-port syntax: single ports, `a-b` ranges, and comma-separated lists. Canonicalized (leading zeros removed), sorted, and deduplicated; values must be 1–65535 and a range must have `start < end` (use a single port for equal endpoints). Omitted/empty ⇒ all ports. |
+
+Ingress grants are **ingress-only**: they admit new flows from `source` to the target group's
+instances on the selected protocol/ports and do not create egress allowances or change
+`internal_cidrs` / G7/G8 behavior. Removal revokes new flows on the next apply (established
+conntrack entries persist, §9). Duplicate normalized rules within one manifest are rejected; the
+same rule declared identically in multiple fleet manifests dedups silently.
+
+Like `allow`, `ingress_allow` participates in **whole-object `network_policy` inheritance**: a
+leaf declaring any `network_policy` object replaces the inherited base object wholesale. Declare
+`allow` and `ingress_allow` in the same layer (typically `_base.yaml`).
 
 * `network_policy` is a **scalar object within a single manifest tree**: presence-wins
   whole-value replacement in inheritance (no field-level merge, no `remove`/`replace` directives).
   The "additive" language on `internal_cidrs` refers to the locked default internal set, not to
-  inheritance. Across sibling manifests the `allow` list and `internal_cidrs` list are **unioned
-  and deduplicated** (§7).
+  inheritance. Across sibling manifests the `allow`, `ingress_allow`, and `internal_cidrs` lists
+  are **unioned and deduplicated** (§7).
 * `from == to` is legal but redundant (intra-group is already allowed); flagged by a plan warning.
 * An entry referencing an unknown group ⇒ exit 3:
   `network_policy: group "<name>" has no vswitches assigned`.
@@ -167,7 +201,7 @@ network_policy:
   `(from, to)` pair with a **differing** `direction` ⇒ exit 3.
 * `internal_cidrs` entries must be valid CIDRs; duplicates dedup silently.
 
-## 4. Policy Semantics (R1–R10)
+## 4. Policy Semantics (R1–R12)
 
 For traffic **crossing a vswitch boundary** (leaving one vswitch toward another network or the
 outside; see C1 for the intra-vswitch caveat), with `allow` stateful (C5, verified):
@@ -184,6 +218,8 @@ outside; see C1 for the intra-vswitch caveat), with `allow` stateful (C5, verifi
 | R8 | Bridge services | DHCP/DNS from instances to the vswitch gateway is guaranteed by LXD baseline rules (C4). All other host-bound traffic on the gateway IP is rejected by the own-subnet reject (§5.2). |
 | R9 | Ungrouped vswitches | No ACLs generated; routing/NAT per stock LXD. Grouped→ungrouped traffic follows stock LXD routing (allowed) — if a grouped network must not reach an ungrouped internal network, that network **must** be assigned to a group (the policy world is opt-in per vswitch). |
 | R10 | Multi-NIC bypass (invariant + warning) | An instance with NICs on vswitches from ≥2 distinct groups can forward traffic between them if guest IP forwarding is enabled (the policy filters vswitch boundaries, not guest routing). `lxm plan` warns: `instance "<n>" NICs span network groups [<g1>, <g2>]; guest routing may bypass network_policy`. Preventing this is out of scope for v1. |
+| R11 | Host access | A grouped **bridge** vswitch with `host_access: true` admits ingress from its own gateway address (`<ipv4>/32`) to its subnet (G10). Without it, the host is subject to the default ingress reject (verified empirically on LXD 5.21.9); DHCP/DNS remain baseline-allowed (C4). This does not widen inter-group or internet access. OVN is rejected in v1 (the host source traverses the logical router). |
+| R12 | External ingress grant | `network_policy.ingress_allow` emits ingress `allow` rules on every vswitch of the target group, matching an explicit external IPv4 CIDR and optional protocol/ports (G11). Unmatched ingress still hits the reject default; removing a grant revokes new flows at the next apply. |
 
 ## 5. Compilation to LXD Network ACLs (deterministic)
 
@@ -219,11 +255,14 @@ All generators are formulated from the ACL being compiled — vswitch `V` in gro
 | G7 | egress | allow | `S_V` | `0.0.0.0/0` | only when `internet: true` on V (R6) |
 | G8 | egress | **reject** | `S_V` | `Decompose(InternalSet, PermittedEgress(V) ∪ ({S_V} ∪ DNSResolvers if OVN)) ∪ ({S_V} if Bridge)` | only when G7 exists (otherwise the reject default covers) |
 | G9 | egress | **reject** | `S_V` | `<resolver>/32` (ports `1-52,54-65535` TCP/UDP, ICMP4) | **OVN only**: port guards restricting carved resolver access strictly to DNS (port 53) |
+| G10 | ingress | allow | `V.gateway/32` | `S_V` | `host_access: true` on a **bridge** vswitch (R11) |
+| G11 | ingress | allow | `R.source` ∀ R ∈ `ingress_allow`, R.to = `G_V` | `S_V` | external ingress grants (R12); optional `protocol` + `destination_port` from the rule |
 
 `PermittedEgress(V)` = the union of destination subnets produced by G1, G3, G4 (all ≠ `S_V`).
 
-No other rules are generated; everything unmatched hits the reject defaults. Deterministic ordering
-within each ACL: `(direction, action, source, destination, protocol, destination_port, icmp_type)`, then deduplicated.
+No other rules are generated; everything unmatched hits the reject defaults. G10/G11 are
+ingress-only and do not change the G7/G8 egress model. Deterministic ordering within each ACL:
+`(direction, action, source, destination, protocol, destination_port, icmp_type)`, then deduplicated.
 
 ### 5.2 Internal set, decomposition & host protection
 
@@ -259,6 +298,7 @@ and host protection.
 
 **Own-subnet & DNS Resolver protection: Bridge vs OVN.**
 - **Bridge vswitches**: `S_V` is **always** in the G8 reject set. Because the bridge gateway (e.g. `10.60.0.1`) is an IP alias on the host OS network namespace, this rejects instance→host traffic on the gateway IP (SSH, API, host-bound listeners) — with the sole exception of DHCP/DNS (C4, R8). Intra-bridge traffic bypasses the ACL filter (C1) and is unaffected.
+- **Host access (G10, opt-in)**: the same default-reject also applies to **host→instance** ingress, so a host-side reverse proxy/SSH jump host is blocked by default. `host_access: true` adds the explicit ingress allow `source=<gateway>/32 → destination=S_V` (all protocols/ports), restoring host access without changing inter-group or internet policy. It is bridge-only; OVN host traffic traverses the logical router and is rejected in v1. This rule is ingress-only and does not carve the gateway out of the egress G8 set (instances still cannot initiate to host services).
 - **OVN vswitches**: The gateway IP lives inside an isolated OVN logical router datapath. OVN evaluates ACLs on every logical switch port; therefore, `S_V` is **carved out** of G8 and permitted via **G0** (`allow S_V → S_V`) so intra-switch traffic communicates freely under default-reject.
 - **OVN DNS Resolution on `internet: true` (R8 / G9)**: In LXD/Incus, OVN inherits DNS upstream from the parent uplink bridge gateway IP or configured nameservers (`<resolver>/32`). Because explicit `reject` rules outrank `allow` rules, general RFC1918 reject rules would block DNS to private resolvers. LXM automatically derives resolver IPs (from `vs.DNSResolvers` → `vs.Config["dns.nameservers"]` → `parent.Config["dns.nameservers"]` → `parent.Config["ipv4.address"]` / `volatile.network.ipv4.address`). For internal/RFC1918 resolvers, LXM carves `<resolver>/32` out of the G8 reject set and installs **G9 port-guard reject rules** (`1-52,54-65535` for TCP/UDP, plus ICMP4) on that `/32`. This permits UDP/TCP port 53 DNS queries to pass while strictly blocking SSH, LXD API, and all other host ports. (Public resolvers like `1.1.1.1` are permitted by G7 and bypass G8/G9, avoiding unnecessary port guards).
 - **OVN DNS Exfiltration Prevention on `internet: false` (R8 / EC-18)**: On `internet: false` OVN networks, LXM emits explicit reject rules on port 53 UDP/TCP to external/uplink resolvers (`<resolver>/32`). In OVN, the provider daemon maps `reject` rules to priority 400 (overriding the daemon's baseline priority 200 DNS allow) to seal outbound DNS leakage on isolated networks. In-network resolvers inside `S_V` are preserved and remain accessible via G0 (`allow S_V → S_V`) for intra-subnet name resolution. (On Linux bridges, the action priority model is separately enforced by nftables ordering drop and reject rules before allow).
@@ -288,6 +328,8 @@ Given the §3 manifest (`vms` 10.30.0.0/24, `containers` 10.40.0.0/24, `services
     quarantine), `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `127.0.0.0/8`,
     `169.254.0.0/16` (G8 — rejects outrank the G7 allow, C3);
   * ingress: no allow rules → default reject (nothing can initiate in);
+  * ingress: if `host_access: true`, additionally `allow 10.60.0.1/32 → 10.60.0.0/24`
+    (G10), so the host can reach instances; intra-group/inter-group rules remain unchanged.
   * DHCP/DNS to 10.60.0.1 still works (C4); everything else on 10.60.0.1 is rejected.
 * **Mutual communication** — put vswitches in one group (R2/G1–G2), e.g. two vswitches both
   `group: vms`.
@@ -295,6 +337,11 @@ Given the §3 manifest (`vms` 10.30.0.0/24, `containers` 10.40.0.0/24, `services
   `containers → services` one-way (R5: G3 on cbr0, G6 on svcbr0, no reciprocal egress);
   `quarantine ↔ anything-internal` denied (R3/R6). For vmbr0, G8 carves 10.50.0.0/24 out of
   `10.0.0.0/8` (decomposition) so the G3 allow is not shadowed.
+* **External grant on quarantine** — `ingress_allow: [{to: quarantine, source: 100.99.45.41/32,
+  protocol: tcp, ports: ["22","3000-3999"]}]` adds one ingress allow
+  `100.99.45.41/32 → 10.60.0.0/24 dport 22,3000-3999` to `lxm-labbr0` only (G11); every other
+  source or port still hits the default reject. Removing the rule makes the next plan an
+  `update_acl` with `ingress.removed` and `tightened: true`.
 
 ## 6. Instance NIC Integration
 
@@ -327,9 +374,13 @@ Given the §3 manifest (`vms` 10.30.0.0/24, `containers` 10.40.0.0/24, `services
   each leaf, which carries a copy. Dedup-on-identical is what makes the recommended `_base.yaml`
   placement work. **Within a single merged tree**, identical redeclarations are likewise allowed
   (deduplicated); only the fleet union reports conflicts, with both file paths.
-* **`network_policy` across sibling manifests**: `allow` entries and `internal_cidrs` are unioned
-  and deduplicated. A conflicting `(from, to)` pair (differing `direction`) ⇒ exit 3:
+* **`network_policy` across sibling manifests**: `allow` entries, `ingress_allow` grants, and
+  `internal_cidrs` are unioned and deduplicated. A conflicting `(from, to)` pair (differing
+  `direction`) ⇒ exit 3:
   `network_policy: conflicting declarations for "<from>" → "<to>" (both vs egress) in "<fileA>" and "<fileB>"`.
+  Identical normalized ingress rules dedup; semantically distinct protocol/port grants are all
+  retained. Target-group existence, source/target-subnet overlap, and wildcard warnings are
+  validated fleet-wide at union time (after all manifests are loaded).
 * **Selector-scope invariant**: when `-g`/`--name` filters which instances are applied, `vswitches`
   and `network_policy` are still compiled against the **entire loaded manifest set**, not the
   filtered subset — otherwise peer vswitches would vanish from the group registry and produce
@@ -354,7 +405,7 @@ type NetworkStep struct {
     Kind      string             // "create_acl" | "update_acl" | "create_vswitch" | "update_vswitch"
     Name      string             // vswitch or ACL name
     Changed   bool
-    Diff      []FieldDiff        // same FieldDiff shape as instance steps
+    Diff      []FieldDiff        // `rules` count summary + ingress.added/removed, egress.added/removed
     Tightened bool               // update_acl removes/narrows allows (§9)
     ACLPost   *api.NetworkACLsPost
     ACLPut    *api.NetworkACLPut
@@ -437,7 +488,9 @@ ride the kernel's conntrack `established,related` accept path, which sits ahead 
 * **Plan-time visibility**: when an `update_acl` step **removes or narrows** allow rules
   (`Tightened`), `lxm apply` emits:
   `ACL "<name>" tightened; pre-existing connections may persist until conntrack expiry (see docs: conntrack lifecycle)`.
-  A pure widening (only new allows added) does **not** warn.
+  A widening that is fully covered by the desired allows does **not** warn. Coverage is
+  evaluated pairwise per live rule, so replacing one allow with several narrower allows whose
+  union covers it may conservatively warn.
 * **Operational runbook** (manual, after tightening with live flows):
   1. Scoped delete: `sudo conntrack -D -d <newly-blocked-cidr>` (or `-s <src> -d <dst>`).
   2. Instance restart — destroys the veth pair and its conntrack entries (no host privileges).
@@ -447,7 +500,10 @@ Full user documentation: `docs/reference/conntrack-lifecycle.md`.
 
 ## 10. Result Envelope & Exit Codes
 
-* `lxm plan/apply --format json`: `network_steps` renders inside the `plan` object (additive);
+* `lxm plan/apply --format json`: `network_steps` renders inside the `plan` object (additive).
+  `create_acl` steps carry a `rules` count summary; `update_acl` steps carry a `rules` count plus
+  per-rule `ingress.added`/`ingress.removed`/`egress.added`/`egress.removed` entries, so
+  host-access and ingress-grant changes are visible without diffing the full `acl_put` payload.
   `apply` adds a top-level `network_results: [{name, kind, changed, ok, duration_ms}]` alongside
   `results`, so a network-phase failure is machine-distinguishable from an instance-phase failure.
   A failed network step also appears in `errors` with the failing object's name in the `name` field
@@ -484,9 +540,10 @@ In-memory fakes back the same interface for unit/integration tests.
 > spec.
 
 **Go structs (`internal/config`)** — `VSwitchConfig` (`Name`, `Type`, `Driver`, `IPv4`, `IPv6`,
-`NAT *bool`, `Group`, `Internet *bool`; `NAT`/`Internet` nil defaults to `true`),
-`NetworkPolicyRule` (`From`, `To`, `Direction`; empty = `both`), `NetworkPolicy` (`InternalCIDRs`,
-`Allow`), added to `Config` as `VSwitches []VSwitchConfig` and `NetworkPolicy *NetworkPolicy`.
+`NAT *bool`, `Group`, `Internet *bool`, `HostAccess bool`; `NAT`/`Internet` nil defaults to `true`),
+`NetworkPolicyRule` (`From`, `To`, `Direction`; empty = `both`), `IngressAllowRule` (`To`,
+`Source`, `Protocol`, `Ports`), `NetworkPolicy` (`InternalCIDRs`, `Allow`, `IngressAllow`), added
+to `Config` as `VSwitches []VSwitchConfig` and `NetworkPolicy *NetworkPolicy`.
 
 **Merge semantics (`MergeConfigs`)** — `VSwitches`: list-concat within an include chain (like
 `Mounts`/`Networks`); `NetworkPolicy`: whole-value presence-wins replacement within a tree;
@@ -501,7 +558,10 @@ true, `direction: both`) are materialized at load so the strict resolved schema 
 
 **Go-side post-merge validation (exit 3)** — `ipv4` first-usable-host + mask bounds; duplicate
 names (deduplicated identically, conflicts deferred to the fleet union with attribution);
-overlapping subnets; `internet: false` without `group`; valid `internal_cidrs`.
+overlapping subnets; `internet: false` without `group`; valid `internal_cidrs`;
+`host_access` requires a group and is bridge-only; `ingress_allow` source/protocol/ports
+canonicalization, duplicate-rule rejection, target-group existence, source/target-subnet
+overlap, and wildcard warnings.
 
 ## 13. Verification & Test Plan
 
@@ -511,9 +571,12 @@ false`); G8 decomposition golden (`10.0.0.0/8 \ 10.50.0.0/24` → 16 disjoint pr
 property that no reject overlaps any G1/G3/G4 destination; internal-set canonicalization;
 reconciler matrix (create/update/adopt/unmanage/detach, immutable refusal, foreign-ACL refusal,
 order-insensitive `security.acls`, `Tightened` on narrowing only, orphaned-ACL annotation);
-executor ordering/phase-abort/`network_results`; CLI end-to-end (envelope `network_steps`/
-`network_results`, extension gate, NIC-subnet exit 3, live-state listing error exit 4,
-vswitch-less no-false-warning). `task lint` clean; full suite race-clean.
+executor ordering/phase-abort/`network_results`; host-access/ingress-grant compiler golden rules;
+`ingress_allow` canonicalization/validation matrix; ACL rule-level plan diffs and
+create/update/remove idempotency; CLI end-to-end envelope `network_steps`/`network_results`
+(including `ingress.added`/`ingress.removed` diffs), extension gate, NIC-subnet exit 3,
+live-state listing error exit 4, vswitch-less no-false-warning. `task lint` clean; full suite
+race-clean.
 
 Integration gates on a real LXD 6.9 daemon, run in a disposable nested-LXD harness (the
 `simulation/` tree in the working checkout — a per-host development artifact that is not shipped
@@ -534,6 +597,7 @@ with the repository):
 | **T6-OVN** guest DNS resolution | **PASS** — DNS queries to uplink resolver pass via G8 `/32` carve-out |
 | **T7-OVN** host gateway port protection | **PASS** — host gateway SSH access rejected by G9 non-DNS port guards |
 | **WAN egress** | **PASS** — 0% packet loss on 1.1.1.1 egress ping |
+| **T10 host_access / T11 ingress_allow** | **PASS on LXD 6.10.1 (bridge)** — baseline grouped bridge: host ping 100% loss and SSH `Connection refused`; after `host_access: true`, host SSH banner + ping 0% loss; after `ingress_allow` `100.99.45.41/32 tcp/22`, the same tailnet-source client received the SSH banner while the gateway path remained allowed; removal produced `update_acl` with `tightened: true` and revoked both (SSH refused, ping 100% loss); re-plan was a no-op. Incus and OVN host access were not live-tested (OVN host access is rejected by design). |
 
 ## 14. Locked Decisions & Open Questions
 
@@ -550,6 +614,19 @@ with the repository):
    preserves LAN-isolation default and host protection.
 6. **Conntrack is not flushed on policy tightening** — established flows persist until conntrack
    expiry; flushing is a host-admin runbook action, not automated.
+7. **`host_access` is bridge-only in v1.** OVN host traffic traverses the logical router and the
+   gateway-`/32` source model does not apply without live verification; config validation rejects it
+   with a clear error rather than emitting a possibly-ineffective rule.
+8. **`ingress_allow` is IPv4-only in v1 and ingress-only.** Sources are explicit CIDRs (no
+   hostnames/zones/4-in-6); wildcard `0.0.0.0/0` warns; sources overlapping the target vswitch
+   subnet are rejected because intra-switch traffic is unfiltered (C1). The feature does not
+   model guest-initiated egress grants or per-rule logging. Live evidence is bridge-based
+   (issue #14, LXD 5.21.9); the same rule model is compiled for OVN ACLs but OVN is not
+   live-verified in v1.
+9. **Plan ACL diffs are rule-level.** `update_acl` steps carry additive
+   `ingress.added`/`ingress.removed`/`egress.added`/`egress.removed` `FieldDiff` entries alongside the
+   existing `rules` count summary; this is additive to `lxm/plan/v1` and keeps grant changes
+   visible without comparing raw ACL payloads.
 
 **Mask bounds `/8`–`/29` (locked).** `/8` is the floor (a large supernet costs nothing
 correctness-wise because the compiler decomposes CIDRs); `/29` is the ceiling. Caveat: `/8`

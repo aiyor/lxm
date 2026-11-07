@@ -13,6 +13,7 @@
 * **Remote & Cluster Management**: Manage fleets over local UNIX sockets or remote HTTPS endpoints with mTLS client certificates and trust-token enrollment, with explicit cluster member targeting (`--target <node>`), project scoping (`--project <name>`), and named remotes (`~/.config/lxm/remotes.yaml`, `lxm remote`).
 * **Containers & Virtual Machines**: Unified management for lightweight LXC system containers and hardware-virtualized QEMU/KVM virtual machines (`type: container` / `type: vm`).
 * **Managed Virtual Switches & Network Segmentation**: Declare `vswitches:` (Linux bridges or multi-node OVN overlay switches) and a group-based `network_policy:` — compiled deterministically into network ACLs with automated CIDR prefix decomposition for isolated, mutually-communicating, and stateful one-way networks.
+* **Host Access & External Ingress Grants**: Keep the LXD host reachable under default-deny ACLs (`host_access: true`) and admit selected external IPv4 clients to specific protocols/ports (`network_policy.ingress_allow`), declaratively and revocably.
 * **Declarative Port Publishing**: Declare `ports:` host → instance mappings; lxm compiles them to native LXD/Incus `proxy` devices (marker-managed, idempotent, fleet-wide listener-conflict validation) and supports DNAT `nat: true` (required for virtual machines).
 * **Declarative & Idempotent**: State reconciliation automatically handles instance creation, hardware limits (CPU, memory, disk), VM hypervisor settings, device mounting, network configuration, and image rebuilds.
 * **Structured Machine Interface**: Every command (excluding TTY shells) supports `--format json` with standardized `lxm/result/v1` result envelopes and categorized exit codes (0–7).
@@ -100,6 +101,9 @@ task lint   # Run golangci-lint across all packages
 task test   # Run full test suite with race detector
 task build  # Format and build ./bin/lxm binary
 ```
+
+Releases are automated with release-please; see **[RELEASING.md](RELEASING.md)** for the
+maintainer workflow and versioning policy.
 
 ---
 

@@ -125,6 +125,11 @@ vswitches:
     ipv4: 10.60.0.1/24
     group: ovnservices
     mtu: 1442
+
+  - name: labbr0
+    ipv4: 10.70.0.1/24
+    group: lab
+    host_access: true        # bridge-only: allow ingress from this bridge's gateway
 ```
 
 | Field | Type | Default | Rules |
@@ -139,6 +144,7 @@ vswitches:
 | `group` | string | — | Group membership; absence ⇒ managed for addressing only (no ACLs). |
 | `internet` | bool | `true` | Only meaningful with `group`. `internet: false` on OVN virtual switches emits port 53 reject rules targeting derived upstream resolvers to block outbound DNS. |
 | `mtu` | int | — | Optional MTU override (maps to `bridge.mtu` on OVN; must be ∈ [576, 65535]). |
+| `host_access` | bool | `false` | Bridge-only opt-in: emit ingress `allow source=<gateway>/32 destination=<subnet>` (G10/R11) so the LXD host is not blocked by the ACL default-reject. Requires `group`; rejected on `type: ovn` in v1. |
 | `config` | map[string]string | — | Optional backend-specific passthrough options (managed keys take strict precedence). |
 
 An ungrouped vswitch gets no ACLs (stock routing). Removing `group` detaches the ACL; removing
@@ -147,9 +153,9 @@ the vswitch stops managing it (lxm never deletes networks).
 ### 3.7 Network Policy (`network_policy` / fleet-scoped)
 
 `network_policy:` is a group-based traffic policy compiled deterministically into LXD network ACLs
-(`lxm-<vswitch>`, `reject` default). Fleet-scoped; `allow` entries and `internal_cidrs` are unioned
-and deduplicated across manifests (identical dedup; conflicting `(from,to)` with differing
-`direction` ⇒ exit 3).
+(`lxm-<vswitch>`, `reject` default). Fleet-scoped; `allow` entries, `ingress_allow` grants, and
+`internal_cidrs` are unioned and deduplicated across manifests (identical dedup; conflicting
+`(from,to)` with differing `direction` ⇒ exit 3).
 
 ```yaml
 network_policy:
@@ -159,6 +165,11 @@ network_policy:
     - from: vms                # required; a group with ≥1 vswitch
       to: services             # required; a group with ≥1 vswitch
       direction: both          # "both" (default, mutual) | "egress" (one-way initiation)
+  ingress_allow:
+    - to: lab                  # required; target group
+      source: 100.99.45.41/32  # required; explicit IPv4 CIDR
+      protocol: tcp            # "tcp" (default) | "udp"
+      ports: ["22", "3000-3999"] # optional; omitted = all ports
 ```
 
 `allow` entries reference network groups (from `vswitches[].group`):
@@ -169,10 +180,22 @@ network_policy:
 | `to` | string | — (required) | A group with ≥1 vswitch; unknown group ⇒ exit 3. |
 | `direction` | string | `"both"` | `"both"` (mutual) \| `"egress"` (one-way initiation). |
 
+`ingress_allow` entries admit external client CIDRs into a target group:
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `to` | string | — (required) | Target group with ≥1 present vswitch; unknown group ⇒ exit 3. |
+| `source` | string | — (required) | Explicit IPv4 CIDR, canonicalized with `net/netip`; bare addresses/hostnames/zones/4-in-6/IPv6 ⇒ exit 3. A source overlapping the target vswitch subnet ⇒ exit 3 (intra-switch traffic is unfiltered); a source overlapping another managed vswitch subnet warns (use a group-to-group allow); `0.0.0.0/0` warns. |
+| `protocol` | string | `"tcp"` | `"tcp"` \| `"udp"`. |
+| `ports` | []string | — | Optional LXD ACL destination ports: single ports, `a-b` ranges, comma lists; canonicalized/sorted/deduped, 1–65535, range `start < end`; omitted/empty ⇒ all ports. |
+
 Rules: `from == to` is a no-op (intra-group is already allowed; plan warning); `internal_cidrs`
 entries must be valid CIDRs, are additive to the locked default internal set (RFC1918 supernets,
 `100.64/10`, loopback, link-local) that `internet: true` groups may not reach, and duplicates dedup
-silently.
+silently. `ingress_allow` compiles to ingress-only allows on every vswitch of `to` (G11); duplicate
+normalized rules within one manifest ⇒ exit 3, identical rules across fleet manifests dedup.
+`network_policy` is a whole-object inheritance field: a leaf that declares any `network_policy`
+replaces the base object, so keep `allow`/`ingress_allow` together in the same layer.
 
 ### 3.8 List Directives (`remove` and `replace`)
 List fields (`mounts`, `networks`, `recipes`, `disks`, `ports`) concatenate by default; `ports` and `disks` use name-identity merging (a same-named overlay entry replaces the base entry wholesale), while the other lists concatenate. Inheritance behavior can be modified using directives:

@@ -61,7 +61,9 @@ consumers:
   and vswitches, executed **before** instance steps — ACL steps (`create_acl`/`update_acl`) before
   vswitch steps (`create_vswitch`/`update_vswitch`), satisfying the C8 dependency (a network may
   reference only existing ACLs). Each step carries `kind`, `name`, `diff`, `changed`, and the
-  request payload (`acl_post`/`acl_put`/`network_post`/`network_put`).
+  request payload (`acl_post`/`acl_put`/`network_post`/`network_put`). `create_acl` diffs include
+  the `rules` count; `update_acl` diffs include the `rules` count plus additive
+  `ingress.added`/`ingress.removed`/`egress.added`/`egress.removed` entries.
 * **`network_results`** (`array` of `NetworkResult`): per-step outcomes from `apply` —
   `{name, kind, changed, ok, duration_ms, error?}` — so a phase-1 (network) failure is
   machine-distinguishable from a phase-3 (instance) failure.

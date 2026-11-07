@@ -413,6 +413,9 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 					combinedPlan.Summary.Create, combinedPlan.Summary.Update, combinedPlan.Summary.Recreate, combinedPlan.Summary.Delete, combinedPlan.Summary.Noop, len(selectedConfigs))
 				if len(combinedPlan.NetworkSteps) > 0 {
 					fmt.Fprintf(stdout, "Network: %d step(s)\n", len(combinedPlan.NetworkSteps))
+					for _, step := range combinedPlan.NetworkSteps {
+						fmt.Fprintf(stdout, "  %s %s\n", step.Kind, step.Name)
+					}
 				}
 				for _, w := range combinedPlan.Warnings {
 					fmt.Fprintf(stderr, "Warning: %s\n", w)

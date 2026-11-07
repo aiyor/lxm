@@ -159,6 +159,9 @@ Virtual switches (`vswitches:`) and traffic policies (`network_policy:`) give yo
   * Assign virtual switches to semantic groups (e.g. `frontend`, `api`, `databases`, `quarantine`). Inter-group traffic is denied by default (`reject`), which limits blast radius in multi-tier applications.
 * **Seal host exposure with `internal_cidrs`:**
   * Default internal isolation covers RFC1918 space (`10/8`, `172.16/12`, `192.168/16`), `100.64/10`, and managed subnets. If your host has public or routable IP addresses exposed to the network, declare them under `network_policy.internal_cidrs` to block guest-to-host traffic.
+* **Plan host access and external ingress explicitly:**
+  * The ACL default-reject also blocks host→instance traffic. Set `host_access: true` on every grouped **bridge** the host must reach (reverse proxy, SSH jump host); OVN is not supported for this flag in v1.
+  * Grant external clients with `network_policy.ingress_allow` scoped to the narrowest source CIDR, protocol, and port range. Avoid `0.0.0.0/0` (it warns), and remember that removing a grant only revokes new flows until conntrack expires.
 * **Verify OVN health with doctor:**
   * Run `lxm doctor` before applying OVN manifests to verify that the provider daemon has `network_ovn` enabled and that OVS/OVN database connectivity is healthy.
 

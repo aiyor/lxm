@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -139,19 +140,26 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 					Egress:      egress,
 					Config:      map[string]string{"user.lxm.managed": "true"},
 				},
+				Diff: []FieldDiff{
+					{Field: "rules", Old: "0 rules", New: fmt.Sprintf("%d rules", len(ingress)+len(egress))},
+				},
 			})
 			continue
 		}
 
 		if !aclRulesEqual(liveACL, desired) || liveACL.Description != desired.Description {
+			diff := []FieldDiff{{
+				Field: "rules",
+				Old:   fmt.Sprintf("%d live rules", len(liveACL.Egress)+len(liveACL.Ingress)),
+				New:   fmt.Sprintf("%d desired rules", len(egress)+len(ingress)),
+			}}
+			diff = append(diff, diffACLRules(liveACL, desired)...)
 			step := NetworkStep{
 				Kind:    "update_acl",
 				Name:    acl.Name,
 				Changed: true,
 				ACLPut:  desired,
-				Diff: []FieldDiff{
-					{Field: "rules", Old: fmt.Sprintf("%d live rules", len(liveACL.Egress)+len(liveACL.Ingress)), New: fmt.Sprintf("%d desired rules", len(egress)+len(ingress))},
-				},
+				Diff:    diff,
 			}
 			// D3: the conntrack warning applies only when the change removes or
 			// narrows allows (§7.6), not on a pure widening.
@@ -271,37 +279,190 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 	return np, nil
 }
 
-// allowsRemoved reports whether an ACL update removes or narrows an allow rule
-// relative to the live ACL (D3 — the §7.6 tightening signal).
-func allowsRemoved(live *provider.NetworkACL, desired *provider.NetworkACLUpdateRequest) bool {
-	liveKeys := make(map[string]bool)
-	for _, r := range live.Ingress {
-		if r.Action == "allow" {
-			liveKeys[allowRuleKey("ingress", r)] = true
-		}
-	}
-	for _, r := range live.Egress {
-		if r.Action == "allow" {
-			liveKeys[allowRuleKey("egress", r)] = true
-		}
-	}
-	desiredKeys := make(map[string]bool)
-	for _, r := range desired.Ingress {
-		if r.Action == "allow" {
-			desiredKeys[allowRuleKey("ingress", r)] = true
-		}
-	}
-	for _, r := range desired.Egress {
-		if r.Action == "allow" {
-			desiredKeys[allowRuleKey("egress", r)] = true
-		}
-	}
-	maps.DeleteFunc(liveKeys, func(k string, _ bool) bool { return desiredKeys[k] })
-	return len(liveKeys) > 0
+// directedAllow is one allow rule tagged with its ACL direction.
+type directedAllow struct {
+	direction string
+	rule      provider.NetworkACLRule
 }
 
-func allowRuleKey(dir string, r provider.NetworkACLRule) string {
-	return dir + "\x00" + r.Source + "\x00" + r.Destination
+// allowsRemoved reports whether an ACL update removes or narrows an allow rule
+// relative to the live ACL (D3 — the §7.6 tightening signal). A live allow is
+// considered preserved only if a desired allow in the same direction covers it
+// (same subjects and protocol/ports, with an empty desired field meaning "any").
+func allowsRemoved(live *provider.NetworkACL, desired *provider.NetworkACLUpdateRequest) bool {
+	liveAllows := collectAllows(live.Ingress, live.Egress)
+	desiredAllows := collectAllows(desired.Ingress, desired.Egress)
+
+	for _, liveAllow := range liveAllows {
+		covered := false
+		for _, desiredAllow := range desiredAllows {
+			if allowCovers(desiredAllow, liveAllow) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return true
+		}
+	}
+	return false
+}
+
+func collectAllows(ingress, egress []provider.NetworkACLRule) []directedAllow {
+	var out []directedAllow
+	for _, r := range ingress {
+		if r.Action == "allow" {
+			out = append(out, directedAllow{direction: "ingress", rule: r})
+		}
+	}
+	for _, r := range egress {
+		if r.Action == "allow" {
+			out = append(out, directedAllow{direction: "egress", rule: r})
+		}
+	}
+	return out
+}
+
+// allowCovers reports whether desired admits at least every flow live admits.
+func allowCovers(desired, live directedAllow) bool {
+	if desired.direction != live.direction {
+		return false
+	}
+	return cidrFieldCovers(desired.rule.Source, live.rule.Source, true) &&
+		cidrFieldCovers(desired.rule.Destination, live.rule.Destination, false) &&
+		allowFieldCovers(desired.rule.Protocol, live.rule.Protocol) &&
+		portFieldCovers(desired.rule.SourcePort, live.rule.SourcePort) &&
+		portFieldCovers(desired.rule.DestinationPort, live.rule.DestinationPort) &&
+		allowFieldCovers(desired.rule.ICMPType, live.rule.ICMPType) &&
+		allowFieldCovers(desired.rule.ICMPCode, live.rule.ICMPCode)
+}
+
+// allowFieldCovers reports whether a desired scalar field covers the live
+// field: an empty desired value means "any"; otherwise exact equality is
+// required (used for protocol/ICMP fields).
+func allowFieldCovers(desired, live string) bool {
+	return desired == "" || desired == live
+}
+
+// cidrFieldCovers reports whether desired CIDR/subject covers live. An empty
+// value means "any"; concrete CIDRs are compared by prefix containment.
+// wildcardCovers controls whether a desired 0.0.0.0/0 covers a narrower live
+// subject. Destination wildcards are handled conservatively: a G7 internet
+// allow (0.0.0.0/0) is shadowed on internal destinations by explicit G8 reject
+// rules, so it must not be treated as preserving a narrower live internal
+// allow (that would suppress the tightening warning on a removed allow).
+func cidrFieldCovers(desired, live string, wildcardCovers bool) bool {
+	if desired == "" {
+		return true
+	}
+	if live == "" || desired == live {
+		return desired == live
+	}
+	desiredPrefix, err := netip.ParsePrefix(desired)
+	if err != nil {
+		return false
+	}
+	livePrefix, err := netip.ParsePrefix(live)
+	if err != nil {
+		return false
+	}
+	if desiredPrefix.Addr().Is4() != livePrefix.Addr().Is4() {
+		return false
+	}
+	if desiredPrefix.Bits() == 0 && !wildcardCovers {
+		return false
+	}
+	return desiredPrefix.Bits() <= livePrefix.Bits() && desiredPrefix.Contains(livePrefix.Addr())
+}
+
+// portFieldCovers reports whether desired's comma-separated port set contains
+// every port/range in live. An empty value means "any".
+func portFieldCovers(desired, live string) bool {
+	if desired == "" {
+		return true
+	}
+	if live == "" {
+		return false
+	}
+	if desired == live {
+		return true
+	}
+	desiredRanges, desiredOK := parsePortField(desired)
+	liveRanges, liveOK := parsePortField(live)
+	if !desiredOK || !liveOK {
+		return false
+	}
+	merged := mergePortRanges(desiredRanges)
+	for _, liveRange := range liveRanges {
+		covered := false
+		for _, desiredRange := range merged {
+			if desiredRange.start <= liveRange.start && desiredRange.end >= liveRange.end {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
+type portRange struct {
+	start uint16
+	end   uint16
+}
+
+// parsePortField parses LXD ACL destination/source port syntax
+// ("22,3000-3999").
+func parsePortField(value string) ([]portRange, bool) {
+	var ranges []portRange
+	for token := range strings.SplitSeq(value, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return nil, false
+		}
+		startStr, endStr, hasRange := strings.Cut(token, "-")
+		start, err := strconv.ParseUint(startStr, 10, 16)
+		if err != nil || start < 1 {
+			return nil, false
+		}
+		end := start
+		if hasRange {
+			end, err = strconv.ParseUint(endStr, 10, 16)
+			if err != nil || end < start {
+				return nil, false
+			}
+		}
+		ranges = append(ranges, portRange{start: uint16(start), end: uint16(end)})
+	}
+	return ranges, true
+}
+
+// mergePortRanges sorts and merges overlapping/adjacent port ranges.
+func mergePortRanges(ranges []portRange) []portRange {
+	if len(ranges) == 0 {
+		return nil
+	}
+	sorted := slices.Clone(ranges)
+	slices.SortFunc(sorted, func(a, b portRange) int {
+		if a.start != b.start {
+			return int(a.start) - int(b.start)
+		}
+		return int(a.end) - int(b.end)
+	})
+	merged := []portRange{sorted[0]}
+	for _, current := range sorted[1:] {
+		last := &merged[len(merged)-1]
+		if current.start <= last.end+1 {
+			if current.end > last.end {
+				last.end = current.end
+			}
+			continue
+		}
+		merged = append(merged, current)
+	}
+	return merged
 }
 
 // buildNetworksPost constructs the create payload for a vswitch.
@@ -573,6 +734,98 @@ func sameACLSet(a, b string) bool {
 func aclRulesEqual(live *provider.NetworkACL, desired *provider.NetworkACLUpdateRequest) bool {
 	return network.RulesEqual(live.Ingress, desired.Ingress) &&
 		network.RulesEqual(live.Egress, desired.Egress)
+}
+
+// diffACLRules renders per-rule additions/removals for an ACL update so grants
+// such as host_access and ingress_allow are visible in the plan (the "rules"
+// count alone is too opaque for access changes).
+func diffACLRules(live *provider.NetworkACL, desired *provider.NetworkACLUpdateRequest) []FieldDiff {
+	type directionRules struct {
+		direction string
+		live      []provider.NetworkACLRule
+		desired   []provider.NetworkACLRule
+	}
+	sets := []directionRules{
+		{direction: "ingress", live: live.Ingress, desired: desired.Ingress},
+		{direction: "egress", live: live.Egress, desired: desired.Egress},
+	}
+
+	var diffs []FieldDiff
+	for _, set := range sets {
+		liveByKey := make(map[string]provider.NetworkACLRule, len(set.live))
+		for _, r := range set.live {
+			liveByKey[aclRuleKey(r)] = r
+		}
+		desiredByKey := make(map[string]provider.NetworkACLRule, len(set.desired))
+		for _, r := range set.desired {
+			desiredByKey[aclRuleKey(r)] = r
+		}
+
+		removed := make([]string, 0)
+		for key := range liveByKey {
+			if _, keep := desiredByKey[key]; !keep {
+				removed = append(removed, key)
+			}
+		}
+		slices.SortFunc(removed, func(a, b string) int {
+			return strings.Compare(formatACLRule(liveByKey[a]), formatACLRule(liveByKey[b]))
+		})
+		for _, key := range removed {
+			diffs = append(diffs, FieldDiff{Field: set.direction + ".removed", Old: formatACLRule(liveByKey[key]), New: nil})
+		}
+
+		added := make([]string, 0)
+		for key := range desiredByKey {
+			if _, keep := liveByKey[key]; !keep {
+				added = append(added, key)
+			}
+		}
+		slices.SortFunc(added, func(a, b string) int {
+			return strings.Compare(formatACLRule(desiredByKey[a]), formatACLRule(desiredByKey[b]))
+		})
+		for _, key := range added {
+			diffs = append(diffs, FieldDiff{Field: set.direction + ".added", Old: nil, New: formatACLRule(desiredByKey[key])})
+		}
+	}
+	return diffs
+}
+
+// aclRuleKey is the semantic identity used for rule-level plan diffs and
+// mirrors network.RulesEqual's fields (state included; SourcePort/ICMPCode
+// are not emitted by the network compiler today).
+func aclRuleKey(r provider.NetworkACLRule) string {
+	return strings.Join([]string{
+		r.Action,
+		r.Source,
+		r.Destination,
+		r.Protocol,
+		r.DestinationPort,
+		r.ICMPType,
+		r.State,
+	}, "\x00")
+}
+
+// formatACLRule renders one ACL rule for plan output.
+func formatACLRule(r provider.NetworkACLRule) string {
+	parts := []string{r.Action}
+	if r.Protocol != "" {
+		parts = append(parts, r.Protocol)
+	}
+	parts = append(parts, fmt.Sprintf("%s -> %s", emptyAsAny(r.Source), emptyAsAny(r.Destination)))
+	if r.DestinationPort != "" {
+		parts = append(parts, "dport "+r.DestinationPort)
+	}
+	if r.ICMPType != "" {
+		parts = append(parts, "icmp-type "+r.ICMPType)
+	}
+	return strings.Join(parts, " ")
+}
+
+func emptyAsAny(value string) string {
+	if value == "" {
+		return "any"
+	}
+	return value
 }
 
 // NetworkStepKindOrder orders network steps for execution (ACLs first).

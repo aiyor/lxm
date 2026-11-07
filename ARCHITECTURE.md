@@ -27,7 +27,7 @@ graph TD
     CLI --> Config["internal/config (Manifest Compilation & CUE Validation)"]
     CLI --> Fleet["internal/fleet (Inventory, Selectors & Host Keys)"]
     CLI --> Plan["internal/plan (Reconciler & Diff Engine)"]
-    CLI --> Network["internal/network (ACL Compiler & Generators G0-G9)"]
+    CLI --> Network["internal/network (ACL Compiler & Generators G0-G11)"]
     CLI --> Apply["internal/apply (Plan Executor & ETag Control)"]
     CLI --> Remote["internal/provider/remote (mTLS, Trust & Remotes Config)"]
 
@@ -53,7 +53,7 @@ graph TD
 * **`cmd/lxm`**: Serves as the CLI entry point and wiring layer. Parses cobra flags, wires signal contexts (`signal.NotifyContext`), handles version stamping (`version`, `commit`, `date`), routes commands (including `lxm remote`, `lxm doctor`, `lxm vswitch gc`), and emits structured results to `internal/output`.
 * **`internal/config`**: Owns manifest loading, presence-wins scalar merging, recursive struct merging, list inheritance directives (`remove`, `replace`), template parameter expansion (`{{ .Env.* }}`, `{{ .Vars.* }}`), remote routing (`provider`, `remote`, `target`, `project`, `remotes`), published-port validation (`ports:`), and CUE schema validation against `#LXM_AUTHORING` and `#LXM_RESOLVED`.
 * **`internal/ports`**: Dependency-free single source of truth for the published-port model: endpoint parse/canonicalization (`netip`, explicit IP literal, 1–65535, no hostnames/zones/4-in-6), dual-stack wildcard listener-conflict semantics, proxy-device encode/decode and marker-based ownership, daemon truthiness for `nat`, and the shared `PublishedPort` JSON projection.
-* **`internal/network`**: Implements the deterministic network compilation and validation engine. Evaluates fleet-scoped virtual switch unions, compiles group-based `network_policy` into network ACLs via generators (G0 intra-switch rules, G1–G2 intra-group, G3–G4 inter-group allow, G5–G6 stateful return, G7 internet egress, G8 internal reject with multi-source DNS carveouts, G9 host gateway port guards), performs CIDR prefix decomposition, and validates instance-NIC integrity.
+* **`internal/network`**: Implements the deterministic network compilation and validation engine. Evaluates fleet-scoped virtual switch unions, compiles group-based `network_policy` into network ACLs via generators (G0 intra-switch rules, G1–G2 intra-group, G3–G4 inter-group allow, G5–G6 stateful return, G7 internet egress, G8 internal reject with multi-source DNS carveouts, G9 host gateway port guards, G10 opt-in host-access gateway ingress, G11 external ingress grants), performs CIDR prefix decomposition, and validates instance-NIC integrity.
 * **`internal/provider`**: Declares the unified `Driver` interface combining instance, network, storage, image, cluster, and project services with method scoping (`UseProject`, `UseTarget`).
 * **`internal/provider/incus`**: Implements `provider.Driver` wrapping the canonical Incus 7.x SDK (`github.com/lxc/incus/v7/client`).
 * **`internal/provider/lxd`**: Implements `provider.Driver` wrapping the canonical LXD client SDK (`github.com/canonical/lxd/client`).
@@ -175,15 +175,20 @@ graph TD
         G34[G3-G4: Inter-group direction-aware allow]
         G8[G8: Internal reject with /32 DNS carveouts]
         G9[G9: Host gateway non-DNS port guards]
+        G10[G10: Host-access gateway ingress allow - bridge]
+        G11[G11: External ingress grants]
     end
 
     OVN --> G0
     OVN --> G8
     OVN --> G9
+    Bridge --> G10
+    Bridge --> G11
+    OVN --> G11
 ```
 
 1. **Datapath & ACL Filtering Differences**:
-   * **Linux Bridge (`type: bridge`)**: ACLs attach at the boundary between the bridge and host OS namespace. Intra-bridge traffic bypasses the ACL filter (unfiltered L2). The bridge gateway is an IP alias on the host namespace; G8 rejects instance-to-host gateway traffic while preserving DHCP/DNS via provider baseline rules.
+   * **Linux Bridge (`type: bridge`)**: ACLs attach at the boundary between the bridge and host OS namespace. Intra-bridge traffic bypasses the ACL filter (unfiltered L2). The bridge gateway is an IP alias on the host namespace; G8 rejects instance-to-host gateway traffic while preserving DHCP/DNS via provider baseline rules. The same default-reject also blocks host→instance ingress, so `host_access: true` opts in to the G10 gateway-`/32` ingress allow on that bridge.
    * **OVN Overlay (`type: ovn`)**: Operates as a distributed OpenFlow logical switch spanning cluster nodes via Geneve tunnels. Because OVN evaluates ACLs on every logical switch port under a default-reject policy, intra-switch traffic would be blocked without explicit rules. `internal/network` emits **G0** intra-switch allow rules (`allow S_V → S_V`) for OVN virtual switches so instances on the same OVN switch communicate freely.
 2. **DNS Resolver Derivation, Leak-Sealing & Host Gateway Protection**:
    * OVN virtual switches derive IPv4 DNS resolvers via a strict 4-step precedence chain in `internal/plan/network.go` (`deriveDNSResolvers`): explicit `VSwitch.DNSResolvers` → vswitch `config["dns.nameservers"]` → uplink parent `config["dns.nameservers"]` → uplink parent `ipv4.address` gateway (IPv4 only, filtered via `To4()`).
@@ -193,7 +198,10 @@ graph TD
 3. **Cluster Member Staging vs. OVN Creation Polling**:
    * For Linux Bridges (`type: bridge`) on multi-node clusters, the driver performs two-phase cluster member staging (`stageNetworkOnMembers`) with node-specific configurations before cluster-wide activation.
    * Distributed OVN overlay networks (`type: ovn`) are cluster-wide database objects and explicitly bypass per-member staging. Instead, the driver executes fail-closed polling to verify that newly created OVN networks transition out of the `Pending` state before any instance NIC devices are attached.
-4. **Provider Capability Gating & Doctor Probing**:
+4. **Host Access & External Ingress Grants (G10/G11)**:
+   * `host_access: true` on a grouped **bridge** emits an ingress allow from the bridge gateway (`<ipv4>/32`) to the vswitch subnet so a host-side reverse proxy/SSH jump host can reach instances under the default-reject ACL. It is bridge-only in v1; OVN host traffic traverses the logical router and is rejected at config validation.
+   * `network_policy.ingress_allow` emits ingress-only allow rules on every vswitch of the target group, admitting explicit external IPv4 CIDRs on an optional TCP/UDP protocol and port set. Sources are canonicalized with `net/netip`; target-subnet overlaps are rejected because intra-switch traffic is unfiltered; wildcard sources warn. Removal is a tightening ACL update and revokes new flows on the next apply.
+5. **Provider Capability Gating & Doctor Probing**:
    * Basic OVN capability is checked via `hasOVNSupport` (accepting `network_ovn`, `network_ovn_nat`, or `network_ovn_acl`). Policy-managed OVN virtual switches (`group:`) configure `security.acls`, which relies on `network_ovn_acl` and `network_acl` support in the provider daemon.
    * `lxm doctor` executes a unique, leak-free throwaway OVN network probe when an active IPv4 uplink bridge is present on the host to verify end-to-end OVS/OVN database connectivity.
 

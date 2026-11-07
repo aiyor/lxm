@@ -125,6 +125,31 @@ func Compile(f *Fleet) []*CompiledACL {
 			}
 		}
 
+		// G10 — host access (issue #14): the LXD host is also subject to the
+		// ACL default ingress reject, so explicitly allow ingress from this
+		// vswitch's gateway address (bridge only; OVN is rejected in config).
+		if vs.HostAccess && vs.EffectiveType() == "bridge" {
+			if gateway := vs.gatewayIPv4CIDR(); gateway != "" {
+				acl.Rules = append(acl.Rules, Rule{Direction: "ingress", Action: "allow", Source: gateway, Destination: src})
+			}
+		}
+
+		// G11 — external-source ingress grants (issue #14): admit selected
+		// source CIDRs (e.g. a tailnet client) to this group's instances.
+		for _, rule := range f.IngressAllow {
+			if rule.To != vs.Group {
+				continue
+			}
+			acl.Rules = append(acl.Rules, Rule{
+				Direction:       "ingress",
+				Action:          "allow",
+				Source:          rule.Source,
+				Destination:     src,
+				Protocol:        rule.Protocol,
+				DestinationPort: strings.Join(rule.Ports, ","),
+			})
+		}
+
 		// G7 — internet egress (R6). G8 reject rules are generated only when
 		// G7 exists; otherwise the reject default action already covers (R6).
 		if boolVal(vs.Internet) {
