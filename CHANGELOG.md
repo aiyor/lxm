@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0](https://github.com/aiyor/lxm/compare/v1.6.0...v1.7.0) (2026-11-07)
+
+
+### Features
+
+* **network:** host access and external ingress grants ([#15](https://github.com/aiyor/lxm/issues/15)) ([4b80b19](https://github.com/aiyor/lxm/commit/4b80b19ee93036cd8b8f692d3f287a48d4db49a3)), closes [#14](https://github.com/aiyor/lxm/issues/14)
+
 ## [Unreleased]
 
 ### Features
@@ -172,4 +179,3 @@ All notable changes to this project will be documented in this file.
   - Interactive shell, command execution, snapshot and rollback support
 
 ---
-
