@@ -230,6 +230,7 @@ with `internet: true`. Entries outside the defaults are the ones that matter: a
 
 * [Mounting Host Directories](mount-host-dirs.md) — combine mounts with networking.
 * [Cloud-Init Bootstrapping](cloud-init-bootstrapping.md) — network configuration via cloud-init.
+* [Publishing Ports](publish-ports.md) — expose services running inside a container or VM on host ports.
 * [Manifest Reference](../reference/manifest.md#networks) — the networks field reference.
 * [Conntrack lifecycle](../reference/conntrack-lifecycle.md) — what happens when you tighten policy
   with live traffic.

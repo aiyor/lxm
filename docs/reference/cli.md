@@ -136,7 +136,7 @@ Usage:
 
 * `plan` never mutates state. If LXD is unreachable it plans against an empty live state rather than failing, so you can preview what a fresh host would create.
 * With `--format json` the full step list is emitted in the envelope's `plan` field.
-* Published ports appear as `ports[<name>]` diffs; non-loopback listens, profile-shadowed proxy devices and listener handoffs add warnings.
+* Published ports appear as `ports[<name>]` diffs (an anomalous marker-carrying device under a non-`proxy-<name>` name is retired with `devices[<device>]`); non-loopback listens, profile-shadowed proxy devices and listener handoffs add warnings.
 * A duplicate published listener across manifests, an unmarked `proxy-<name>` collision, or an invalid NAT/endpoint configuration exits `3` before any daemon mutation.
 
 Example (text):

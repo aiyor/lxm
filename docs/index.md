@@ -1,6 +1,6 @@
 # lxm — Declarative LXD & Incus Fleet Manager
 
-`lxm` is a command-line tool for **declarative, reproducible management of LXD and Incus container and VM fleets**. You describe the containers and virtual machines you want in YAML manifests — their image, users, mounts, networks, and provisioning scripts — and `lxm` reconciles your live LXD or Incus host (locally over a UNIX socket, or remotely over HTTPS mTLS, across clusters and projects) to match.
+`lxm` is a command-line tool for **declarative, reproducible management of LXD and Incus container and VM fleets**. You describe the containers and virtual machines you want in YAML manifests — their image, users, mounts, networks, published ports, and provisioning scripts — and `lxm` reconciles your live LXD or Incus host (locally over a UNIX socket, or remotely over HTTPS mTLS, across clusters and projects) to match.
 
 Every mutation is **previewed first** as a pure, deterministic diff (`lxm plan`), then applied only when you say so (`lxm apply`). Reconcile as often as you like — `apply` only performs the steps your fleet actually needs to match what you declared.
 

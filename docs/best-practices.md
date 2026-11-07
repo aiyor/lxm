@@ -35,7 +35,7 @@ A fleet of several containers should have one small file per container and one s
 The [Authoring Manifests](howto/author-manifests.md) guide works through this pattern. Two rules from it matter most when you grow a fleet:
 
 * **Scalar fields: an explicit value wins.** An explicitly set field in the container file overrides the base — even an explicit empty value. If a container is not inheriting what you expect, look for an explicit override.
-* **Lists concatenate unless you say otherwise.** Inherited `mounts`, `networks`, and `recipes` merge base-first, then leaf. Use `remove:` to drop a specific inherited entry and `replace:` to discard an inherited list entirely. A `remove` that matches nothing is a compile error — a deliberate signal that the fleet no longer contains what you thought it did.
+* **Lists merge predictably.** Inherited `mounts`, `networks`, and `recipes` concatenate base-first, then leaf; `disks` and `ports` merge by name (a same-named leaf entry replaces the base entry wholesale). Use `remove:` to drop a specific inherited entry and `replace:` to discard an inherited list entirely. A `remove` that matches nothing is a compile error — a deliberate signal that the fleet no longer contains what you thought it did.
 
 When a container stops matching its manifest (a mount no longer exists on the host, a network address moved), fix the manifest — that is the file your teammates will read next year.
 
