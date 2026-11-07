@@ -7,9 +7,10 @@ All notable changes to this project will be documented in this file.
 ### Features
 - **network**: host access and external ingress grants for default-deny ACL networks (#14)
   - Add `vswitches[].host_access` (bridge-only, default `false`) to emit an ingress allow from the
-    vswitch gateway (`<ipv4>/32`) to its subnet, so the host is not blocked by the ACL default-reject (verified
-    host-blocking behavior reported on LXD 5.21.9). Requires a group;
-    rejected with a clear error on `type: ovn`.
+    vswitch gateway (`<ipv4>/32`) to its subnet, so the host is not blocked by the ACL default-reject.
+    Requires a group; rejected with a clear error on `type: ovn`. Live-verified on LXD 6.10.1:
+    default host block, restore after `host_access`, tailnet-source `ingress_allow` (TCP/22),
+    revocation after removal, and idempotent re-plan.
   - Add fleet-scoped `network_policy.ingress_allow` entries (`to`, explicit IPv4 `source`,
     optional `protocol` tcp/udp and `ports`) compiled to per-vswitch ingress allows. Canonicalizes
     CIDRs with `net/netip`, normalizes/dedupes LXD port syntax, rejects malformed sources/ports and

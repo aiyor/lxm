@@ -80,7 +80,7 @@ gate has passed live against **each** supported provider it touches.
 | OVN virtual switches & microsegmentation (`type: ovn`) | `internal/network` (G0/G8 golden + decomposition property), `internal/plan` (immutable drift), `internal/config` (parent/driver/MTU) | `simulation/scripts/test-ovn-e2e.sh` | LXD **and** Incus (run per provider) | §4 Step 2 / Step 3 |
 | VM data disks (`disks:`) | `internal/config`, `internal/apply` | `test-lxd-e2e.sh` (disk lifecycle steps) | LXD | §4 Step 2 |
 | Declarative port publishing (`ports:`) | `internal/ports`, `internal/config`, `internal/plan`, `internal/fleet`, `internal/network`, `cmd/lxm` | `simulation/scripts/test-ports-e2e.sh` | LXD **and** Incus (run per provider) | §4 Step 2 / Step 3 + Pillar 6 |
-| Host access & external ingress grants (`host_access`, `ingress_allow`) | `internal/config`, `internal/network`, `internal/plan`, `cmd/lxm` | **(pending — unit/plan/fake-driver only; issue-reporter live evidence on LXD 5.21.9)** | LXD **and** Incus | §4 Step 2 / Step 3 |
+| Host access & external ingress grants (`host_access`, `ingress_allow`) | `internal/config`, `internal/network`, `internal/plan`, `cmd/lxm` | Live LXD 6.10.1 bridge run: default host block, `host_access` restore, tailnet-source TCP grant, removal/revocation, idempotent re-plan | LXD verified; Incus pending | §4 Step 2 / Step 3 |
 | Declarative deletion & `--prune` | `internal/plan`, `internal/apply` | **(gap — no E2E gate yet)** | — | Pillar 1 §3 scenario 4 |
 | Cloud images (`image_remotes`) | `internal/config/image.go` | **(gap — no E2E gate yet)** | — | — |
 

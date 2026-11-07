@@ -597,7 +597,7 @@ with the repository):
 | **T6-OVN** guest DNS resolution | **PASS** — DNS queries to uplink resolver pass via G8 `/32` carve-out |
 | **T7-OVN** host gateway port protection | **PASS** — host gateway SSH access rejected by G9 non-DNS port guards |
 | **WAN egress** | **PASS** — 0% packet loss on 1.1.1.1 egress ping |
-| **T10 host_access / T11 ingress_allow** | **PENDING** — behavior verified by the issue reporter on LXD 5.21.9 (host blocked by default; gateway-`/32` allow restores host access; source-CIDR/port ingress allow admits only the selected client/ports). The live gate was not re-run in the repo harness for this change; unit/plan/fake-driver coverage is included. |
+| **T10 host_access / T11 ingress_allow** | **PASS on LXD 6.10.1 (bridge)** — baseline grouped bridge: host ping 100% loss and SSH `Connection refused`; after `host_access: true`, host SSH banner + ping 0% loss; after `ingress_allow` `100.99.45.41/32 tcp/22`, the same tailnet-source client received the SSH banner while the gateway path remained allowed; removal produced `update_acl` with `tightened: true` and revoked both (SSH refused, ping 100% loss); re-plan was a no-op. Incus and OVN host access were not live-tested (OVN host access is rejected by design). |
 
 ## 14. Locked Decisions & Open Questions
 
