@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.6.0] - 2026-11-07
 
 ### Features
 - **ports**: declarative port publishing (`ports:`) for containers and VMs (#11)
@@ -18,11 +18,18 @@ All notable changes to this project will be documented in this file.
     exposure warnings, and profile-shadow warnings.
   - Surface published ports in `lxm list` (PORTS column), `lxm status` (`Published Ports:` block),
     `lxm diff`/`lxm plan` field diffs, and the additive `published_ports` `lxm/result/v1` field.
+  - Report the effective proxy set (local + profile-provided devices) and repair non-canonical
+    managed-device representations so repeated applies converge.
   - Reject `nat: true` on non-bridged/routed NICs (OVN, macvlan, physical, sriov) in the network layer.
 
 ### Documentation
 - **ports**: add `PORTS-SPEC.md`, manifest/CLI/result spec sections, a publishing-ports how-to guide,
   troubleshooting entries, a warning-free example, and the `test-ports-e2e.sh` live gate.
+
+### Maintenance
+- **release**: v1.6.0
+
+---
 
 ## [1.5.0] - 2026-08-20
 
