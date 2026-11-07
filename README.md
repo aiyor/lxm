@@ -102,6 +102,9 @@ task test   # Run full test suite with race detector
 task build  # Format and build ./bin/lxm binary
 ```
 
+Releases are automated with release-please; see **[RELEASING.md](RELEASING.md)** for the
+maintainer workflow and versioning policy.
+
 ---
 
 ## Quick Start

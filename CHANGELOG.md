@@ -30,6 +30,12 @@ All notable changes to this project will be documented in this file.
   the bridge-only OVN restriction, rule-level plan diffs, and a worked lab-behind-a-subnet-router
   example (`docs/examples/lab-ingress/lab-ingress-demo.yaml`).
 
+### Maintenance
+- **release**: automate the release PR, changelog update, and tag via release-please
+  (`release-please.yml`, `release-please-config.json`, `.release-please-manifest.json`);
+  the existing tag-triggered GoReleaser workflow still builds artifacts. Add `RELEASING.md`.
+  Requires the `RELEASE_PLEASE_TOKEN` repository secret.
+
 ## [1.6.0] - 2026-11-07
 
 ### Features
