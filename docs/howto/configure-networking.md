@@ -232,13 +232,15 @@ Validated behavior:
 
 * `source` must be an explicit IPv4 CIDR and is canonicalized to the masked prefix. Wildcard
   `0.0.0.0/0` is allowed but produces a plan warning; target-subnet sources are rejected because
-  intra-switch traffic is not ACL-filtered.
+  intra-switch traffic is not ACL-filtered, and sources overlapping another managed vswitch warn
+  (use a group-to-group `allow` for managed peers).
 * Port tokens are canonicalized, sorted, and deduplicated; ranges must have `start < end` (use a
   single port for equal endpoints), and valid ports are `1`–`65535`.
 * Unknown target groups, duplicate normalized rules, and invalid sources/ports fail with exit `3`.
-* Removing a grant or `host_access` produces an `update_acl` plan step with
-  `ingress.removed` and `tightened: true`, revoking new connections on apply. Established flows
-  persist until conntrack expiry; see
+* Removing or narrowing a grant or `host_access` produces an `update_acl` plan step with the
+  removed rule; when no remaining rule covers the removed traffic, the step is marked
+  `tightened: true` and `apply` emits a conntrack warning. New connections are revoked on apply;
+  established flows persist until conntrack expiry. See
   [Conntrack lifecycle](../reference/conntrack-lifecycle.md).
 * IPv6 grants are out of scope for v1.
 

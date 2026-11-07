@@ -185,7 +185,7 @@ network_policy:
 | Field | Type | Default | Rules |
 | :-- | :-- | :-- | :-- |
 | `to` | string | — (required) | Target group with ≥1 present vswitch; unknown group ⇒ exit 3. |
-| `source` | string | — (required) | Explicit IPv4 CIDR, canonicalized with `net/netip`; bare addresses/hostnames/zones/4-in-6/IPv6 ⇒ exit 3. A source overlapping the target vswitch subnet ⇒ exit 3 (intra-switch traffic is unfiltered); `0.0.0.0/0` warns. |
+| `source` | string | — (required) | Explicit IPv4 CIDR, canonicalized with `net/netip`; bare addresses/hostnames/zones/4-in-6/IPv6 ⇒ exit 3. A source overlapping the target vswitch subnet ⇒ exit 3 (intra-switch traffic is unfiltered); a source overlapping another managed vswitch subnet warns (use a group-to-group allow); `0.0.0.0/0` warns. |
 | `protocol` | string | `"tcp"` | `"tcp"` \| `"udp"`. |
 | `ports` | []string | — | Optional LXD ACL destination ports: single ports, `a-b` ranges, comma lists; canonicalized/sorted/deduped, 1–65535, range `start < end`; omitted/empty ⇒ all ports. |
 

@@ -14,10 +14,12 @@ All notable changes to this project will be documented in this file.
     optional `protocol` tcp/udp and `ports`) compiled to per-vswitch ingress allows. Canonicalizes
     CIDRs with `net/netip`, normalizes/dedupes LXD port syntax, rejects malformed sources/ports and
     duplicate rules, rejects sources overlapping the target subnet, and warns on wildcard
-    `0.0.0.0/0`.
+    `0.0.0.0/0` or sources overlapping another managed vswitch subnet.
   - Add additive rule-level ACL plan diffs (`ingress.added`/`ingress.removed`/
     `egress.added`/`egress.removed`) so grant changes are visible without diffing raw payloads.
-  - Keep existing manifests byte-identical: omitted fields compile no additional rules.
+  - Keep existing manifests compatible: omitted fields compile no additional ACL rules; plan
+    JSON for existing ACL updates gains additive rule-level diffs and more accurate tightened
+    detection (protocol/port-aware).
 
 ### Documentation
 - **network**: document host access, external ingress grants, the IPv4/port validation matrix,

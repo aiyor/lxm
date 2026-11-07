@@ -8,23 +8,35 @@ import (
 	"strings"
 )
 
-// normalizeIngressAllow canonicalizes and validates network_policy.ingress_allow.
+// normalizeIngressAllow canonicalizes and validates network_policy.ingress_allow
+// in place.
+func normalizeIngressAllow(p *NetworkPolicy) error {
+	rules, err := NormalizeIngressAllow(p.IngressAllow)
+	if err != nil {
+		return err
+	}
+	p.IngressAllow = rules
+	return nil
+}
+
+// NormalizeIngressAllow returns a canonical copy of the supplied ingress rules.
 // The normalized form is what the resolved CUE schema and the fleet compiler
 // consume: canonical IPv4 masked CIDR, materialized protocol, and sorted,
-// deduplicated port tokens.
-func normalizeIngressAllow(p *NetworkPolicy) error {
-	seen := make(map[string]bool, len(p.IngressAllow))
-	for i := range p.IngressAllow {
-		rule := &p.IngressAllow[i]
-
+// deduplicated port tokens. It is idempotent and rejects invalid or duplicate
+// rules. Callers that construct Config values directly (not via LoadConfig)
+// must call this before relying on fleet compilation.
+func NormalizeIngressAllow(rules []IngressAllowRule) ([]IngressAllowRule, error) {
+	out := make([]IngressAllowRule, len(rules))
+	seen := make(map[string]bool, len(rules))
+	for i, rule := range rules {
 		rule.To = strings.TrimSpace(rule.To)
 		if rule.To == "" {
-			return fmt.Errorf("network_policy.ingress_allow[%d]: to is required", i)
+			return nil, fmt.Errorf("network_policy.ingress_allow[%d]: to is required", i)
 		}
 
 		source, err := normalizeIngressSource(rule.Source)
 		if err != nil {
-			return fmt.Errorf("network_policy.ingress_allow[%d]: %w", i, err)
+			return nil, fmt.Errorf("network_policy.ingress_allow[%d]: %w", i, err)
 		}
 		rule.Source = source
 
@@ -33,24 +45,25 @@ func normalizeIngressAllow(p *NetworkPolicy) error {
 			protocol = "tcp"
 		}
 		if protocol != "tcp" && protocol != "udp" {
-			return fmt.Errorf("network_policy.ingress_allow[%d]: protocol must be tcp or udp, got %q", i, rule.Protocol)
+			return nil, fmt.Errorf("network_policy.ingress_allow[%d]: protocol must be tcp or udp, got %q", i, rule.Protocol)
 		}
 		rule.Protocol = protocol
 
 		ports, err := normalizeACLPorts(rule.Ports)
 		if err != nil {
-			return fmt.Errorf("network_policy.ingress_allow[%d]: %w", i, err)
+			return nil, fmt.Errorf("network_policy.ingress_allow[%d]: %w", i, err)
 		}
 		rule.Ports = ports
 
 		key := rule.To + "\x00" + rule.Source + "\x00" + rule.Protocol + "\x00" + strings.Join(rule.Ports, ",")
 		if seen[key] {
-			return fmt.Errorf("network_policy.ingress_allow[%d]: duplicate rule for group %q from %s (%s, ports %q)",
+			return nil, fmt.Errorf("network_policy.ingress_allow[%d]: duplicate rule for group %q from %s (%s, ports %q)",
 				i, rule.To, rule.Source, rule.Protocol, strings.Join(rule.Ports, ","))
 		}
 		seen[key] = true
+		out[i] = rule
 	}
-	return nil
+	return out, nil
 }
 
 // normalizeIngressSource accepts only an explicit IPv4 CIDR. Bare addresses,
@@ -64,7 +77,10 @@ func normalizeIngressSource(raw string) (string, error) {
 	prefix, err := netip.ParsePrefix(source)
 	if err != nil {
 		if addr, addrErr := netip.ParseAddr(source); addrErr == nil {
-			return "", fmt.Errorf("source %q must be a CIDR prefix, not a bare address (use %s/32)", raw, addr)
+			if addr.Is4() {
+				return "", fmt.Errorf("source %q must be a CIDR prefix, not a bare address (use %s/32)", raw, addr)
+			}
+			return "", fmt.Errorf("source %q: only IPv4 sources are supported in v1", raw)
 		}
 		return "", fmt.Errorf("source %q is not a valid CIDR: %w", raw, err)
 	}

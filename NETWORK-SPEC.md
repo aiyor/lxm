@@ -175,7 +175,7 @@ network_policy:
 | Field | Type | Default | Rules |
 | :-- | :-- | :-- | :-- |
 | `to` | string | — (required) | Target group; must have ≥1 present vswitch (unknown ⇒ exit 3). The rule is compiled into every vswitch of that group. |
-| `source` | string | — (required) | Explicit IPv4 CIDR. Canonicalized with `net/netip` to the masked prefix; bare addresses, hostnames, zones, 4-in-6 literals, and IPv6 are rejected. A source overlapping a target vswitch subnet is rejected (intra-switch traffic is unfiltered, C1); `0.0.0.0/0` is allowed but produces a plan warning. |
+| `source` | string | — (required) | Explicit IPv4 CIDR. Canonicalized with `net/netip` to the masked prefix; bare addresses, hostnames, zones, 4-in-6 literals, and IPv6 are rejected. A source overlapping a target vswitch subnet is rejected (intra-switch traffic is unfiltered, C1); a source overlapping **another** managed vswitch subnet warns (use a group-to-group allow for managed peers); `0.0.0.0/0` is allowed but produces a plan warning. |
 | `protocol` | string | `"tcp"` | `"tcp"` \| `"udp"`. |
 | `ports` | []string | — | Optional LXD ACL destination-port syntax: single ports, `a-b` ranges, and comma-separated lists. Canonicalized (leading zeros removed), sorted, and deduplicated; values must be 1–65535 and a range must have `start < end` (use a single port for equal endpoints). Omitted/empty ⇒ all ports. |
 
@@ -499,9 +499,9 @@ Full user documentation: `docs/reference/conntrack-lifecycle.md`.
 ## 10. Result Envelope & Exit Codes
 
 * `lxm plan/apply --format json`: `network_steps` renders inside the `plan` object (additive).
-  `update_acl` steps carry a `diff` with a `rules` count summary plus per-rule
-  `ingress.added`/`ingress.removed`/`egress.added`/`egress.removed` entries, so host-access and
-  ingress-grant changes are visible without diffing the full `acl_put` payload.
+  `create_acl` steps carry a `rules` count summary; `update_acl` steps carry a `rules` count plus
+  per-rule `ingress.added`/`ingress.removed`/`egress.added`/`egress.removed` entries, so
+  host-access and ingress-grant changes are visible without diffing the full `acl_put` payload.
   `apply` adds a top-level `network_results: [{name, kind, changed, ok, duration_ms}]` alongside
   `results`, so a network-phase failure is machine-distinguishable from an instance-phase failure.
   A failed network step also appears in `errors` with the failing object's name in the `name` field
@@ -538,9 +538,10 @@ In-memory fakes back the same interface for unit/integration tests.
 > spec.
 
 **Go structs (`internal/config`)** — `VSwitchConfig` (`Name`, `Type`, `Driver`, `IPv4`, `IPv6`,
-`NAT *bool`, `Group`, `Internet *bool`; `NAT`/`Internet` nil defaults to `true`),
-`NetworkPolicyRule` (`From`, `To`, `Direction`; empty = `both`), `NetworkPolicy` (`InternalCIDRs`,
-`Allow`), added to `Config` as `VSwitches []VSwitchConfig` and `NetworkPolicy *NetworkPolicy`.
+`NAT *bool`, `Group`, `Internet *bool`, `HostAccess bool`; `NAT`/`Internet` nil defaults to `true`),
+`NetworkPolicyRule` (`From`, `To`, `Direction`; empty = `both`), `IngressAllowRule` (`To`,
+`Source`, `Protocol`, `Ports`), `NetworkPolicy` (`InternalCIDRs`, `Allow`, `IngressAllow`), added
+to `Config` as `VSwitches []VSwitchConfig` and `NetworkPolicy *NetworkPolicy`.
 
 **Merge semantics (`MergeConfigs`)** — `VSwitches`: list-concat within an include chain (like
 `Mounts`/`Networks`); `NetworkPolicy`: whole-value presence-wins replacement within a tree;

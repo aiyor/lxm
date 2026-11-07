@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -138,6 +139,9 @@ func (r *defaultReconciler) ComputeNetworks(f *network.Fleet, live *NetworkLiveS
 					Ingress:     ingress,
 					Egress:      egress,
 					Config:      map[string]string{"user.lxm.managed": "true"},
+				},
+				Diff: []FieldDiff{
+					{Field: "rules", Old: "0 rules", New: fmt.Sprintf("%d rules", len(ingress)+len(egress))},
 				},
 			})
 			continue
@@ -324,20 +328,141 @@ func allowCovers(desired, live directedAllow) bool {
 	if desired.direction != live.direction {
 		return false
 	}
-	return allowFieldCovers(desired.rule.Source, live.rule.Source) &&
-		allowFieldCovers(desired.rule.Destination, live.rule.Destination) &&
+	return cidrFieldCovers(desired.rule.Source, live.rule.Source, true) &&
+		cidrFieldCovers(desired.rule.Destination, live.rule.Destination, false) &&
 		allowFieldCovers(desired.rule.Protocol, live.rule.Protocol) &&
-		allowFieldCovers(desired.rule.SourcePort, live.rule.SourcePort) &&
-		allowFieldCovers(desired.rule.DestinationPort, live.rule.DestinationPort) &&
+		portFieldCovers(desired.rule.SourcePort, live.rule.SourcePort) &&
+		portFieldCovers(desired.rule.DestinationPort, live.rule.DestinationPort) &&
 		allowFieldCovers(desired.rule.ICMPType, live.rule.ICMPType) &&
 		allowFieldCovers(desired.rule.ICMPCode, live.rule.ICMPCode)
 }
 
-// allowFieldCovers reports whether a desired rule field covers the live field:
-// an empty desired value means "any"; otherwise exact equality is required (no
-// CIDR/port-range containment analysis in v1).
+// allowFieldCovers reports whether a desired scalar field covers the live
+// field: an empty desired value means "any"; otherwise exact equality is
+// required (used for protocol/ICMP fields).
 func allowFieldCovers(desired, live string) bool {
 	return desired == "" || desired == live
+}
+
+// cidrFieldCovers reports whether desired CIDR/subject covers live. An empty
+// value means "any"; concrete CIDRs are compared by prefix containment.
+// wildcardCovers controls whether a desired 0.0.0.0/0 covers a narrower live
+// subject. Destination wildcards are handled conservatively: a G7 internet
+// allow (0.0.0.0/0) is shadowed on internal destinations by explicit G8 reject
+// rules, so it must not be treated as preserving a narrower live internal
+// allow (that would suppress the tightening warning on a removed allow).
+func cidrFieldCovers(desired, live string, wildcardCovers bool) bool {
+	if desired == "" {
+		return true
+	}
+	if live == "" || desired == live {
+		return desired == live
+	}
+	desiredPrefix, err := netip.ParsePrefix(desired)
+	if err != nil {
+		return false
+	}
+	livePrefix, err := netip.ParsePrefix(live)
+	if err != nil {
+		return false
+	}
+	if desiredPrefix.Addr().Is4() != livePrefix.Addr().Is4() {
+		return false
+	}
+	if desiredPrefix.Bits() == 0 && !wildcardCovers {
+		return false
+	}
+	return desiredPrefix.Bits() <= livePrefix.Bits() && desiredPrefix.Contains(livePrefix.Addr())
+}
+
+// portFieldCovers reports whether desired's comma-separated port set contains
+// every port/range in live. An empty value means "any".
+func portFieldCovers(desired, live string) bool {
+	if desired == "" {
+		return true
+	}
+	if live == "" {
+		return false
+	}
+	if desired == live {
+		return true
+	}
+	desiredRanges, desiredOK := parsePortField(desired)
+	liveRanges, liveOK := parsePortField(live)
+	if !desiredOK || !liveOK {
+		return false
+	}
+	merged := mergePortRanges(desiredRanges)
+	for _, liveRange := range liveRanges {
+		covered := false
+		for _, desiredRange := range merged {
+			if desiredRange.start <= liveRange.start && desiredRange.end >= liveRange.end {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
+type portRange struct {
+	start uint16
+	end   uint16
+}
+
+// parsePortField parses LXD ACL destination/source port syntax
+// ("22,3000-3999").
+func parsePortField(value string) ([]portRange, bool) {
+	var ranges []portRange
+	for token := range strings.SplitSeq(value, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return nil, false
+		}
+		startStr, endStr, hasRange := strings.Cut(token, "-")
+		start, err := strconv.ParseUint(startStr, 10, 16)
+		if err != nil || start < 1 {
+			return nil, false
+		}
+		end := start
+		if hasRange {
+			end, err = strconv.ParseUint(endStr, 10, 16)
+			if err != nil || end < start {
+				return nil, false
+			}
+		}
+		ranges = append(ranges, portRange{start: uint16(start), end: uint16(end)})
+	}
+	return ranges, true
+}
+
+// mergePortRanges sorts and merges overlapping/adjacent port ranges.
+func mergePortRanges(ranges []portRange) []portRange {
+	if len(ranges) == 0 {
+		return nil
+	}
+	sorted := slices.Clone(ranges)
+	slices.SortFunc(sorted, func(a, b portRange) int {
+		if a.start != b.start {
+			return int(a.start) - int(b.start)
+		}
+		return int(a.end) - int(b.end)
+	})
+	merged := []portRange{sorted[0]}
+	for _, current := range sorted[1:] {
+		last := &merged[len(merged)-1]
+		if current.start <= last.end+1 {
+			if current.end > last.end {
+				last.end = current.end
+			}
+			continue
+		}
+		merged = append(merged, current)
+	}
+	return merged
 }
 
 // buildNetworksPost constructs the create payload for a vswitch.
@@ -665,7 +790,9 @@ func diffACLRules(live *provider.NetworkACL, desired *provider.NetworkACLUpdateR
 	return diffs
 }
 
-// aclRuleKey matches network.RulesEqual's semantic identity (state included).
+// aclRuleKey is the semantic identity used for rule-level plan diffs and
+// mirrors network.RulesEqual's fields (state included; SourcePort/ICMPCode
+// are not emitted by the network compiler today).
 func aclRuleKey(r provider.NetworkACLRule) string {
 	return strings.Join([]string{
 		r.Action,

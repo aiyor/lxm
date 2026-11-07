@@ -311,10 +311,11 @@ to instances, while instance→internet egress still works.
 **Cause.** The ACL applies its `reject` default to host→instance traffic too; the host is not
 implicitly trusted (verified on LXD 5.21.9).
 
-**Fix.** Set `host_access: true` on the grouped bridge and re-apply. `lxm plan` shows an
-`update_acl` with an `ingress.added` rule from the gateway `/32`; `lxm status`/`lxc network show`
-confirm the ACL has no extra group/internet allowances. This is bridge-only; OVN rejects the field
-with a clear error.
+**Fix.** Set `host_access: true` on the grouped bridge and re-apply. `lxm plan` shows the
+`update_acl` step; `lxm plan --format json` shows its `ingress.added` rule from the gateway `/32`.
+Inspect the applied rules with `lxc network acl show lxm-<vswitch>` (or
+`incus network acl show lxm-<vswitch>`). This is bridge-only; OVN rejects the field with a clear
+error.
 
 ### Ingress grant has no effect
 

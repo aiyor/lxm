@@ -248,17 +248,19 @@ func Union(configs []*config.Config) (*Fleet, error) {
 		if file == "" {
 			file = conf.ConfigBaseDir
 		}
-		for _, a := range conf.NetworkPolicy.IngressAllow {
-			protocol := a.Protocol
-			if protocol == "" {
-				protocol = "tcp"
+		rules, err := config.NormalizeIngressAllow(conf.NetworkPolicy.IngressAllow)
+		if err != nil {
+			if file != "" {
+				return nil, fmt.Errorf("manifest %q: %w", file, err)
 			}
-			ports := slices.Clone(a.Ports)
-			key := a.To + "\x00" + a.Source + "\x00" + protocol + "\x00" + strings.Join(ports, ",")
+			return nil, err
+		}
+		for _, a := range rules {
+			key := a.To + "\x00" + a.Source + "\x00" + a.Protocol + "\x00" + strings.Join(a.Ports, ",")
 			if _, ok := ingressIndex[key]; ok {
 				continue
 			}
-			ingressIndex[key] = IngressRule{To: a.To, Source: a.Source, Protocol: protocol, Ports: ports, File: file}
+			ingressIndex[key] = IngressRule{To: a.To, Source: a.Source, Protocol: a.Protocol, Ports: a.Ports, File: file}
 		}
 	}
 	f.IngressAllow = make([]IngressRule, 0, len(ingressIndex))
@@ -293,19 +295,20 @@ func Union(configs []*config.Config) (*Fleet, error) {
 	for _, r := range f.IngressAllow {
 		targets := f.ByGroup[r.To]
 		if len(targets) == 0 {
-			return nil, fmt.Errorf("network_policy.ingress_allow: group %q has no vswitches assigned", r.To)
+			return nil, fmt.Errorf("network_policy.ingress_allow: group %q has no vswitches assigned%s", r.To, ingressRuleOrigin(r))
 		}
 		sourceNet, err := ParseCIDR(r.Source)
 		if err != nil {
-			return nil, fmt.Errorf("network_policy.ingress_allow: invalid source %q: %w", r.Source, err)
+			return nil, fmt.Errorf("network_policy.ingress_allow: invalid source %q%s: %w", r.Source, ingressRuleOrigin(r), err)
 		}
 		ones, _ := sourceNet.Mask.Size()
 		if ones == 0 {
 			f.Warnings = append(f.Warnings, fmt.Sprintf(
 				"network_policy.ingress_allow: wildcard source %s admits every IPv4 client to group %q; "+
-					"scope it to specific client CIDRs",
+					"scope it to specific client CIDRs%s",
 				r.Source,
 				r.To,
+				ingressRuleOrigin(r),
 			))
 			continue
 		}
@@ -316,13 +319,41 @@ func Union(configs []*config.Config) (*Fleet, error) {
 			if overlaps(sourceNet, vs.Subnet) {
 				return nil, fmt.Errorf(
 					"network_policy.ingress_allow: source %s overlaps vswitch %q subnet %s of target group %q "+
-						"(intra-switch traffic is unfiltered on bridges; use a group-to-group allow)",
+						"(intra-switch traffic is unfiltered on bridges; use a group-to-group allow)%s",
 					r.Source,
 					vs.Name,
 					vs.Subnet.String(),
 					r.To,
+					ingressRuleOrigin(r),
 				)
 			}
+		}
+		// A source that overlaps another managed vswitch subnet is not an
+		// external client; group-to-group policy should model it. Warn rather
+		// than reject so broad pairs (e.g. /8 vswitch subnets) stay usable.
+		for _, other := range f.VSwitches {
+			if other.Status == "absent" || other.Subnet == nil || !overlaps(sourceNet, other.Subnet) {
+				continue
+			}
+			isTarget := false
+			for _, target := range targets {
+				if target.Name == other.Name {
+					isTarget = true
+					break
+				}
+			}
+			if isTarget {
+				continue // already rejected above
+			}
+			f.Warnings = append(f.Warnings, fmt.Sprintf(
+				"network_policy.ingress_allow: source %s overlaps managed vswitch %q subnet %s; "+
+					"use a group-to-group allow for managed peers (ingress_allow is intended for external clients)%s",
+				r.Source,
+				other.Name,
+				other.Subnet.String(),
+				ingressRuleOrigin(r),
+			))
+			break
 		}
 	}
 
@@ -342,20 +373,8 @@ func Union(configs []*config.Config) (*Fleet, error) {
 
 	// 5. Cross-field validation/warnings.
 	for _, vs := range f.VSwitches {
-		if vs.Status != "absent" && vs.HostAccess {
-			if vs.Group == "" {
-				return nil, fmt.Errorf(
-					"vswitch %q: host_access: true requires a group (ungrouped vswitches are not policy-managed)",
-					vs.Name,
-				)
-			}
-			if vs.EffectiveType() == "ovn" {
-				return nil, fmt.Errorf(
-					"vswitch %q: host_access: true is not supported on type: ovn in v1 "+
-						"(host traffic traverses the OVN logical router; use a bridge, or leave the vswitch ungrouped and manage its ACL manually)",
-					vs.Name,
-				)
-			}
+		if err := vs.ValidateHostAccess(); err != nil {
+			return nil, err
 		}
 		if vs.Group != "" && !boolVal(vs.NAT) && boolVal(vs.Internet) {
 			f.Warnings = append(f.Warnings, fmt.Sprintf("vswitch %q: nat: false with internet: true emits a wildcard egress with no source NAT (RFC1918 sources dropped upstream)", vs.Name))
@@ -363,6 +382,14 @@ func Union(configs []*config.Config) (*Fleet, error) {
 	}
 
 	return f, nil
+}
+
+// ingressRuleOrigin renders manifest attribution for ingress diagnostics.
+func ingressRuleOrigin(r IngressRule) string {
+	if r.File == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (declared in %q)", r.File)
 }
 
 func (f *Fleet) managedSubnets() []string {

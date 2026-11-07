@@ -109,6 +109,9 @@ func TestComputeNetworks_HostAccessCreate(t *testing.T) {
 	if !hasAPIRule(step.ACLPost.Ingress, wantGrant) {
 		t.Fatalf("missing ingress_allow rule in create payload: %+v", step.ACLPost.Ingress)
 	}
+	if len(step.Diff) == 0 || step.Diff[0].Field != "rules" {
+		t.Fatalf("expected create_acl rules summary diff, got %+v", step.Diff)
+	}
 }
 
 func TestComputeNetworks_IngressAllowUpdateAndNoop(t *testing.T) {
@@ -191,5 +194,55 @@ func TestComputeNetworks_IngressPortChangeTightening(t *testing.T) {
 	}
 	if step.Tightened {
 		t.Fatalf("widening from one port to all ports must not be treated as tightening")
+	}
+}
+
+func ingressConfigWithSource(source string) *config.Config {
+	conf := ingressConfig(true)
+	conf.NetworkPolicy.IngressAllow[0].Source = source
+	return conf
+}
+
+func TestComputeNetworks_IngressPartialWideningNotTightened(t *testing.T) {
+	tests := []struct {
+		name string
+		live *config.Config
+		next *config.Config
+	}{
+		{
+			name: "port set widened",
+			live: ingressConfigWithPorts([]string{"22"}),
+			next: ingressConfigWithPorts([]string{"22", "80"}),
+		},
+		{
+			name: "source prefix widened",
+			live: ingressConfigWithSource("100.99.45.41/32"),
+			next: ingressConfigWithSource("100.99.45.0/24"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			live := seedNetworkState(t, tt.live)
+			np := computeNetworks(t, tt.next, live)
+			step := findACLStep(np, "lxm-labbr0", "update_acl")
+			if step == nil {
+				t.Fatalf("expected update_acl, got %+v", np.Steps)
+			}
+			if step.Tightened {
+				t.Fatalf("widening must not be treated as tightening: %+v", step.Diff)
+			}
+		})
+	}
+}
+
+func TestComputeNetworks_IngressNarrowingTightens(t *testing.T) {
+	live := seedNetworkState(t, ingressConfigWithSource("100.99.45.0/24"))
+	np := computeNetworks(t, ingressConfigWithSource("100.99.45.41/32"), live)
+	step := findACLStep(np, "lxm-labbr0", "update_acl")
+	if step == nil {
+		t.Fatalf("expected update_acl, got %+v", np.Steps)
+	}
+	if !step.Tightened {
+		t.Fatalf("source narrowing must tighten the ACL")
 	}
 }

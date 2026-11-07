@@ -78,6 +78,11 @@ func TestLoadConfig_IngressAllow_Errors(t *testing.T) {
 			want:   "only IPv4 sources are supported",
 		},
 		{
+			name:   "bare ipv6",
+			policy: "  ingress_allow: [{to: lab1, source: \"2001:db8::1\"}]\n",
+			want:   "only IPv4 sources are supported",
+		},
+		{
 			name:   "bad protocol",
 			policy: "  ingress_allow: [{to: lab1, source: 100.99.45.41/32, protocol: sctp}]\n",
 			want:   "protocol must be tcp or udp",
