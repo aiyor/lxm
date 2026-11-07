@@ -217,6 +217,8 @@ an additional, additive surface in the envelope:
 * **`plan.network_steps`** — the reconciliation steps for LXD network ACLs and vswitches, executed
   *before* instance steps (`create_acl`/`update_acl` before `create_vswitch`/`update_vswitch`, so
   a network can always reference its ACL). Each step carries `kind`, `name`, and the payload.
+  `update_acl` steps also carry `diff` entries for the `rules` count plus per-rule
+  `ingress.added`/`ingress.removed`/`egress.added`/`egress.removed` changes.
 * **`network_results`** — the per-step execution outcome from `apply`, alongside `results`:
   `{name, kind, changed, ok, duration_ms}`. A network-step failure is therefore machine-
   distinguishable from an instance-step failure, and aborts the apply **before any instance step

@@ -45,6 +45,15 @@ func (conf *Config) validateVSwitches() error {
 			return fmt.Errorf("vswitch %q: internet: false requires a group (ungrouped vswitches are not policy-managed)", vs.Name)
 		}
 
+		if vs.HostAccess && vs.Status != "absent" {
+			if vs.Group == "" {
+				return fmt.Errorf("vswitch %q: host_access: true requires a group (ungrouped vswitches are not policy-managed)", vs.Name)
+			}
+			if vs.Type == "ovn" {
+				return fmt.Errorf("vswitch %q: host_access: true is not supported on type: ovn in v1 (host traffic traverses the OVN logical router; use a bridge, or leave the vswitch ungrouped and manage its ACL manually)", vs.Name)
+			}
+		}
+
 		_, ipnet, err := net.ParseCIDR(vs.IPv4)
 		if err != nil {
 			return fmt.Errorf("vswitch %q: invalid ipv4 %q: %w", vs.Name, vs.IPv4, err)

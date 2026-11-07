@@ -80,6 +80,7 @@ gate has passed live against **each** supported provider it touches.
 | OVN virtual switches & microsegmentation (`type: ovn`) | `internal/network` (G0/G8 golden + decomposition property), `internal/plan` (immutable drift), `internal/config` (parent/driver/MTU) | `simulation/scripts/test-ovn-e2e.sh` | LXD **and** Incus (run per provider) | §4 Step 2 / Step 3 |
 | VM data disks (`disks:`) | `internal/config`, `internal/apply` | `test-lxd-e2e.sh` (disk lifecycle steps) | LXD | §4 Step 2 |
 | Declarative port publishing (`ports:`) | `internal/ports`, `internal/config`, `internal/plan`, `internal/fleet`, `internal/network`, `cmd/lxm` | `simulation/scripts/test-ports-e2e.sh` | LXD **and** Incus (run per provider) | §4 Step 2 / Step 3 + Pillar 6 |
+| Host access & external ingress grants (`host_access`, `ingress_allow`) | `internal/config`, `internal/network`, `internal/plan`, `cmd/lxm` | **(pending — unit/plan/fake-driver only; issue-reporter live evidence on LXD 5.21.9)** | LXD **and** Incus | §4 Step 2 / Step 3 |
 | Declarative deletion & `--prune` | `internal/plan`, `internal/apply` | **(gap — no E2E gate yet)** | — | Pillar 1 §3 scenario 4 |
 | Cloud images (`image_remotes`) | `internal/config/image.go` | **(gap — no E2E gate yet)** | — | — |
 
@@ -167,7 +168,11 @@ flowchart LR
    - **Blocked Direction (DB $\rightarrow$ Web)**: Verify packet drop or ICMP destination port unreachable when `db` attempts to initiate connections to `web`.
    - **Intra-Group Isolation**: Verify instances within the same group can communicate by default.
    - **RFC1918 Egress Carve-Outs**: Verify egress to internet (`0.0.0.0/0`) is allowed while private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) are blocked when not explicitly allowed.
-3. **OVN Overlay Networks (`type: ovn`)** — executed by `simulation/scripts/test-ovn-e2e.sh`, run against **both** LXD and Incus:
+3. **Host access & external ingress grants (issue #14)**:
+   - **Default host block**: with a grouped bridge and no `host_access`, assert host→instance SSH is rejected by the ingress default; enable `host_access: true`, re-plan (one `update_acl` with `ingress.added` from the gateway `/32`), apply, and assert host SSH succeeds while instance→host gateway services remain blocked.
+   - **External grant**: apply `ingress_allow` for a source CIDR and port range; assert the selected source/port is admitted and other ports/sources still hit the reject default. Remove the grant, assert `ingress.removed`/`tightened: true`, apply, and assert new connections are refused (established flows may persist until conntrack expiry).
+   - **Validation/idempotency**: invalid CIDR/port/protocol, duplicate rules, unknown target group, ungrouped/OVN `host_access`, wildcard-source warning; a second plan after apply is a no-op.
+4. **OVN Overlay Networks (`type: ovn`)** — executed by `simulation/scripts/test-ovn-e2e.sh`, run against **both** LXD and Incus:
    - **Provisioning**: create OVN networks with mandatory `parent` uplink binding; verify `type: ovn` and router/switch allocation; verify `mtu:` maps to `bridge.mtu` (Geneve 1442 default) and reconciles on drift.
    - **G0 intra-switch (T3-OVN)**: instances on the same OVN switch (same subnet) communicate unhindered under `security.acls.default.*.action: reject` — the crux of the OVN compiler.
    - **Cross-subnet forward (T1-OVN)**: policy `web → db` permits the forward flow; replies ride conntrack (stateful).

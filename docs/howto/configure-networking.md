@@ -193,6 +193,63 @@ Open Virtual Network (OVN) brings software-defined networking (SDN) and multi-no
   * For **`internet: false`** OVN networks, `lxm` emits explicit port 53 (UDP & TCP) reject rules targeting derived upstream resolvers to block outbound DNS queries, while keeping in-subnet resolvers open for intra-subnet DNS. If an upstream resolver cannot be derived, `lxm plan` warns: `specify dns.nameservers to install port 53 reject rules`.
   * **G9** port guards explicitly block non-DNS host ports (SSH, API listeners) on the gateway IP.
 
+### Host access and external ingress grants
+
+The ACL default-reject applies to **host→instance** traffic too: when a grouped bridge enforces
+`security.acls.default.ingress.action: reject`, the LXD host can no longer reach its instances
+(for example a host-side Caddy reverse proxy or an SSH jump host). The host is not implicitly
+trusted and needs an explicit ingress allow.
+
+Two opt-in fields cover the common "lab network behind a subnet router" pattern:
+
+* **`host_access: true`** on a grouped **bridge** vswitch emits an ingress allow from that
+  vswitch's gateway address (`<ipv4 gateway>/32`) to its subnet. This restores host access without
+  widening inter-group or internet access. The flag is **per vswitch** — set it on every grouped
+  bridge the host must reach. It is **bridge-only in v1**; declaring it on `type: ovn` fails
+  validation (OVN host traffic traverses the logical router).
+* **`network_policy.ingress_allow`** admits selected **external IPv4 CIDRs** (for example a
+  tailnet client) to a group's instances on selected protocols/ports. The grants are ingress-only;
+  the target group's egress policy is unchanged.
+
+```yaml
+# _base.yaml (fragment)
+vswitches:
+  - name: labbr0
+    ipv4: 10.208.0.1/24
+    group: lab1
+    host_access: true           # host may reach 10.208.0.0/24
+
+network_policy:
+  allow: []                     # required list; empty = no group↔group allowances
+  ingress_allow:
+    - to: lab1                  # target group (every vswitch in it)
+      source: 100.99.45.41/32   # explicit IPv4 CIDR; no hostnames
+      protocol: tcp             # tcp (default) | udp
+      ports: ["22", "3000-3999"] # single ports, ranges, comma lists; omitted = all
+```
+
+Validated behavior:
+
+* `source` must be an explicit IPv4 CIDR and is canonicalized to the masked prefix. Wildcard
+  `0.0.0.0/0` is allowed but produces a plan warning; target-subnet sources are rejected because
+  intra-switch traffic is not ACL-filtered.
+* Port tokens are canonicalized, sorted, and deduplicated; ranges must have `start < end` (use a
+  single port for equal endpoints), and valid ports are `1`–`65535`.
+* Unknown target groups, duplicate normalized rules, and invalid sources/ports fail with exit `3`.
+* Removing a grant or `host_access` produces an `update_acl` plan step with
+  `ingress.removed` and `tightened: true`, revoking new connections on apply. Established flows
+  persist until conntrack expiry; see
+  [Conntrack lifecycle](../reference/conntrack-lifecycle.md).
+* IPv6 grants are out of scope for v1.
+
+Inspect the ACL delta before applying:
+
+```bash
+lxm plan --format json | jq '.plan.network_steps[] | select(.kind == "update_acl") | {name, tightened, diff}'
+```
+
+A complete manifest is [`lab-ingress-demo.yaml`](../examples/lab-ingress/lab-ingress-demo.yaml).
+
 ### `internal_cidrs` — declaring more "internal" space
 
 The isolation model treats RFC1918 space (`10/8`, `172.16/12`, `192.168/16`), `100.64/10`,
@@ -222,9 +279,13 @@ with `internet: true`. Entries outside the defaults are the ones that matter: a
 * **Cross-bridge traffic is source-NAT'd at the destination bridge.** ACLs are evaluated *before*
   that NAT (verified on LXD 6.9), so the source-subnet rules match correctly — but the *guest on the
   receiving side* sees the destination bridge's gateway as the peer source, not the real source IP.
-* **Tightening is not retroactive.** Removing an `allow` blocks new connections immediately, but
-  already-established flows keep flowing until the kernel conntrack entry expires (up to 5 days for
-  TCP). See [Conntrack lifecycle](../reference/conntrack-lifecycle.md).
+* **Host access is not a trust bypass.** `host_access: true` only restores host→instance ingress;
+  instances still cannot initiate toward host services on the gateway (the egress own-subnet
+  reject remains), and inter-group/internet policy is unchanged.
+* **Tightening is not retroactive.** Removing an `allow`, `host_access`, or `ingress_allow` blocks
+  new connections immediately, but already-established flows keep flowing until the kernel
+  conntrack entry expires (up to 5 days for TCP). See
+  [Conntrack lifecycle](../reference/conntrack-lifecycle.md).
 
 ## Next steps
 

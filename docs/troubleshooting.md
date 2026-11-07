@@ -303,6 +303,38 @@ Error: Failed to update network "ovnbr0": Config key "security.acls" is not supp
 
 **Fix.** Upgrade the provider daemon (LXD / Incus) to a release that supports `network_ovn_acl`, or remove the `group:` field from the OVN virtual switch to use it for addressing and overlay routing without ACL policies.
 
+### Host cannot reach instances on a grouped bridge
+
+**Symptom.** After enabling a group ACL, the LXD/Incus host can no longer SSH into or reverse-proxy
+to instances, while instance→internet egress still works.
+
+**Cause.** The ACL applies its `reject` default to host→instance traffic too; the host is not
+implicitly trusted (verified on LXD 5.21.9).
+
+**Fix.** Set `host_access: true` on the grouped bridge and re-apply. `lxm plan` shows an
+`update_acl` with an `ingress.added` rule from the gateway `/32`; `lxm status`/`lxc network show`
+confirm the ACL has no extra group/internet allowances. This is bridge-only; OVN rejects the field
+with a clear error.
+
+### Ingress grant has no effect
+
+**Symptom.** `network_policy.ingress_allow` is applied, but the selected client still cannot reach
+the instance.
+
+**Checks.**
+
+* The ACL matches the **source before NAT**. If the client is routed/NATed by the subnet router,
+  grant the address the destination sees (often the router's address), not the client's original
+  tailnet IP.
+* `to` must name the group of the vswitch carrying the instance NIC; `lxm plan` errors on an
+  unknown group.
+* The protocol/ports in the rule must match the service; omitted `ports` means all ports but the
+  protocol still defaults to `TCP`.
+* Removing a grant revokes only new flows; established connections persist until conntrack expiry
+  (see [Conntrack lifecycle](reference/conntrack-lifecycle.md)).
+* A source inside the target subnet is rejected at plan time because intra-switch traffic is not
+  ACL-filtered.
+
 ### Port publishing fails validation (`ports:`)
 
 **Symptoms.** `plan`/`apply` exits 3 before touching the daemon, with one of:

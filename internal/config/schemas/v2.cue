@@ -203,6 +203,7 @@ import (
 	internet?: bool | *true
 	mtu?:      int
 	config?:   {[string]: string}
+	host_access?: bool | *false
 })
 
 // Published ports (issue #11): a host -> instance proxy device.
@@ -237,6 +238,23 @@ import (
 	from:      string
 	to:        string
 	direction?: "both" | "egress" | *"both"
+})
+
+// External-source ingress grant into a group. The source is validated and
+// canonicalized Go-side with net/netip (IPv4 CIDR only) so errors are precise.
+#IngressAllowObjAuthoring: close({
+	to:       string
+	source:   string
+	protocol?: string
+	ports?:   [...string]
+})
+
+// Defaults/canonicalization are materialized Go-side in LoadConfig.
+#IngressAllowObjResolved: close({
+	to:       string
+	source:   string
+	protocol: "tcp" | "udp"
+	ports?:   [...string]
 })
 
 // ============================================================================
@@ -291,6 +309,7 @@ import (
 	network_policy?: close({
 		internal_cidrs?: [...string]
 		allow:           [...#PolicyRuleAuthoring]
+		ingress_allow?:  [...#IngressAllowObjAuthoring]
 	})
 
 	// Fleet-scoped simplestreams image remotes (image: remote:alias). Rich
@@ -400,6 +419,7 @@ import (
 		internet:  bool
 		mtu?:      int
 		config?:   {[string]: string}
+		host_access?: bool
 	})]
 
 	network_policy?: close({
@@ -409,6 +429,7 @@ import (
 			to:        string
 			direction: "both" | "egress"
 		})]
+		ingress_allow?: [...#IngressAllowObjResolved]
 	})
 
 	image_remotes?: {

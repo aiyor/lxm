@@ -387,18 +387,19 @@ type DiskConfig struct {
 
 // VSwitchConfig models a managed virtual switch (fleet-scoped).
 type VSwitchConfig struct {
-	Name     string            `yaml:"name"`
-	Status   string            `yaml:"status,omitempty"` // "present" (default) | "absent"
-	Type     string            `yaml:"type,omitempty"`   // "" = "bridge" | "ovn"
-	Parent   string            `yaml:"parent,omitempty"` // Uplink parent network for OVN (e.g. "lxdbr0")
-	Driver   string            `yaml:"driver,omitempty"` // "" = "native" (bridge.driver)
-	IPv4     string            `yaml:"ipv4,omitempty"`
-	IPv6     string            `yaml:"ipv6,omitempty"` // "" = "none"
-	NAT      *bool             `yaml:"nat,omitempty"`  // nil = true
-	Group    string            `yaml:"group,omitempty"`
-	Internet *bool             `yaml:"internet,omitempty"` // nil = true
-	MTU      int               `yaml:"mtu,omitempty"`      // Maps to bridge.mtu on OVN
-	Config   map[string]string `yaml:"config,omitempty"`   // Backend passthrough options
+	Name       string            `yaml:"name"`
+	Status     string            `yaml:"status,omitempty"` // "present" (default) | "absent"
+	Type       string            `yaml:"type,omitempty"`   // "" = "bridge" | "ovn"
+	Parent     string            `yaml:"parent,omitempty"` // Uplink parent network for OVN (e.g. "lxdbr0")
+	Driver     string            `yaml:"driver,omitempty"` // "" = "native" (bridge.driver)
+	IPv4       string            `yaml:"ipv4,omitempty"`
+	IPv6       string            `yaml:"ipv6,omitempty"` // "" = "none"
+	NAT        *bool             `yaml:"nat,omitempty"`  // nil = true
+	Group      string            `yaml:"group,omitempty"`
+	Internet   *bool             `yaml:"internet,omitempty"`    // nil = true
+	MTU        int               `yaml:"mtu,omitempty"`         // Maps to bridge.mtu on OVN
+	Config     map[string]string `yaml:"config,omitempty"`      // Backend passthrough options
+	HostAccess bool              `yaml:"host_access,omitempty"` // ingress allow from the vswitch gateway
 }
 
 func (v *VSwitchConfig) EffectiveType() string {
@@ -419,10 +420,19 @@ type NetworkPolicyRule struct {
 	Direction string `yaml:"direction,omitempty"` // "" = "both"
 }
 
+// IngressAllowRule models one external-source ingress allowance into a group.
+type IngressAllowRule struct {
+	To       string   `yaml:"to"`
+	Source   string   `yaml:"source"`
+	Protocol string   `yaml:"protocol,omitempty"` // "" = "tcp"
+	Ports    []string `yaml:"ports,omitempty"`    // empty = all ports
+}
+
 // NetworkPolicy is a fleet-scoped, group-based traffic policy.
 type NetworkPolicy struct {
 	InternalCIDRs []string            `yaml:"internal_cidrs,omitempty"`
 	Allow         []NetworkPolicyRule `yaml:"allow"`
+	IngressAllow  []IngressAllowRule  `yaml:"ingress_allow,omitempty"`
 }
 
 // Recipes is the authoring surface for recipes. It normalizes string, root:,
@@ -1432,6 +1442,10 @@ func copyNetworkPolicy(p *NetworkPolicy) *NetworkPolicy {
 	cp := &NetworkPolicy{
 		InternalCIDRs: slices.Clone(p.InternalCIDRs),
 		Allow:         slices.Clone(p.Allow),
+		IngressAllow:  slices.Clone(p.IngressAllow),
+	}
+	for i := range cp.IngressAllow {
+		cp.IngressAllow[i].Ports = slices.Clone(cp.IngressAllow[i].Ports)
 	}
 	return cp
 }
@@ -1686,12 +1700,16 @@ func LoadConfig(configFile string) (*Config, error) {
 		p.Connect = connect.HostPort()
 	}
 
-	// network_policy rule direction default ("both").
+	// network_policy rule direction default ("both") and ingress grant
+	// canonicalization/validation.
 	if conf.NetworkPolicy != nil {
 		for i := range conf.NetworkPolicy.Allow {
 			if conf.NetworkPolicy.Allow[i].Direction == "" {
 				conf.NetworkPolicy.Allow[i].Direction = "both"
 			}
+		}
+		if err := normalizeIngressAllow(conf.NetworkPolicy); err != nil {
+			return nil, err
 		}
 	}
 

@@ -223,15 +223,28 @@ vswitches:
     group: services
     mtu: 1442
 
+  # Default-deny lab bridge: keep host access, grant selected external clients
+  - name: labbr0
+    ipv4: 10.208.0.1/24
+    group: lab1
+    host_access: true
+
 network_policy:
   allow:
     - from: internal
       to: services
       direction: both
+  ingress_allow:
+    - to: lab1
+      source: 100.99.45.41/32   # tailnet client
+      protocol: tcp
+      ports: ["22", "3000-3999"]
 ```
 
 * **`vswitches`**: Declares managed bridges or OVN overlay networks. `parent:` is required on `type: ovn` to specify the uplink network.
 * **`network_policy`**: Groups communicate freely within their group; inter-group traffic is denied by default unless permitted by an `allow` rule.
+* **`host_access`**: On a grouped bridge, emits an ingress allow from the bridge gateway so the LXD host can reach instances under the default-reject ACL (bridge-only).
+* **`ingress_allow`**: Admits explicit external IPv4 CIDRs to a group on the selected protocol/ports; ingress-only and revocable at the next apply.
 * **Fleet-scoped**: `vswitches` and `network_policy` are unioned across all manifests in your fleet.
 
 ## 7. Publish host ports

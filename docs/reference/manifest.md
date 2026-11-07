@@ -369,6 +369,11 @@ vswitches:
     ipv4: 10.60.0.1/24
     group: ovnservices
     mtu: 1442              # optional MTU override (maps to bridge.mtu)
+
+  - name: labbr0
+    ipv4: 10.70.0.1/24
+    group: lab
+    host_access: true      # bridge-only: allow ingress from this bridge's gateway
 ```
 
 | Field | Type | Default | Rules |
@@ -383,11 +388,12 @@ vswitches:
 | `group` | string | — | Group membership; absence ⇒ managed for addressing only (no ACLs). |
 | `internet` | bool | `true` | Only meaningful with `group`. `internet: false` on OVN virtual switches emits port 53 reject rules targeting derived upstream resolvers to block outbound DNS. |
 | `mtu` | int | — | Optional MTU override (maps to `bridge.mtu` on OVN; must be ∈ [576, 65535]). |
+| `host_access` | bool | `false` | Bridge-only opt-in: emit ingress `allow source=<gateway>/32 destination=<subnet>` (G10/R11) so the LXD host is not blocked by the ACL default-reject. Requires `group`; rejected on `type: ovn` in v1. |
 | `config` | map[string]string | — | Optional backend-specific passthrough options (managed keys take strict precedence). |
 
 Validation (Go-side, exit 3): `ipv4` must parse as a CIDR whose address is the first usable host
 (`10.10.50.1/16` is rejected — it is not the first host of `10.10.0.0/16`); prefix length must be
-`/8`–`/29`; `parent` is required for `type: ovn`; `driver` is bridge-only; names must be unique; subnets must not overlap; `internet: false` requires a `group`.
+`/8`–`/29`; `parent` is required for `type: ovn`; `driver` is bridge-only; names must be unique; subnets must not overlap; `internet: false` requires a `group`; `host_access: true` requires a `group` and is rejected on `type: ovn`.
 
 An **ungrouped** vswitch is managed for addressing only — stock open routing, no ACLs. Removing
 a `group` later detaches the ACL and leaves it unmanaged. Removing a vswitch from the manifests
@@ -409,6 +415,11 @@ network_policy:
     - from: vms              # required; a group with ≥1 vswitch
       to: services           # required; a group with ≥1 vswitch
       direction: both        # "both" (default, mutual) | "egress" (one-way initiation)
+  ingress_allow:             # external clients -> target group ports (ingress-only)
+    - to: lab
+      source: 100.99.45.41/32
+      protocol: tcp
+      ports: ["22", "3000-3999"]
 ```
 
 * `allow` entries referencing a group with no vswitches fail with exit 3.
@@ -418,6 +429,21 @@ network_policy:
   warning.
 * `internal_cidrs` adds operator-declared networks to the **internal set** that `internet: true`
   groups may not reach — this is the remedy for the [non-RFC1918 host-address caveat](../howto/configure-networking.md#internal_cidrs--declaring-more-internal-space).
+
+`ingress_allow` is an optional fleet-scoped list of **ingress-only** grants:
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `to` | string | — (required) | Target group with ≥1 present vswitch; unknown group ⇒ exit 3. Compiled into every vswitch of that group. |
+| `source` | string | — (required) | Explicit IPv4 CIDR, canonicalized with `net/netip`; bare addresses/hostnames/zones/4-in-6/IPv6 ⇒ exit 3. A source overlapping the target vswitch subnet ⇒ exit 3 (intra-switch traffic is unfiltered); `0.0.0.0/0` warns. |
+| `protocol` | string | `"tcp"` | `"tcp"` or `"udp"`. |
+| `ports` | []string | — | LXD ACL destination ports: single ports, `a-b` ranges, comma lists; canonicalized/sorted/deduped, 1–65535, range `start < end`; omitted/empty ⇒ all ports. |
+
+* `network_policy` is a whole-object inheritance field: a leaf declaring any `network_policy`
+  replaces the inherited base object, so keep `allow`/`ingress_allow` together in the same layer.
+* `host_access: true` on a grouped **bridge** vswitch adds an ingress allow from its gateway
+  (`<ipv4>/32`) to the vswitch subnet so the LXD host can reach instances under the default-reject
+  ACL. It is bridge-only; OVN is rejected in v1.
 * On **OVN virtual switches**:
   * Intra-switch overlay traffic is allowed via **G0** rules under default-reject.
   * When `internet: true`, **G8** resolver `/32` carveouts allow DNS queries to internal/RFC1918 upstream resolvers derived in order (explicit `DNSResolvers` → vswitch `dns.nameservers` → parent `dns.nameservers` → parent `ipv4.address` gateway), while public resolvers (like `1.1.1.1`) pass through the internet wildcard without needing carveouts.

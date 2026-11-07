@@ -1,0 +1,34 @@
+schema: lxm/config/v2
+name: lab-ingress-demo
+status: present
+image: ubuntu:24.04
+groups: [lab]
+sudo: false
+inject_ssh_keys: false
+
+# Lab bridge with a default-reject ACL. host_access keeps the LXD host able to
+# reach its instances (for example a host-side reverse proxy or SSH jump host).
+vswitches:
+  - name: labbr0
+    type: bridge
+    ipv4: 10.208.0.1/24
+    group: lab1
+    host_access: true
+
+network_policy:
+  allow: []                     # no group-to-group allowances
+  ingress_allow:
+    # A single tailnet client may reach SSH and app ports on lab1 instances.
+    - to: lab1
+      source: 100.99.45.41/32
+      protocol: tcp
+      ports: ["22", "3000-3999"]
+
+networks:
+  - name: eth0
+    ipv4: 10.208.0.50
+    parent: labbr0
+
+wait:
+  cloud_init: 10m
+  required: true
