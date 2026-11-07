@@ -345,12 +345,17 @@ func Union(configs []*config.Config) (*Fleet, error) {
 			if isTarget {
 				continue // already rejected above
 			}
+			peerHint := "use a group-to-group allow for managed peers"
+			if other.Group == "" {
+				peerHint = "the vswitch is ungrouped; group it and use a group-to-group allow"
+			}
 			f.Warnings = append(f.Warnings, fmt.Sprintf(
 				"network_policy.ingress_allow: source %s overlaps managed vswitch %q subnet %s; "+
-					"use a group-to-group allow for managed peers (ingress_allow is intended for external clients)%s",
+					"%s (ingress_allow is intended for external clients)%s",
 				r.Source,
 				other.Name,
 				other.Subnet.String(),
+				peerHint,
 				ingressRuleOrigin(r),
 			))
 			break

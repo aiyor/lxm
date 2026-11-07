@@ -488,7 +488,9 @@ ride the kernel's conntrack `established,related` accept path, which sits ahead 
 * **Plan-time visibility**: when an `update_acl` step **removes or narrows** allow rules
   (`Tightened`), `lxm apply` emits:
   `ACL "<name>" tightened; pre-existing connections may persist until conntrack expiry (see docs: conntrack lifecycle)`.
-  A pure widening (only new allows added) does **not** warn.
+  A widening that is fully covered by the desired allows does **not** warn. Coverage is
+  evaluated pairwise per live rule, so replacing one allow with several narrower allows whose
+  union covers it may conservatively warn.
 * **Operational runbook** (manual, after tightening with live flows):
   1. Scoped delete: `sudo conntrack -D -d <newly-blocked-cidr>` (or `-s <src> -d <dst>`).
   2. Instance restart — destroys the veth pair and its conntrack entries (no host privileges).
