@@ -35,7 +35,7 @@ A fleet of several containers should have one small file per container and one s
 The [Authoring Manifests](howto/author-manifests.md) guide works through this pattern. Two rules from it matter most when you grow a fleet:
 
 * **Scalar fields: an explicit value wins.** An explicitly set field in the container file overrides the base — even an explicit empty value. If a container is not inheriting what you expect, look for an explicit override.
-* **Lists concatenate unless you say otherwise.** Inherited `mounts`, `networks`, and `recipes` merge base-first, then leaf. Use `remove:` to drop a specific inherited entry and `replace:` to discard an inherited list entirely. A `remove` that matches nothing is a compile error — a deliberate signal that the fleet no longer contains what you thought it did.
+* **Lists merge predictably.** Inherited `mounts`, `networks`, and `recipes` concatenate base-first, then leaf; `disks` and `ports` merge by name (a same-named leaf entry replaces the base entry wholesale). Use `remove:` to drop a specific inherited entry and `replace:` to discard an inherited list entirely. A `remove` that matches nothing is a compile error — a deliberate signal that the fleet no longer contains what you thought it did.
 
 When a container stops matching its manifest (a mount no longer exists on the host, a network address moved), fix the manifest — that is the file your teammates will read next year.
 
@@ -142,6 +142,7 @@ The v2 schema ships fail-safe defaults, and lxm tells you when a manifest silent
 * **Host keys are verified on every `ssh`.** `lxm ssh` registers the container's host key on first use and connects with strict verification. If a container is recreated, lxm forgets the stale key as part of the reconcile; a key that changes without a reconcile surfaces as a verification failure rather than being silently accepted. Do not disable this with `--insecure` or `-o StrictHostKeyChecking=no` on containers you do not fully control — the flag exists for lab machines, not production fleets.
 * **Deletes are scoped.** `--prune` only touches containers lxm itself marked as managed, inside the directory you targeted and the selectors you passed — but inside that scope it deletes everything unmanaged-by-manifest, including containers that belong to other fleets sharing the host. Preview with `plan --prune` and bound with `--group`/`--name` (see [Pruning Orphans](howto/prune-orphans.md)).
 * **Recreate destroys snapshots.** When a manifest change requires rebuilding a container, lxm refuses to proceed if snapshots exist. Accepting the rebuild with `--force` destroys them — take a manual snapshot first if you might need to roll back.
+* **Published ports are host exposure, not ACL-governed.** Keep `ports[].listen` on loopback unless remote access is intended; non-loopback and wildcard listens bypass `network_policy`, must be allowed in the host firewall, and produce a plan warning. VM NAT requires a bridged/routed connect NIC (OVN/macvlan/physical/sriov are rejected). See [Publishing Ports](howto/publish-ports.md).
 
 The general rule: **every permission is a manifest line.** If a capability is important enough to grant, it is important enough to be in git, reviewed, and reproducible — that is what "declarative" buys you.
 

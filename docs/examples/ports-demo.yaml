@@ -1,0 +1,32 @@
+# Publish host ports to a container's local services.
+#
+#   lxm plan docs/examples/ports-demo.yaml
+#   lxm apply docs/examples/ports-demo.yaml
+#   lxm status ports-demo        # "Published Ports:" block
+#   lxm list                     # PORTS column
+#
+# Both publishers are host-local (loopback) so they are reachable only from
+# this host. Use a non-loopback listen address to accept remote traffic (and
+# allow it in the host firewall; proxy traffic bypasses network_policy).
+schema: lxm/config/v2
+name: ports-demo
+status: present
+image: ubuntu:22.04
+user: ubuntu
+sudo: false
+inject_ssh_keys: false
+
+networks:
+  - name: eth0
+    parent: lxdbr0
+
+ports:
+  # HTTP service inside the container.
+  - name: web
+    listen: 127.0.0.1:8080
+    connect: 127.0.0.1:80
+  # UDP DNS service inside the container.
+  - name: dns
+    listen: 127.0.0.1:5353
+    connect: 127.0.0.1:53
+    proto: udp

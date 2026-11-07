@@ -303,6 +303,45 @@ Error: Failed to update network "ovnbr0": Config key "security.acls" is not supp
 
 **Fix.** Upgrade the provider daemon (LXD / Incus) to a release that supports `network_ovn_acl`, or remove the `group:` field from the OVN virtual switch to use it for addressing and overlay routing without ACL policies.
 
+### Port publishing fails validation (`ports:`)
+
+**Symptoms.** `plan`/`apply` exits 3 before touching the daemon, with one of:
+
+```text
+Error: config validation "web.yaml": port "web" of instance "web-a": nat: true cannot listen on a loopback address (unusable on both daemons)
+Error: config validation "vm.yaml": port "web" of instance "vm1": virtual machines require nat: true (daemon limitation)
+Error: port tcp 127.0.0.1:8080 is published by both instance "a" (/cfg/a.yaml) and instance "b" (/cfg/b.yaml)
+Error: device "proxy-web" for instance "web-a" exists but is not lxm-managed; remove it or rename the port
+Error: port "https" of instance "vm1": nat: true cannot use connect address 10.80.0.5:443 on macvlan network "net0" (NAT requires a bridged/routed NIC)
+```
+
+**Cause.** One of the published-port rules was violated: endpoint grammar (`PORTS-SPEC.md` §3),
+NAT policy (§7), fleet-wide listener uniqueness (§6), or ownership (an unmarked pre-existing proxy
+device with the same name), or an unsupported NAT parent (only bridged/routed NICs support the
+daemon's NAT path — OVN, macvlan, physical and sriov are rejected; an unknown parent type warns).
+Wildcard listeners are dual-stack, so `0.0.0.0` and `::` also conflict with specific addresses of
+either family.
+
+**Fix.** Follow the message: use an explicit instance address for `connect`; use a non-loopback host
+address with `nat: true`; give a NAT'ed VM a static `networks[].ipv4` and set `connect` to it; change
+one listener's port/address in the duplicate case; remove the unmarked `proxy-<name>` device (inspect
+with `lxm status` or `lxc config device show <instance>`) or rename the manifest port; for NAT, attach
+the connect NIC to a bridged/routed network rather than an OVN/macvlan/physical/sriov one.
+
+### Port is published but unreachable
+
+**Symptoms.** The proxy device exists (`lxm status` shows it, or `lxc config device show` lists
+`proxy-<name>`), but connecting to the host `listen` address times out or is refused.
+
+**Cause.** Either `listen` is `127.0.0.1` and the client is remote (loopback is host-only), a host
+firewall blocks the listen address, or the service inside the instance is not listening on the
+`connect` address. The daemon's forkproxy connects from the host, so `connect` must be reachable
+from the daemon (for containers usually a guest address, for NAT'ed VMs the static VM IP).
+
+**Fix.** Bind a non-loopback `listen` deliberately and open the host firewall for it; verify with
+`ss -ltnp` on the host and inside the guest. Remember that proxy traffic does not traverse
+`network_policy` ACLs. For VMs, use `nat: true` and the VM's static address as `connect`.
+
 ## Next steps
 
 * [Best Practices](best-practices.md) — the operating habits that prevent most of these failures.

@@ -65,6 +65,11 @@ The following persistent flags are defined on the `lxm` root command:
 | **6** | `EXEC_FAILED` | Recipe execution failure, non-zero script exit code, or command error. |
 | **7** | `WAIT_TIMEOUT` | Cloud-init or network readiness wait timeout exceeded. |
 
+Ports-specific `CONFIG_ERROR` (exit 3) cases: duplicate listener across instances (wildcard deltas
+included), unmarked `proxy-<name>` ownership collision, invalid/non-canonical endpoint, NAT
+policy violations, VM without `nat: true`, and NAT on a non-bridged/routed NIC (OVN, macvlan, physical, sriov). See
+[`PORTS-SPEC.md`](PORTS-SPEC.md) §13.
+
 ---
 
 ## 4. Command Reference
@@ -91,6 +96,12 @@ lxm plan <file|dir> [--name N] [--prune] [--format json|text]
   * `--prune`: Include delete steps for orphaned containers in directory targets.
   * `--format`: Output format (`text` or `json`).
 * **Exit Codes**: `0` (success), `2` (single-file `--prune` or usage error), `3` (config error), `4` (LXD error), `5` (empty match or missing file).
+* **Published ports**: diffs appear as `ports[<name>]` (add/remove) and
+  `ports[<name>].listen|connect|proto|nat` (change); an anomalous marker-carrying device under a
+  non-`proxy-<name>` name is retired with `devices[<device>]`; create payloads include the
+  `proxy-*` devices.
+  Non-loopback/wildcard listens, profile-shadowed proxies, and listener handoffs produce warnings.
+  Offline plans cannot detect an unmarked device collision (apply always can).
 
 ### 4.3 `lxm apply`
 Computes the reconciliation plan and applies required mutations against the LXD daemon.
@@ -104,6 +115,9 @@ lxm apply <file|dir> [--name N] [--rename-to NAME] [--prune] [--no-start]
   * `--rename-to`: Override container target name (single-file targets only).
   * `--prune`: Garbage-collect orphaned managed containers (directory targets only; exit `2` on single-file).
   * `--no-start`: Do not start stopped containers after applying updates.
+* **Published ports**: same plan surface as `lxm plan`. Listener handoffs are warned about but not
+  ordered; Phase-2 instance steps run concurrently, so use `--jobs 1` when a listener is expected to
+  move between instances in one apply, or re-run apply if the claim races.
 
 ### 4.4 `lxm diff`
 Previews the reconciliation plan for a single target container against a specific manifest file.
@@ -112,6 +126,8 @@ Previews the reconciliation plan for a single target container against a specifi
 lxm diff <config-file> <container-name>
 ```
 * **Arguments**: Exactly 2 arguments: the manifest file path and container name.
+* **Published ports**: port diffs use the same `ports[...]` field names; add/remove values render
+  as `tcp 127.0.0.1:8080 -> 127.0.0.1:80 (nat)`.
 
 ### 4.5 `lxm list`
 Displays managed fleet inventory, live container status, IP addresses, groups, and base images.
@@ -119,6 +135,9 @@ Displays managed fleet inventory, live container status, IP addresses, groups, a
 ```bash
 lxm list [--name N] [--format json|text]
 ```
+* **Published ports**: text output gains a `PORTS` column (managed publishers only, e.g.
+  `127.0.0.1:8080->127.0.0.1:80`; UDP is `udp:`-prefixed, NAT suffixed ` (nat)`; `-` when none).
+  JSON `results[].published_ports[]` is an additive `lxm/result/v1` field.
 
 ### 4.6 `lxm status`
 Displays detailed operational status, device mounts, networks, and recipe execution trails for a container.
@@ -127,6 +146,9 @@ Displays detailed operational status, device mounts, networks, and recipe execut
 lxm status <container-name>
 ```
 * **Arguments**: Exactly 1 argument specifying the target container name.
+* **Published ports**: text gains a `Published Ports:` block listing managed and foreign proxy
+  devices (`<name>: <proto> <listen> -> <connect> (managed|foreign)`); JSON
+  `results[].published_ports[]` is additive.
 
 ### 4.7 `lxm compile`
 Compiles and migrates legacy v1 manifests to the `lxm/config/v2` schema format.

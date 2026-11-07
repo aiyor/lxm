@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Features
+- **ports**: declarative port publishing (`ports:`) for containers and VMs (#11)
+  - Compile manifest `ports:` entries to native LXD/Incus `proxy` devices (`proxy-<name>`,
+    `user.lxm.managed: "true"`), with add/change/remove diffing, idempotent reconciliation and
+    marker-based ownership (no device adoption; unmarked collisions are plan-time errors).
+  - Support DNAT `nat: true` for virtual machines: IPv4-only, explicit non-loopback host listen,
+    explicit static-IPv4 `connect`; reject the runtime-broken loopback+NAT combination.
+  - Enforce fleet-wide listener uniqueness with dual-stack wildcard semantics and per-instance
+    checks (same-instance duplicates, NIC device-name collisions, wildcard `connect`, malformed
+    endpoint grammar via `net/netip`).
+  - Add listener-handoff plan warnings (apply-phase ordering remains future work), non-loopback
+    exposure warnings, and profile-shadow warnings.
+  - Surface published ports in `lxm list` (PORTS column), `lxm status` (`Published Ports:` block),
+    `lxm diff`/`lxm plan` field diffs, and the additive `published_ports` `lxm/result/v1` field.
+  - Reject `nat: true` on non-bridged/routed NICs (OVN, macvlan, physical, sriov) in the network layer.
+
+### Documentation
+- **ports**: add `PORTS-SPEC.md`, manifest/CLI/result spec sections, a publishing-ports how-to guide,
+  troubleshooting entries, a warning-free example, and the `test-ports-e2e.sh` live gate.
+
 ## [1.5.0] - 2026-08-20
 
 ### Features

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
+	"github.com/aiyor/lxm/internal/ports"
 	"github.com/aiyor/lxm/internal/provider"
 	"github.com/aiyor/lxm/internal/provider/common"
 	"github.com/aiyor/lxm/internal/recipe"
@@ -247,10 +248,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		// Attach recipe steps for new container
 		step.Recipes = buildRecipeSteps(manifest)
 
-		// Plumb raw_qemu warning
-		if manifest.Type == "virtual-machine" && manifest.VM != nil && manifest.VM.RawQEMU != "" {
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf("instance %q specifies raw.qemu hypervisor arguments: %q", manifest.Name, manifest.VM.RawQEMU))
-		}
+		appendManifestWarnings(plan, manifest, nil)
 
 		plan.Steps = append(plan.Steps, step)
 		plan.Summary = computeSummary(plan.Steps)
@@ -315,10 +313,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 		// Recipes must be re-run on recreate
 		step.Recipes = buildRecipeSteps(manifest)
 
-		// Plumb raw_qemu warning
-		if manifest.Type == "virtual-machine" && manifest.VM != nil && manifest.VM.RawQEMU != "" {
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf("instance %q specifies raw.qemu hypervisor arguments: %q", manifest.Name, manifest.VM.RawQEMU))
-		}
+		appendManifestWarnings(plan, manifest, liveInst)
 
 		plan.Steps = append(plan.Steps, step)
 		plan.Summary = computeSummary(plan.Steps)
@@ -381,10 +376,7 @@ func (r *defaultReconciler) Compute(manifest *config.Config, live map[string]*In
 	// Recipe updates for existing container
 	step.Recipes = buildRecipeSteps(manifest)
 
-	// Plumb raw_qemu warning
-	if manifest.Type == "virtual-machine" && manifest.VM != nil && manifest.VM.RawQEMU != "" {
-		plan.Warnings = append(plan.Warnings, fmt.Sprintf("instance %q specifies raw.qemu hypervisor arguments: %q", manifest.Name, manifest.VM.RawQEMU))
-	}
+	appendManifestWarnings(plan, manifest, liveInst)
 
 	// Warn if a managed disk marked status: absent references a live volume that lacks the managed marker
 	for _, d := range manifest.Disks {
@@ -560,6 +552,15 @@ func buildInstancesPost(manifest *config.Config, prov ...string) (*provider.Inst
 		post.Devices["disk-"+d.Name] = buildDiskDevice(d)
 	}
 
+	// 7. Published ports (issue #11): native proxy devices.
+	portDevices, err := buildPortDevices(manifest)
+	if err != nil {
+		return nil, fmt.Errorf("building port devices: %w", err)
+	}
+	for name, props := range portDevices {
+		post.Devices[name] = props
+	}
+
 	return post, nil
 }
 
@@ -730,6 +731,11 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot, prov ...s
 			}
 			continue
 		}
+		// Managed port proxies are rebuilt from the manifest in step 9; omitting
+		// them here is what deletes ports removed from the manifest.
+		if ports.IsManagedProxy(dev, props) {
+			continue
+		}
 		if props["type"] != "disk" && props["type"] != "nic" {
 			put.Devices[dev] = maps.Clone(props)
 			continue
@@ -792,6 +798,15 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot, prov ...s
 			continue
 		}
 		put.Devices["disk-"+d.Name] = buildDiskDevice(d)
+	}
+
+	// 9. Rebuild published port proxies (issue #11)
+	portDevices, err := buildPortDevices(manifest)
+	if err != nil {
+		return nil, fmt.Errorf("building port devices: %w", err)
+	}
+	for name, props := range portDevices {
+		put.Devices[name] = props
 	}
 
 	return put, nil
@@ -1033,6 +1048,13 @@ func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[s
 	}
 	diffs = append(diffs, diskDiffs...)
 	volumeOps = append(volumeOps, diskOps...)
+
+	// 6. Published ports (issue #11)
+	portDiffs, err := diffPorts(manifest, live)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	diffs = append(diffs, portDiffs...)
 
 	return diffs, requiresRecreate, volumeOps, nil
 }

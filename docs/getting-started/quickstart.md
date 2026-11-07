@@ -141,5 +141,5 @@ You are in the container. Type `exit` to leave.
 ## Next steps
 
 * [Concepts](concepts.md) — what it means to manage a fleet declaratively, and why the plan-first loop is safe.
-* [Authoring Manifests](../howto/author-manifests.md) — mounts, networking, users, and provisioning.
+* [Authoring Manifests](../howto/author-manifests.md) — mounts, networking, published ports, users, and provisioning.
 * [Your First Dev Container](../tutorials/first-dev-container.md) — a full end-to-end tutorial that builds on this tour.

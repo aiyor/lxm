@@ -88,7 +88,7 @@ When a container manifest and its base both set the same scalar field, the **lea
 
 Omitted fields inherit; explicitly set fields (including explicit zeros) override. This is the single most important rule to remember when a container is not inheriting what you expect.
 
-Lists behave differently: `mounts`, `networks`, and `recipes` **concatenate** by default (base first, then leaf) unless you use `remove` or `replace` (next step).
+Lists behave differently: `mounts`, `networks`, and `recipes` **concatenate** by default (base first, then leaf), while `disks` and `ports` merge by **name** (a same-named leaf entry replaces the base entry wholesale). Use `remove` or `replace` (next step) to change either behaviour.
 
 ## 4. Shape inherited lists with `remove` and `replace`
 
@@ -118,6 +118,7 @@ replace:
 * `remove.mounts` matches by normalized container path.
 * `remove.networks` matches by interface name.
 * `remove.recipes` matches by exact script path.
+* `remove.disks` and `remove.ports` match by name.
 * A `remove` entry that matches nothing fails compilation with `exit 3` — it is a signal you are pruning something that is not there.
 
 A complete, compile-valid example of this pattern (plus a presence-wins `wait` override) is `inheritance-demo.yaml`, which inherits `_inheritance-base.yaml`:
@@ -233,13 +234,42 @@ network_policy:
 * **`network_policy`**: Groups communicate freely within their group; inter-group traffic is denied by default unless permitted by an `allow` rule.
 * **Fleet-scoped**: `vswitches` and `network_policy` are unioned across all manifests in your fleet.
 
-## 7. Validate your manifests
+## 7. Publish host ports
+
+Containers and virtual machines can expose host ports with `ports:`; each entry compiles to a native LXD/Incus `proxy` device named `proxy-<name>`:
+
+```yaml
+ports:
+  - name: web
+    listen: 127.0.0.1:8080   # host side
+    connect: 127.0.0.1:80    # instance side
+  - name: dns
+    listen: 127.0.0.1:5353
+    connect: 127.0.0.1:53
+    proto: udp
+```
+
+`listen` and `connect` must be explicit IP literals (bracket IPv6); `proto` defaults to `tcp`. A loopback `listen` is host-only; a non-loopback or wildcard listen emits an exposure warning and bypasses `network_policy`, so allow it in the host firewall deliberately. Virtual machines must use `nat: true` with the VM's static address as `connect`:
+
+```yaml
+name: web-vm
+type: virtual-machine
+image: ubuntu:24.04
+networks:
+  - {name: eth0, parent: lxdbr0, ipv4: 10.10.10.31}
+ports:
+  - {name: https, listen: 10.10.10.1:8443, connect: 10.10.10.31:443, nat: true}
+```
+
+Ports are reconciled like every other managed device: changing an entry updates the device in place, removing it deletes the device on the next apply, and an unmarked pre-existing `proxy-<name>` device is never adopted. Listener uniqueness is enforced fleet-wide. See [Publishing Ports](publish-ports.md) for NAT rules, conflicts, and troubleshooting.
+
+## 8. Validate your manifests
 
 Before applying anything, confirm every file compiles and preview what it would do:
 
 ```text
 $ lxm compile docs/examples/
-Successfully compiled 8 manifest(s):
+Successfully compiled 9 manifest(s):
   - docs/examples/.lxm/compiled/absent-demo.yaml
   - docs/examples/.lxm/compiled/cloud-init-demo.yaml
   - docs/examples/.lxm/compiled/dev-station.yaml
@@ -247,6 +277,7 @@ Successfully compiled 8 manifest(s):
   - docs/examples/.lxm/compiled/mounts-demo.yaml
   - docs/examples/.lxm/compiled/mounts-map.yaml
   - docs/examples/.lxm/compiled/ovn-network-demo.yaml
+  - docs/examples/.lxm/compiled/ports-demo.yaml
   - docs/examples/.lxm/compiled/recipes-demo.yaml
 ```
 
@@ -256,7 +287,7 @@ Then preview the reconciliation plan:
 
 ```text
 $ lxm plan docs/examples/
-Plan: 6 to create, 0 to update, 0 to recreate, 0 to delete, 1 noop across 7 manifest(s)
+Plan: 7 to create, 0 to update, 0 to recreate, 0 to delete, 1 noop across 8 manifest(s)
 ```
 
 `plan` reads every manifest in the directory, compares it against live LXD state, and prints the summary — without changing anything.
@@ -270,10 +301,11 @@ Plan: 6 to create, 0 to update, 0 to recreate, 0 to delete, 1 noop across 7 mani
 | `circular include detected` | Two manifests include each other | Break the cycle. |
 | `unknown top-level key` | A typo or a v1-era field in a v2 manifest | Fix or migrate the field; see [Migrating from lxm v1](migrate-v1.md). |
 | `remove.recipes: "x" matched no recipe` | A `remove` target that does not exist in the merged manifest | Remove the directive or fix the path. |
-| `duplicate mount path` / `duplicate network name` | Two mounts/networks with the same key after merge | Deduplicate in the base or the leaf. |
+| `duplicate mount path` / `duplicate network name` / `published by both instance` | Two mounts/networks share a key, or two manifests publish the same listener | Deduplicate; for ports, change one `listen` or remove the duplicate. |
 
 ## Next steps
 
 * [Mounting Host Directories](mount-host-dirs.md) — add bind mounts to a container.
+* [Publishing Ports](publish-ports.md) — expose container and VM services on host ports.
 * [Targeting with Selectors](fleet-selectors.md) — operate on a subset of the fleet.
 * [Manifest Reference](../reference/manifest.md) — every field, with examples.

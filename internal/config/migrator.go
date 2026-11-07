@@ -75,6 +75,7 @@ var knownTopLevelKeys = map[string]bool{
 	"limits":             true,
 	"vm":                 true,
 	"disks":              true,
+	"ports":              true,
 	"vswitches":          true,
 	"network_policy":     true,
 	"wait":               true,

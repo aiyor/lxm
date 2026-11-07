@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/aiyor/lxm/internal/ports"
 )
 
 func TestNewEnvelope_Invariants(t *testing.T) {
@@ -196,5 +198,41 @@ func TestEmit(t *testing.T) {
 	}
 	if !strings.Contains(textBufFail.String(), "CONFIG_ERROR") {
 		t.Errorf("Emit(text fail) output missing CONFIG_ERROR: %s", textBufFail.String())
+	}
+}
+
+func TestResultItem_PublishedPortsAdditiveJSON(t *testing.T) {
+	env := NewEnvelope("list", "config/")
+	env.Results = []ResultItem{{
+		Container: "web",
+		Action:    "Running",
+		OK:        true,
+		PublishedPorts: []ports.PublishedPort{{
+			Device:  "proxy-web",
+			Name:    "web",
+			Proto:   "tcp",
+			Listen:  "127.0.0.1:8080",
+			Connect: "127.0.0.1:80",
+			NAT:     false,
+			Managed: true,
+		}},
+	}}
+	data, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	jsonStr := string(data)
+	want := `"published_ports":[{"device":"proxy-web","name":"web","proto":"tcp","listen":"127.0.0.1:8080","connect":"127.0.0.1:80","nat":false,"managed":true}]`
+	if !strings.Contains(jsonStr, want) {
+		t.Fatalf("published_ports JSON mismatch\nwant substring: %s\ngot: %s", want, jsonStr)
+	}
+
+	// Additive field is omitted entirely when there are no published ports.
+	empty, err := json.Marshal(NewEnvelope("status", "web"))
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(empty), "published_ports") {
+		t.Fatalf("empty envelope must omit published_ports: %s", empty)
 	}
 }

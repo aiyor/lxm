@@ -7,6 +7,7 @@ Task-oriented guides for getting a specific job done. Each guide is modular and 
 | Write and structure your manifests | [Authoring Manifests](author-manifests.md) |
 | Share host directories with containers | [Mounting Host Directories](mount-host-dirs.md) |
 | Give containers static networking | [Configuring Networking](configure-networking.md) |
+| Publish host ports to containers and VMs | [Publishing Ports](publish-ports.md) |
 | Provision containers after boot | [Provisioning with Recipes](provision-with-recipes.md) |
 | Bootstrap a base image | [Cloud-Init Bootstrapping](cloud-init-bootstrapping.md) |
 | Snapshot and roll back safely | [Snapshots & Rollback](snapshots-and-rollback.md) |
