@@ -812,3 +812,100 @@ func TestMigrateManifest_FleetConfigs_CompileAndLoad(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrateManifest_ValidatesIngressAllow(t *testing.T) {
+	base := func(rule string) string {
+		return `schema: lxm/config/v2
+name: lab
+image: ubuntu:24.04
+vswitches:
+  - name: labbr0
+    ipv4: 10.208.0.1/24
+    group: lab1
+network_policy:
+  allow: []
+  ingress_allow:
+    - ` + rule + "\n"
+	}
+
+	tests := []struct {
+		name string
+		rule string
+		want string
+	}{
+		{
+			name: "invalid source",
+			rule: "to: lab1\n      source: not-a-cidr",
+			want: "not a valid CIDR",
+		},
+		{
+			name: "invalid protocol",
+			rule: "to: lab1\n      source: 100.99.45.41/32\n      protocol: sctp",
+			want: "protocol must be tcp or udp",
+		},
+		{
+			name: "invalid ports",
+			rule: "to: lab1\n      source: 100.99.45.41/32\n      ports: [\"0\", \"3000-2000\"]",
+			want: "invalid port",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := MigrateManifest([]byte(base(tt.rule)))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestMigrateManifest_ValidatesHostAccess(t *testing.T) {
+	manifest := `schema: lxm/config/v2
+name: lab
+image: ubuntu:24.04
+vswitches:
+  - name: ovnbr0
+    type: ovn
+    parent: lxdbr0
+    ipv4: 10.208.0.1/24
+    group: lab1
+    host_access: true
+`
+	_, _, err := MigrateManifest([]byte(manifest))
+	if err == nil || !strings.Contains(err.Error(), "not supported on type: ovn") {
+		t.Fatalf("error = %v, want host_access OVN rejection", err)
+	}
+}
+
+func TestMigrateManifest_NormalizesIngressAllow(t *testing.T) {
+	manifest := `schema: lxm/config/v2
+name: lab
+image: ubuntu:24.04
+vswitches:
+  - name: labbr0
+    ipv4: 10.208.0.1/24
+    group: lab1
+network_policy:
+  allow: []
+  ingress_allow:
+    - to: lab1
+      source: 100.99.45.41/24
+      ports: ["3000-3999", "022", "22"]
+`
+	migrated, _, err := MigrateManifest([]byte(manifest))
+	if err != nil {
+		t.Fatalf("MigrateManifest: %v", err)
+	}
+	str := string(migrated)
+	for _, want := range []string{
+		"source: 100.99.45.0/24",
+		"protocol: tcp",
+		"ports:",
+		"- \"22\"",
+		"- 3000-3999",
+	} {
+		if !strings.Contains(str, want) {
+			t.Errorf("compiled output missing %q:\n%s", want, str)
+		}
+	}
+}

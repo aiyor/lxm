@@ -21,6 +21,9 @@ All notable changes to this project will be documented in this file.
   - Keep existing manifests compatible: omitted fields compile no additional ACL rules; plan
     JSON for existing ACL updates gains additive rule-level diffs and more accurate tightened
     detection (protocol/port-aware).
+  - Enforce `host_access` and `ingress_allow` validation/canonicalization on the `lxm compile`
+    path as well as plan/apply, so invalid sources, protocols, ports, or OVN/ungrouped
+    `host_access` cannot pass the compile gate.
 
 ### Documentation
 - **network**: document host access, external ingress grants, the IPv4/port validation matrix,
