@@ -47,8 +47,8 @@ Every `lxm` command exits with a categorized code from 0–7. The table maps eac
 | **0** | Success | Command completed with no errors. | — |
 | **1** | Internal error | Not user-triggerable in normal operation; an interrupted wait can surface as "wait policy cancelled by user interrupt". | Re-run; if it persists, report it with the output. |
 | **2** | Usage error | `--prune` on a single file; `--format json` on `shell`/`ssh`; an invalid `--format` value. | Read the error message; it names the flag. See [Prune rejected](#prune-rejected-on-a-single-file) and [Interactive commands reject the JSON format](#interactive-commands-reject-the-json-format). |
-| **3** | Config error | Unknown manifest key; unbound `{{ .Env.X }}` template variable; invalid value (bad mount path, bad IP). | Fix the manifest. `lxm compile` reports the exact file and field. See [Unbound template variable](#unbound-template-variable). |
-| **4** | LXD error | LXD socket unreachable; image alias not resolvable; the container was modified outside lxm (drift). | Depends on the message — see [LXD unreachable](#lxd-unreachable), [Image not found](#image-alias-not-found), [Drift](#drift-container-modified-outside-lxm). |
+| **3** | Config error | Unknown manifest key; unbound `{{ .Env.X }}` template variable; invalid value (bad mount path, bad IP); duplicate listener or host-side socket path. | Fix the manifest. `lxm compile` reports the exact file and field. See [Unbound template variable](#unbound-template-variable) and [Socket proxy fails validation](#socket-proxy-fails-validation-sockets). |
+| **4** | LXD error | LXD socket unreachable; image alias not resolvable; the container was modified outside lxm (drift); a socket's parent directory is missing; the daemon lacks a proxy capability. | Depends on the message — see [LXD unreachable](#lxd-unreachable), [Image not found](#image-alias-not-found), [Drift](#drift-container-modified-outside-lxm), and [Socket proxy is unreachable](#socket-proxy-is-unreachable-or-clients-fail). |
 | **5** | Target not found | Selector matches no containers; target file does not exist. | For selectors: nothing to do — treat as "no-op" in pipelines. For files: check the path. See [Selector matches nothing](#selector-matches-nothing). |
 | **6** | Execution failed | Recipe script exits non-zero; `run`/`script` command fails; `ssh`/`shell` cannot reach or authenticate to the container. | Check the script's output, or the ssh errors in [Host key problems](#host-key-problems). |
 | **7** | Wait timeout | Cloud-init or network readiness did not complete within the configured wait. | See [Wait timeout](#wait-timeout). |
@@ -374,6 +374,60 @@ from the daemon (for containers usually a guest address, for NAT'ed VMs the stat
 **Fix.** Bind a non-loopback `listen` deliberately and open the host firewall for it; verify with
 `ss -ltnp` on the host and inside the guest. Remember that proxy traffic does not traverse
 `network_policy` ACLs. For VMs, use `nat: true` and the VM's static address as `connect`.
+
+### Socket proxy fails validation (`sockets:`)
+
+**Symptoms.** `plan`/`apply` exits 3 before touching the daemon, or exits 4 on the capability gate:
+
+```text
+Error: loading manifest "a.yaml": socket "broker" of instance "lab1": invalid listen "unix:/run/broker.sock/": socket path "/run/broker.sock/" must be clean (no trailing slash, '.' or '..' segments, or duplicate separators)
+Error: config validation "b.yaml": socket "broker" of instance "lab2": instance-side listen socket "/var/tmp/broker.sock" is already created by socket "agent"
+Error: host-side unix socket path "/run/sshigit-broker/lab1.sock" is declared by socket "broker" of instance "lab1" (/cfg/a.yaml) and socket "broker" of instance "lab2" (/cfg/b.yaml)
+Error: config validation "vm.yaml": sockets of instance "vm1": Unix-socket proxies are container-only (virtual machines require nat: true, which cannot proxy unix endpoints)
+Error: device "socket-broker" for instance "lab1" exists but is not owned by the sockets namespace; remove it or rename the socket
+Error: provider server lacks the proxy_unix extension; Unix-domain socket proxies cannot be created
+```
+
+**Cause.** One of the socket rules was violated (`SOCKETS-SPEC.md` §3–§6): an endpoint that is not
+a clean absolute `unix:` path within the Linux `sun_path` limit; two sockets claiming the same
+host-side path across the fleet (or the same instance-side listen path within one instance);
+`sockets:` on a virtual machine (proxy devices on VMs need `nat: true`, which cannot proxy Unix
+endpoints); an unmarked pre-existing `socket-<name>` device; or a daemon that lacks the
+`proxy_unix` (or `proxy_unix_dac_properties`) extension, which is the one exit-4 case here.
+
+**Fix.** Follow the message: make both endpoints `unix:/absolute/clean/path`; give each host-side
+socket a distinct path (the `connect` path for `bind: instance`, the `listen` path for
+`bind: host`); move the declaration to a container manifest; remove the unmarked device or rename
+the socket; upgrade the daemon when the capability gate fires. A path over the 107-byte `sun_path`
+limit must be shortened, not worked around.
+
+### Socket proxy is unreachable or clients fail
+
+**Symptoms.** `lxm status` lists the socket device, but a client gets `ECONNREFUSED`, an immediate
+reset/EOF, or `permission denied`; or the instance-side socket file is missing.
+
+**Cause.** The relay connects per connection, so a failure usually means the *other side* is not
+listening: for `bind: instance` the host service on `connect`, for `bind: host` the container
+service on `connect`. Other causes: the listening socket's parent directory did not exist at apply
+(a 4 would have been raised, but check the daemon log), the instance-side path sits under a
+directory the guest remounts during boot (for example systemd's `/tmp` tmpfs) and was shadowed, the
+socket's `uid`/`gid`/`mode` exclude the client (the daemon default is `root:root` `0644`), or `bind`
+points the wrong way.
+
+**Fix.** Start the service on the other side — no re-apply is needed, the next client connection
+reconnects; verify both ends with `lxm status <container>` (the `Unix Sockets:` block spells out
+`bind=`, `uid=`, `gid=`, `mode=`) and `ss -xl | grep <path>` inside the container and on the host.
+Place instance-side sockets under an early-stable directory (`/run/<dir>` created by
+cloud-init/recipe, or `/var/tmp`). Declare `uid`/`gid`/`mode` matching the client. If the socket is
+stale after a device removal, it is harmless — the next start unlinks and replaces it (Incus never
+removes a `bind: host` host-side file; LXD removes it best-effort). Remember that root inside the
+container can always connect regardless of `mode`.
+
+On snap-packaged LXD, host-side non-abstract socket paths are transparently rewritten with the snap
+host filesystem prefix (`/var/lib/snapd/hostfs/...`). The *effective* path can therefore exceed the
+107-byte `sun_path` limit even though lxm accepted the path you declared; the daemon then fails to
+bind and `apply` exits 4 with `Failed listening`/`invalid argument`. Shorten the host-side path in
+that case.
 
 ## Next steps
 

@@ -24,6 +24,7 @@ import (
 	"github.com/aiyor/lxm/internal/provider"
 	"github.com/aiyor/lxm/internal/provider/remote"
 	"github.com/aiyor/lxm/internal/recipe"
+	"github.com/aiyor/lxm/internal/sockets"
 	"github.com/spf13/cobra"
 )
 
@@ -94,6 +95,10 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
+			socketWarnings, err := config.ValidateFleetSockets(loaded)
+			if err != nil {
+				return &exitError{code: 3, err: err}
+			}
 
 			sel, err := fleet.NewSelector(fleet.SelectorOpts{
 				Groups:        opts.groupFilters,
@@ -121,6 +126,9 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			}
 
 			if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
+				return err
+			}
+			if err := checkSocketExtensions(svc, selectedConfigs); err != nil {
 				return err
 			}
 
@@ -196,6 +204,7 @@ func newApplyCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer
 			}
 
 			combinedPlan.Warnings = append(combinedPlan.Warnings, portWarnings...)
+			combinedPlan.Warnings = append(combinedPlan.Warnings, socketWarnings...)
 			if svc != nil {
 				combinedPlan.Warnings = append(combinedPlan.Warnings, plan.DetectListenerHandoffs(loaded, liveSnapshots, combinedPlan.Steps)...)
 			}
@@ -299,6 +308,10 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
+			socketWarnings, err := config.ValidateFleetSockets(loaded)
+			if err != nil {
+				return &exitError{code: 3, err: err}
+			}
 
 			sel, err := fleet.NewSelector(fleet.SelectorOpts{
 				Groups:        opts.groupFilters,
@@ -334,7 +347,10 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				}
 			} else if svc != nil {
 				if err := checkDiskExtensions(svc, selectedConfigs); err != nil {
-					return &exitError{code: 4, err: err}
+					return err
+				}
+				if err := checkSocketExtensions(svc, selectedConfigs); err != nil {
+					return err
 				}
 				liveSnapshots, liveVolumes, _ = fetchLiveSnapshots(ctx, svc, selectedConfigs)
 				hasRebuild = svc.HasExtension("instances_rebuild")
@@ -401,6 +417,7 @@ func newPlanCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			}
 
 			combinedPlan.Warnings = append(combinedPlan.Warnings, portWarnings...)
+			combinedPlan.Warnings = append(combinedPlan.Warnings, socketWarnings...)
 			if svc != nil {
 				combinedPlan.Warnings = append(combinedPlan.Warnings, plan.DetectListenerHandoffs(loaded, liveSnapshots, combinedPlan.Steps)...)
 			}
@@ -462,6 +479,9 @@ func newDiffCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 				}
 			} else if svc != nil {
 				if err := checkDiskExtensions(svc, []*config.Config{conf}); err != nil {
+					return err
+				}
+				if err := checkSocketExtensions(svc, []*config.Config{conf}); err != nil {
 					return err
 				}
 				liveSnapshots, liveVolumes, _ = fetchLiveSnapshots(ctx, svc, []*config.Config{conf})
@@ -540,16 +560,17 @@ func newListCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 			lastCommandResults = nil
 			for _, inst := range filtered {
 				lastCommandResults = append(lastCommandResults, output.ResultItem{
-					Container:      inst.Name,
-					Action:         inst.Status,
-					OK:             true,
-					PublishedPorts: inst.PublishedPorts,
+					Container:        inst.Name,
+					Action:           inst.Status,
+					OK:               true,
+					PublishedPorts:   inst.PublishedPorts,
+					PublishedSockets: inst.PublishedSockets,
 				})
 			}
 
 			if opts.format == "text" {
 				w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(w, "NAME\tTYPE\tSTATUS\tMANAGED\tGROUPS\tIMAGE\tIP\tPORTS")
+				fmt.Fprintln(w, "NAME\tTYPE\tSTATUS\tMANAGED\tGROUPS\tIMAGE\tIP\tPORTS\tSOCKETS")
 				for _, inst := range filtered {
 					managedStr := "false"
 					if inst.Managed {
@@ -563,7 +584,7 @@ func newListCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Writer,
 					if ipStr == "" {
 						ipStr = "-"
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", inst.Name, inst.Type, inst.Status, managedStr, groupsStr, inst.Image, ipStr, formatPublishedPorts(inst.PublishedPorts, true))
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", inst.Name, inst.Type, inst.Status, managedStr, groupsStr, inst.Image, ipStr, formatPublishedPorts(inst.PublishedPorts, true), formatPublishedSockets(inst.PublishedSockets, true))
 				}
 				_ = w.Flush()
 			}
@@ -597,13 +618,15 @@ func newStatusCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 				devices = inst.Devices
 			}
 			publishedPorts := ports.Published(devices)
+			publishedSockets := sockets.Published(devices)
 
 			lastCommandResults = []output.ResultItem{
 				{
-					Container:      inst.Name,
-					Action:         inst.Status,
-					OK:             true,
-					PublishedPorts: publishedPorts,
+					Container:        inst.Name,
+					Action:           inst.Status,
+					OK:               true,
+					PublishedPorts:   publishedPorts,
+					PublishedSockets: publishedSockets,
 				},
 			}
 
@@ -644,6 +667,33 @@ func newStatusCmd(opts *cmdOptions, ctx context.Context, stdout, stderr io.Write
 							nat = " (nat)"
 						}
 						fmt.Fprintf(w, "  - %s: %s %s -> %s%s (%s)\n", label, p.Proto, p.Listen, p.Connect, nat, ownership)
+					}
+				}
+
+				fmt.Fprintln(w, "\nUnix Sockets:")
+				if len(publishedSockets) == 0 {
+					fmt.Fprintln(w, "  (none)")
+				} else {
+					for _, p := range publishedSockets {
+						label := p.Name
+						if label == "" {
+							label = p.Device
+						}
+						ownership := "foreign"
+						if p.Managed {
+							ownership = "managed"
+						}
+						details := []string{"bind=" + p.Bind}
+						if p.UID != nil {
+							details = append(details, fmt.Sprintf("uid=%d", *p.UID))
+						}
+						if p.GID != nil {
+							details = append(details, fmt.Sprintf("gid=%d", *p.GID))
+						}
+						if p.Mode != "" {
+							details = append(details, "mode="+p.Mode)
+						}
+						fmt.Fprintf(w, "  - %s: %s -> %s (%s, %s)\n", label, p.Listen, p.Connect, strings.Join(details, ", "), ownership)
 					}
 				}
 
@@ -2197,6 +2247,59 @@ func resolveProviderType(opts *cmdOptions, svc provider.Driver, configs []*confi
 		return string(svc.ProviderType())
 	}
 	return ""
+}
+
+// formatPublishedSockets renders published Unix-socket proxies for list/table
+// output. When managedOnly is true, foreign proxy devices are omitted.
+func formatPublishedSockets(published []sockets.PublishedSocket, managedOnly bool) string {
+	parts := make([]string, 0, len(published))
+	for _, p := range published {
+		if managedOnly && !p.Managed {
+			continue
+		}
+		entry := p.Listen + "->" + p.Connect
+		if p.Bind != sockets.BindHost {
+			entry += " (" + p.Bind + ")"
+		}
+		parts = append(parts, entry)
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ",")
+}
+
+// checkSocketExtensions gates Unix-domain socket proxies on the daemon API
+// extensions they need (SOCKETS-SPEC §11). `proxy_unix` covers unix<->unix
+// proxy devices; `proxy_unix_dac_properties` covers the listening-socket
+// uid/gid/mode ownership options. Both extensions predate lxm's supported
+// daemon matrix, so the gate is defensive: it fails with a clear message instead
+// of silently degrading on an unusual server. A gate failure is exit 4.
+func checkSocketExtensions(svc provider.Driver, configs []*config.Config) error {
+	if svc == nil {
+		return nil
+	}
+	needsUnix := false
+	needsDAC := false
+	for _, conf := range configs {
+		if conf == nil || conf.Base || conf.Status == "absent" {
+			continue
+		}
+		for i := range conf.Sockets {
+			needsUnix = true
+			sock := &conf.Sockets[i]
+			if sock.UID != nil || sock.GID != nil || sock.Mode != "" {
+				needsDAC = true
+			}
+		}
+	}
+	if needsUnix && !svc.HasExtension("proxy_unix") {
+		return &exitError{code: 4, err: fmt.Errorf("provider server lacks the proxy_unix extension; Unix-domain socket proxies cannot be created")}
+	}
+	if needsDAC && !svc.HasExtension("proxy_unix_dac_properties") {
+		return &exitError{code: 4, err: fmt.Errorf("provider server lacks the proxy_unix_dac_properties extension; uid/gid/mode socket ownership options require a newer provider")}
+	}
+	return nil
 }
 
 // formatPublishedPorts renders published ports for list/table output. When

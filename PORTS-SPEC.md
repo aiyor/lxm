@@ -31,6 +31,13 @@ Ownership is **marker-based, not name-based**. A marker-carrying `proxy` device 
 name is considered lxm-owned and is diffed/repaired/removed; an unmarked `proxy-<name>` is a
 foreign device and is preserved verbatim. Devices with a different `type` are never touched.
 
+`ports:` and `sockets:` compile to the same daemon device type (`proxy`), so they share one
+ownership scheme: every managed proxy carries `user.lxm.managed: "true"`, and the sockets namespace
+additionally carries `user.lxm.kind: "socket"` (absent on port devices, which keeps every
+pre-existing port device in the ports namespace). The two manifest namespaces never claim each
+other's devices. The shared encoding and partitioning rules are specified in
+[`SOCKETS-SPEC.md`](SOCKETS-SPEC.md) §2.
+
 For reconciliation identity lxm uses the canonical **device name** (`proxy-<name>`): a marked
 proxy device under any other name can never satisfy a manifest port and is retired on the next
 apply. A canonical-shaped but undeclared device (`proxy-foo` with no `foo` port) is removed with a
@@ -233,10 +240,11 @@ conservatively per daemon endpoint.
 
 ## 12. Out of scope (v1)
 
-Unix-socket proxying; `bind: instance` reverse publishing; `proxy_protocol`; `security.uid`/`gid`/
-`mode`; port ranges and comma lists; network forwards; `status: absent` on individual ports
-(omission deletes; `remove.ports` covers inheritance); NAT with `vswitch`-declared OVN NICs;
-dynamic-DHCP NAT; NAT wildcard listens; apply-phase handoff ordering.
+Unix-socket proxying and reverse (`bind: instance`) publishing — these live in the separate
+`sockets:` block, specified in [`SOCKETS-SPEC.md`](SOCKETS-SPEC.md); `proxy_protocol` on port
+devices; `security.uid`/`gid`/`mode`; port ranges and comma lists; network forwards; `status:
+absent` on individual ports (omission deletes; `remove.ports` covers inheritance); NAT with
+`vswitch`-declared OVN NICs; dynamic-DHCP NAT; NAT wildcard listens; apply-phase handoff ordering.
 
 ## 13. Error catalogue
 

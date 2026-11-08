@@ -121,6 +121,8 @@ jobs:
           # for plan/apply validation (exit 3 otherwise).
           mkdir -p /tmp/projects
           ./lxm plan docs/examples/dev-station.yaml
+          # Feature example: must stay plan-clean offline (no daemon required).
+          ./lxm plan docs/examples/sockets-demo.yaml
 
       - name: Smoke-check doctor against examples
         run: ./lxm doctor --skip-remote docs/examples/

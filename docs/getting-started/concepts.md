@@ -50,7 +50,7 @@ In broad terms, every `plan`/`apply` pass does the same thing:
 3. Compare the two and work out the minimal set of steps — create what is missing, update what drifted, leave what already matches alone.
 4. `plan` prints those steps; `apply` executes them.
 
-That is the whole model: **declare, preview, apply.** Everything else in lxm — mounts, virtual switches, network segmentation, disks, published ports, provisioning recipes, snapshots — is a way to say more about the end state you want.
+That is the whole model: **declare, preview, apply.** Everything else in lxm — mounts, virtual switches, network segmentation, disks, published ports, Unix-socket proxies, provisioning recipes, snapshots — is a way to say more about the end state you want.
 
 ## Next steps
 

@@ -70,6 +70,13 @@ included), unmarked `proxy-<name>` ownership collision, invalid/non-canonical en
 policy violations, VM without `nat: true`, and NAT on a non-bridged/routed NIC (OVN, macvlan, physical, sriov). See
 [`PORTS-SPEC.md`](PORTS-SPEC.md) §13.
 
+Sockets-specific `CONFIG_ERROR` (exit 3) cases: invalid Unix endpoint (relative/non-clean/abstract/
+overlong/non-`unix:` scheme), duplicate socket name, duplicate host-side socket path across the
+fleet, duplicate instance-side listen path within one instance, invalid `bind`/`uid`/`gid`/`mode`,
+`sockets:` on a virtual machine, NIC/device-name collision, and unmarked `socket-<name>` ownership
+collision. A daemon that lacks the `proxy_unix` (or `proxy_unix_dac_properties`) extension fails
+with exit 4. See [`SOCKETS-SPEC.md`](SOCKETS-SPEC.md) §14.
+
 ---
 
 ## 4. Command Reference
@@ -102,6 +109,12 @@ lxm plan <file|dir> [--name N] [--prune] [--format json|text]
   `proxy-*` devices.
   Non-loopback/wildcard listens, profile-shadowed proxies, and listener handoffs produce warnings.
   Offline plans cannot detect an unmarked device collision (apply always can).
+* **Unix sockets**: diffs appear as `sockets[<name>]` (add/remove) and
+  `sockets[<name>].listen|connect|bind|uid|gid|mode` (change); create/update payloads include the
+  `socket-*` devices. `bind: host` host-local exposure, non-canonical managed-device repair,
+  profile-shadowed socket devices and host-side listener handoffs produce warnings. A missing
+  `proxy_unix`/`proxy_unix_dac_properties` daemon capability is exit 4; offline plans skip that
+  gate.
 
 ### 4.3 `lxm apply`
 Computes the reconciliation plan and applies required mutations against the LXD daemon.
@@ -118,6 +131,9 @@ lxm apply <file|dir> [--name N] [--rename-to NAME] [--prune] [--no-start]
 * **Published ports**: same plan surface as `lxm plan`. Listener handoffs are warned about but not
   ordered; Phase-2 instance steps run concurrently, so use `--jobs 1` when a listener is expected to
   move between instances in one apply, or re-run apply if the claim races.
+* **Unix sockets**: same plan surface as `lxm plan`; socket devices are hotpluggable, so a
+  socket-only change is an online update with no restart. A `bind: host` host-side listener handoff
+  is warned about but not ordered (use `--jobs 1` or re-run apply if the claim races).
 
 ### 4.4 `lxm diff`
 Previews the reconciliation plan for a single target container against a specific manifest file.
@@ -128,6 +144,10 @@ lxm diff <config-file> <container-name>
 * **Arguments**: Exactly 2 arguments: the manifest file path and container name.
 * **Published ports**: port diffs use the same `ports[...]` field names; add/remove values render
   as `tcp 127.0.0.1:8080 -> 127.0.0.1:80 (nat)`.
+* **Unix sockets**: diffs use `sockets[...]` field names; add/remove values render via
+  `SocketConfig.String()` as `unix:/run/a.sock -> unix:/run/b.sock (bind=instance, uid=1000,
+  gid=1000, mode=0660)`, and a field change renders e.g. `sockets[broker].mode: old=0600 ->
+  new=0660`.
 
 ### 4.5 `lxm list`
 Displays managed fleet inventory, live container status, IP addresses, groups, and base images.
@@ -138,6 +158,9 @@ lxm list [--name N] [--format json|text]
 * **Published ports**: text output gains a `PORTS` column (managed publishers only, e.g.
   `127.0.0.1:8080->127.0.0.1:80`; UDP is `udp:`-prefixed, NAT suffixed ` (nat)`; `-` when none).
   JSON `results[].published_ports[]` is an additive `lxm/result/v1` field.
+* **Unix sockets**: text output gains a `SOCKETS` column (managed sockets only, e.g.
+  `unix:/run/a.sock->unix:/run/b.sock`; ` (instance)` is appended for `bind: instance`, entries are
+  comma-separated, `-` when none). JSON `results[].published_sockets[]` is additive.
 
 ### 4.6 `lxm status`
 Displays detailed operational status, device mounts, networks, and recipe execution trails for a container.
@@ -149,6 +172,9 @@ lxm status <container-name>
 * **Published ports**: text gains a `Published Ports:` block listing managed and foreign proxy
   devices (`<name>: <proto> <listen> -> <connect> (managed|foreign)`); JSON
   `results[].published_ports[]` is additive.
+* **Unix sockets**: text gains a `Unix Sockets:` block listing managed and foreign Unix proxy
+  devices (`<name>: <listen> -> <connect> (bind=<host|instance>[, uid=…, gid=…, mode=…],
+  <managed|foreign>)`) or `(none)`; JSON `results[].published_sockets[]` is additive.
 
 ### 4.7 `lxm compile`
 Compiles and migrates legacy v1 manifests to the `lxm/config/v2` schema format.

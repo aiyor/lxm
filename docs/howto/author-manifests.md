@@ -88,7 +88,7 @@ When a container manifest and its base both set the same scalar field, the **lea
 
 Omitted fields inherit; explicitly set fields (including explicit zeros) override. This is the single most important rule to remember when a container is not inheriting what you expect.
 
-Lists behave differently: `mounts`, `networks`, and `recipes` **concatenate** by default (base first, then leaf), while `disks` and `ports` merge by **name** (a same-named leaf entry replaces the base entry wholesale). Use `remove` or `replace` (next step) to change either behaviour.
+Lists behave differently: `mounts`, `networks`, and `recipes` **concatenate** by default (base first, then leaf), while `disks`, `ports` and `sockets` merge by **name** (a same-named leaf entry replaces the base entry wholesale). Use `remove` or `replace` (next step) to change either behaviour.
 
 ## 4. Shape inherited lists with `remove` and `replace`
 
@@ -118,7 +118,7 @@ replace:
 * `remove.mounts` matches by normalized container path.
 * `remove.networks` matches by interface name.
 * `remove.recipes` matches by exact script path.
-* `remove.disks` and `remove.ports` match by name.
+* `remove.disks`, `remove.ports` and `remove.sockets` match by name.
 * A `remove` entry that matches nothing fails compilation with `exit 3` — it is a signal you are pruning something that is not there.
 
 A complete, compile-valid example of this pattern (plus a presence-wins `wait` override) is `inheritance-demo.yaml`, which inherits `_inheritance-base.yaml`:
@@ -276,13 +276,48 @@ ports:
 
 Ports are reconciled like every other managed device: changing an entry updates the device in place, removing it deletes the device on the next apply, and an unmarked pre-existing `proxy-<name>` device is never adopted. Listener uniqueness is enforced fleet-wide. See [Publishing Ports](publish-ports.md) for NAT rules, conflicts, and troubleshooting.
 
-## 8. Validate your manifests
+## 8. Proxy Unix-domain sockets
+
+Containers can bridge a Unix-domain socket to the host with `sockets:`; each entry compiles to a
+native `proxy` device named `socket-<name>`. `bind: instance` creates the listening socket **inside**
+the container and forwards to a host-owned socket; `bind: host` is the reverse:
+
+```yaml
+sockets:
+  - name: broker                                  # device socket-broker
+    listen: unix:/var/tmp/sshigit-broker.sock     # instance side (created by the daemon)
+    connect: unix:/run/sshigit-broker/lab1.sock   # host side (service must be listening)
+    bind: instance
+    uid: 1000                                     # listening-socket owner
+    gid: 1000
+    mode: "0600"
+  - name: agent
+    listen: unix:/tmp/lxm/agent.sock              # host side (created by the daemon)
+    connect: unix:/run/agent/agent.sock           # instance side (service must be listening)
+    bind: host
+```
+
+* `listen`/`connect` are `unix:<absolute path>` endpoints; the daemon creates the listening socket
+  but **not** its parent directory — create the container-side parent in the image/cloud-init and
+  the host-side parent before apply.
+* `uid`/`gid`/`mode` set the owner and permission bits of the listening socket (the daemon default
+  is `root:root` `0644`); they are not `security.uid`/`security.gid`.
+* The host-side path (the `connect` socket for `bind: instance`, the `listen` socket for
+  `bind: host`) must be unique across the fleet; instance-side listen paths are per-instance.
+* `sockets:` is container-only, and Unix-socket traffic bypasses `network_policy` — the socket's
+  file permissions are the access control.
+* Inheritance works like `ports`: `remove.sockets` drops by name and `replace.sockets` replaces the
+  inherited list; same-named entries replace wholesale.
+
+See [Proxying Unix Sockets](proxy-unix-sockets.md) for the full walkthrough and the security note.
+
+## 9. Validate your manifests
 
 Before applying anything, confirm every file compiles and preview what it would do:
 
 ```text
 $ lxm compile docs/examples/
-Successfully compiled 9 manifest(s):
+Successfully compiled 10 manifest(s):
   - docs/examples/.lxm/compiled/absent-demo.yaml
   - docs/examples/.lxm/compiled/cloud-init-demo.yaml
   - docs/examples/.lxm/compiled/dev-station.yaml
@@ -292,6 +327,7 @@ Successfully compiled 9 manifest(s):
   - docs/examples/.lxm/compiled/ovn-network-demo.yaml
   - docs/examples/.lxm/compiled/ports-demo.yaml
   - docs/examples/.lxm/compiled/recipes-demo.yaml
+  - docs/examples/.lxm/compiled/sockets-demo.yaml
 ```
 
 `lxm compile` validates every manifest (resolving includes and directives) and writes the compiled copies to `.lxm/compiled/` without touching your source. Any schema error or unbound template variable fails the whole directory with `exit 3`.
@@ -300,7 +336,12 @@ Then preview the reconciliation plan:
 
 ```text
 $ lxm plan docs/examples/
-Plan: 7 to create, 0 to update, 0 to recreate, 0 to delete, 1 noop across 8 manifest(s)
+Plan: 9 to create, 0 to update, 0 to recreate, 0 to delete, 1 noop across 10 manifest(s)
+Network: 4 step(s)
+  create_acl lxm-ovnbr0
+  create_acl lxm-vmbr0
+  create_vswitch vmbr0
+  create_vswitch ovnbr0
 ```
 
 `plan` reads every manifest in the directory, compares it against live LXD state, and prints the summary — without changing anything.

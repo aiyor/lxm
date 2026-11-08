@@ -198,7 +198,10 @@ normalized rules within one manifest ⇒ exit 3, identical rules across fleet ma
 replaces the base object, so keep `allow`/`ingress_allow` together in the same layer.
 
 ### 3.8 List Directives (`remove` and `replace`)
-List fields (`mounts`, `networks`, `recipes`, `disks`, `ports`) concatenate by default; `ports` and `disks` use name-identity merging (a same-named overlay entry replaces the base entry wholesale), while the other lists concatenate. Inheritance behavior can be modified using directives:
+List fields (`mounts`, `networks`, `recipes`, `disks`, `ports`, `sockets`) concatenate by default;
+`ports`, `sockets` and `disks` use name-identity merging (a same-named overlay entry replaces the
+base entry wholesale), while the other lists concatenate. Inheritance behavior can be modified
+using directives:
 
 ```yaml
 remove:
@@ -206,6 +209,7 @@ remove:
   recipes: ["recipes/db/install.sh"]
   disks: ["data"]
   ports: ["dns"]
+  sockets: ["agent"]
 replace:
   networks:
     - name: eth0
@@ -217,11 +221,25 @@ replace:
       path: /var/lib/postgresql
   ports:
     - {name: web, listen: 127.0.0.1:8080, connect: 127.0.0.1:80}
+  sockets:
+    - {name: broker, listen: "unix:/run/broker.sock", connect: "unix:/run/host-broker.sock", bind: instance}
 ```
 
-* **`remove` Matching**: `remove.mounts` matches by normalized destination path (`filepath.Clean`), `remove.networks` matches by network interface `name`, `remove.recipes` matches by exact resolved script path or recipe metadata `name`, `remove.disks` matches by disk `name`, and `remove.ports` matches by port `name`. Non-matching `remove` directives fail compilation with **exit code 3**.
+* **`remove` Matching**: `remove.mounts` matches by normalized destination path (`filepath.Clean`),
+  `remove.networks` matches by network interface `name`, `remove.recipes` matches by exact resolved
+  script path or recipe metadata `name`, `remove.disks` matches by disk `name`, `remove.ports`
+  matches by port `name`, and `remove.sockets` matches by socket `name`. Non-matching `remove`
+  directives fail compilation with **exit code 3**.
 * **`replace` Directive**: Completely replaces inherited list items with the newly declared items.
-* **`ports` merge**: same-named entries replace wholesale (omitted fields reset to defaults; `nat` does not leak from the base); duplicate names within one source layer are rejected before merging. An empty `replace.ports: []` is a no-op (the list-directive convention); use `remove.ports` to clear an inherited list. A non-empty `replace.ports` wins over the same manifest's local `ports:` list, matching the other list fields.
+* **`ports` merge**: same-named entries replace wholesale (omitted fields reset to defaults; `nat`
+  does not leak from the base); duplicate names within one source layer are rejected before
+  merging. An empty `replace.ports: []` is a no-op (the list-directive convention); use
+  `remove.ports` to clear an inherited list. A non-empty `replace.ports` wins over the same
+  manifest's local `ports:` list, matching the other list fields.
+* **`sockets` merge**: the same name-identity, whole-entry rules as `ports` — an omitted `bind`
+  resets to `host`, an omitted `uid`/`gid`/`mode` resets to the daemon default, `remove.sockets`
+  drops by name, an empty `replace.sockets: []` is a no-op, and duplicate names within one source
+  layer are rejected before merging.
 
 ### 3.9 Data Disks (`disks` / VM-only)
 
@@ -376,6 +394,58 @@ Unmarked pre-existing `proxy-<name>` devices are never adopted: a declared colli
 error (exit 3). Foreign proxy devices without the marker are preserved untouched; profile-provided
 proxies are unmanaged and produce a plan warning when shadowed. See PORTS-SPEC.md §5–§11 for the
 full validation, NAT, conflict, output and version-compatibility contracts.
+
+### 3.12 Unix-Domain Socket Proxies (`sockets:` / container-only)
+
+> Canonical feature specification: [`SOCKETS-SPEC.md`](SOCKETS-SPEC.md). This section is the manifest
+> schema reference and must stay in sync with `internal/config/schemas/v2.cue`.
+
+Each `sockets:` entry compiles to one native LXD/Incus `proxy` device named `socket-<name>` carrying
+`user.lxm.managed: "true"` plus the namespace marker `user.lxm.kind: "socket"`. Omission from the
+manifest deletes the device on the next apply. The block is **container-only**: both daemons support
+proxy devices on VMs only with `nat: true`, and NAT cannot proxy Unix endpoints (exit 3).
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `name` | string | — (required) | `^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$` (valid device name on both daemons), unique per instance/layer. Device key `socket-<name>`. |
+| `listen` | string | — (required) | `unix:<absolute clean path>`; the instance side when `bind: instance` (created by the daemon), the host side when `bind: host`. |
+| `connect` | string | — (required) | `unix:<absolute clean path>`; the host side when `bind: instance` (the service must already be listening), the instance side when `bind: host`. |
+| `bind` | string | `"host"` | `host` \| `instance`; materialized by the loader and always emitted to the device. `host` listens on the host and forwards into the instance; `instance` listens inside the instance and forwards to the host. |
+| `uid` | int | daemon `0` | Optional listening-socket owner uid, `0`–`2147483647`; emitted only when declared. This is the socket-owner option, **not** `security.uid` (which is out of scope). |
+| `gid` | int | daemon `0` | Optional listening-socket group gid, `0`–`2147483647`; emitted only when declared. |
+| `mode` | string | daemon `"0644"` | Optional quoted octal permission bits (`"0660"`; unquoted YAML integers are canonicalized). Accepted range `"0000"`–`"0777"`, canonical form `0[0-7]{3}`; only permission bits are accepted (setuid/sticky are dropped by the daemons). |
+
+Inheritance: merged by `name` with **whole-entry replacement** (`replace.sockets` replaces the list,
+`remove.sockets: [name]` drops entries; unmatched removes are errors; an empty `replace.sockets: []`
+is a no-op like every list directive — use `remove.sockets` to clear). Duplicate names within one
+source layer are rejected before merging; an override resets omitted `bind`/`uid`/`gid`/`mode` to
+their defaults. Endpoints are validated as absolute, clean `unix:` paths within the Linux `sun_path`
+limit (107 bytes); abstract `@` sockets, relative paths and `tcp:`/`udp:` endpoints are rejected.
+Cross-field rules: a NIC named `socket-<name>` collides with the socket device; the **host-side**
+path (`connect` for `bind: instance`, `listen` for `bind: host`) is a host-global resource and must
+be unique across the whole loaded fleet (exit 3 citing both files); the instance-side `listen` path
+must be unique within the instance (the same path on different instances is fine). The block is
+closed: `nat`, `proto`, `proxy_protocol`, `security.*`, and per-socket `status` are rejected.
+
+```yaml
+sockets:
+  - name: broker
+    listen: unix:/run/sshigit/broker.sock
+    connect: unix:/run/sshigit-broker/lab1.sock
+    bind: instance
+    uid: 1000
+    gid: 1000
+    mode: "0660"
+```
+
+`ports:` and `sockets:` share one ownership scheme because both compile to `proxy` devices: managed
+port devices carry no `user.lxm.kind` (which preserves pre-existing devices in the ports namespace),
+while managed socket devices carry `user.lxm.kind: "socket"`. Each namespace is diffed by its own
+marker, so neither claims the other's devices; unmarked pre-existing `socket-<name>` devices are
+never adopted (a declared collision is a plan-time error, exit 3). The feature needs the daemon
+`proxy_unix` extension (and `proxy_unix_dac_properties` when `uid`/`gid`/`mode` are used); a missing
+extension is exit 4. See SOCKETS-SPEC.md §2–§12 for the shared encoding, daemon-verified socket
+semantics, output and version-compatibility contracts.
 
 ---
 

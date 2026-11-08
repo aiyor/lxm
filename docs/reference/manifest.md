@@ -233,7 +233,7 @@ name: dev-station
 
 ### `remove`
 
-Removes specific items from an inherited list. Matching rules: `remove.mounts` matches by normalized container path, `remove.networks` by interface name, `remove.recipes` by exact script path, `remove.disks` by disk name, `remove.ports` by port name. A `remove` entry that matches nothing fails compilation.
+Removes specific items from an inherited list. Matching rules: `remove.mounts` matches by normalized container path, `remove.networks` by interface name, `remove.recipes` by exact script path, `remove.disks` by disk name, `remove.ports` by port name, `remove.sockets` by socket name. A `remove` entry that matches nothing fails compilation.
 
 ```yaml
 remove:
@@ -243,6 +243,8 @@ remove:
     - recipes/common.sh
   ports:
     - dns
+  sockets:
+    - agent
 ```
 
 ### `replace`
@@ -257,6 +259,8 @@ replace:
       parent: lxdbr0
   ports:
     - {name: web, listen: 127.0.0.1:8080, connect: 127.0.0.1:80}
+  sockets:
+    - {name: broker, listen: "unix:/run/broker.sock", connect: "unix:/run/host-broker.sock", bind: instance}
 ```
 
 Complete example for `include` + `remove` + `replace` + presence-wins `wait`: [`inheritance-demo.yaml`](../examples/inheritance-demo.yaml) inherits [`_inheritance-base.yaml`](../examples/_inheritance-base.yaml).
@@ -542,6 +546,67 @@ declared port whose device name collides with an unmarked device is a plan-time 
 See [`PORTS-SPEC.md`](https://github.com/aiyor/lxm/blob/main/PORTS-SPEC.md) for the authoritative
 feature specification and the LXD/Incus version matrix.
 
+## Unix-socket proxies (`sockets`)
+
+Each entry bridges a Unix-domain socket between the host and the instance by compiling to one native
+LXD/Incus `proxy` device named `socket-<name>`. The block is **container-only** (VM proxy devices
+require `nat: true`, and NAT cannot proxy Unix endpoints):
+
+```yaml
+sockets:
+  - name: broker                                    # device socket-broker
+    listen: unix:/var/tmp/sshigit-broker.sock       # instance side (bind: instance creates it)
+    connect: unix:/run/sshigit-broker/lab1.sock     # host side (service must be listening)
+    bind: instance
+    uid: 1000                                       # listening-socket owner
+    gid: 1000
+    mode: "0660"                                    # daemon default is 0644
+  - name: agent
+    listen: unix:/tmp/lxm/agent.sock                # host side (bind: host creates it)
+    connect: unix:/run/agent/agent.sock             # instance side (service must be listening)
+    bind: host
+```
+
+| Field | Type | Default | Rules |
+| :-- | :-- | :-- | :-- |
+| `name` | string | — (required) | `^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$` — starts **and ends** alphanumeric (Incus device-name rule), unique per instance and layer. Device key `socket-<name>`. |
+| `listen` | string | — (required) | `unix:<absolute clean path>` within the Linux `sun_path` limit (107 bytes). The instance side when `bind: instance`, the host side when `bind: host`. Abstract `@` sockets, relative/non-clean paths and `tcp:`/`udp:` endpoints are rejected. |
+| `connect` | string | — (required) | `unix:<absolute clean path>`. The host side when `bind: instance`, the instance side when `bind: host`. |
+| `bind` | string | `"host"` | `host` or `instance`. `host` listens on the host and forwards into the instance; `instance` listens inside the instance and forwards to the host. |
+| `uid` | int | daemon `0` | Optional owner of the **listening** socket (not `security.uid`, which is a forkproxy privilege-drop option and not supported). |
+| `gid` | int | daemon `0` | Optional group of the listening socket. |
+| `mode` | string | daemon `"0644"` | Optional quoted octal permission bits, `"0000"`–`"0777"` (unquoted YAML integers are accepted and canonicalized). Only permission bits are meaningful — the daemons drop setuid/sticky. |
+
+Removal from the manifest retires the device on the next apply. `remove.sockets: [name]` drops
+inherited entries and `replace.sockets` replaces the inherited list; same-named entries replace
+wholesale (omitted fields reset to defaults — in particular an omitted `bind` resets to `host` and
+omitted `uid`/`gid`/`mode` reset to the daemon defaults). An empty `replace.sockets: []` is a no-op
+(list-directive convention); use `remove.sockets` to clear inherited entries. A non-empty
+`replace.sockets` takes precedence over the same manifest's local `sockets:` list (matching the
+other list fields).
+
+The **host-side** path (`connect` for `bind: instance`, `listen` for `bind: host`) is a host-global
+resource and must be unique across the whole loaded fleet; the instance-side `listen` path with
+`bind: instance` must be unique within the instance (identical paths on different instances are
+fine — that is the per-instance isolation model). The daemon creates the listening socket but not
+its parent directory: create the container-side parent in the image/cloud-init/recipe and the
+host-side parent before apply. A NIC named `socket-<name>` collides with the device. The daemon
+default mode is `0644`, so declare `uid`/`gid`/`mode` deliberately; note that root inside the
+container (or root on the host for `bind: host`) bypasses file permissions, and proxy traffic never
+traverses `network_policy` ACLs.
+
+`ports:` and `sockets:` share one ownership scheme: managed proxy devices carry
+`user.lxm.managed: "true"`, and socket devices additionally carry `user.lxm.kind: "socket"` (absent
+on port devices, keeping pre-existing ports in their namespace). Foreign `socket-*` devices without
+the marker are preserved and never adopted; a declared socket whose device name collides with an
+unmarked device is a plan-time error. The daemon must expose the `proxy_unix` extension (and
+`proxy_unix_dac_properties` when `uid`/`gid`/`mode` is used); otherwise plan/apply fail with
+`exit 4`. Missing parent directories surface as a daemon error at apply (`exit 4`).
+
+See [`SOCKETS-SPEC.md`](https://github.com/aiyor/lxm/blob/main/SOCKETS-SPEC.md) for the authoritative
+feature specification, daemon-verified socket semantics, security posture and version matrix, and
+[Proxying Unix Sockets](../howto/proxy-unix-sockets.md) for the walkthrough.
+
 ## Recipes
 
 Recipes are provisioning scripts that run inside the container during `apply`. The supported v2 form is a list of groups, each with an optional `run_as` user (default `root`) and a non-empty `scripts` list:
@@ -724,6 +789,12 @@ ssh_keys:
 | `disks:` on a `type: container` | `exit 3` |
 | Managed disk (`disks`) without `size`, or external disk (`source`) with `size` | `exit 3` |
 | Disk `bus` set in filesystem mode (`path`) | `exit 3` |
+| Invalid Unix-socket endpoint (relative, non-clean, abstract `@`, >107 bytes, non-`unix:` scheme) | `exit 3` |
+| Duplicate socket name, duplicate host-side socket path, or duplicate instance-side listen path | `exit 3` |
+| Socket `uid`/`gid` out of range, or `mode` outside `0000`–`0777` | `exit 3` |
+| `sockets:` on a `type: virtual-machine` | `exit 3` |
+| NIC name collides with `socket-<name>`, or unmarked `socket-<name>` device already exists | `exit 3` |
+| Daemon lacks the `proxy_unix` / `proxy_unix_dac_properties` extension | `exit 4` |
 | `remove` matching nothing | `exit 3` |
 | `cloud-init` and `cloud-init-file` both set | `exit 3` |
 | Unbound `{{ .Vars.* }}` / `{{ .Env.* }}` | `exit 3` |

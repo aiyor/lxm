@@ -96,6 +96,30 @@ Manifests that declare `ports:` extend `ResultItem` without changing existing co
   existing top-level `warnings` array; port config errors use the existing exit-3
   `CONFIG_ERROR` path with the messages catalogued in [`PORTS-SPEC.md`](PORTS-SPEC.md) §13.
 
+### Socket-Scoped Additive Fields
+
+Manifests that declare `sockets:` extend `ResultItem` without changing existing consumers:
+
+* **`results[].published_sockets`** (`array`, `omitempty`): present on `lxm list` and `lxm status`
+  results for every Unix-domain `proxy` device in the instance's effective device set (local +
+  profile-provided): `{device, name?, listen, connect, bind, uid?, gid?, mode?, managed}` (sorted
+  by `device`). `listen`/`connect` are canonical `unix:` paths; `uid`/`gid` are numbers and `mode`
+  is the canonical quoted octal string when declared; `name` is derived from a `socket-<name>`
+  device name and omitted otherwise; `managed` reflects the `user.lxm.managed` marker (foreign Unix
+  proxy devices are included with `managed: false`). TCP/UDP `proxy` devices remain in
+  `published_ports` only; malformed or non-Unix `proxy` devices appear in neither array.
+* No envelope version bump; the field is omitted entirely when there are no Unix proxy devices, so
+  existing consumers see byte-identical envelopes for socket-free fleets.
+* `plan.steps[].diff` uses `sockets[<name>]` (add/remove) and
+  `sockets[<name>].listen|connect|bind|uid|gid|mode` (change) field names; create/update payloads
+  (`instances_post`/`instance_put`) carry the `socket-*` device maps. An anomalous marker-carrying
+  device under a non-`socket-<name>` name is retired with a `devices[<device>]` diff.
+* Socket plan warnings (`bind: host` host-local exposure, non-canonical managed-device repair,
+  profile shadow, host-side listener handoff) use the existing top-level `warnings` array; socket
+  config errors use the existing exit-3 `CONFIG_ERROR` path with the messages catalogued in
+  [`SOCKETS-SPEC.md`](SOCKETS-SPEC.md) §14, and a missing `proxy_unix` daemon capability is exit
+  `4` (`PROVIDER_ERROR`).
+
 ---
 
 ## 3. Exit Code to Error Code Mapping Catalog

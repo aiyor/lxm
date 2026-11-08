@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/aiyor/lxm/internal/sockets"
 )
 
 // cloneYAMLNode shallow-copies a yaml.Node, dropping anchor/alias metadata so
@@ -76,6 +79,7 @@ var knownTopLevelKeys = map[string]bool{
 	"vm":                 true,
 	"disks":              true,
 	"ports":              true,
+	"sockets":            true,
 	"vswitches":          true,
 	"network_policy":     true,
 	"wait":               true,
@@ -587,26 +591,145 @@ func encodeYAMLNode(root *yaml.Node) ([]byte, error) {
 
 // normalizeCompiledManifest runs the Go-side validation/normalization that
 // LoadConfig applies at plan/apply time. It mutates the YAML document for
-// normalized ingress rules so `lxm compile` emits the resolved surface.
+// normalized sockets and ingress rules so `lxm compile` emits the resolved
+// surface (and never emits a manifest that plan/apply would reject).
 func normalizeCompiledManifest(cfg *Config, root *yaml.Node) (bool, error) {
 	for i := range cfg.VSwitches {
 		if err := cfg.VSwitches[i].ValidateHostAccess(); err != nil {
 			return false, err
 		}
 	}
-	if cfg.NetworkPolicy == nil || len(cfg.NetworkPolicy.IngressAllow) == 0 {
-		return false, nil
-	}
 
-	rules, err := NormalizeIngressAllow(cfg.NetworkPolicy.IngressAllow)
+	changed, err := normalizeCompiledSockets(cfg, root)
 	if err != nil {
 		return false, err
 	}
-	cfg.NetworkPolicy.IngressAllow = rules
-	if err := applyIngressNormalization(root, rules); err != nil {
-		return false, err
+
+	if cfg.NetworkPolicy != nil && len(cfg.NetworkPolicy.IngressAllow) > 0 {
+		rules, err := NormalizeIngressAllow(cfg.NetworkPolicy.IngressAllow)
+		if err != nil {
+			return false, err
+		}
+		cfg.NetworkPolicy.IngressAllow = rules
+		if err := applyIngressNormalization(root, rules); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+
+	return changed, nil
+}
+
+// normalizeCompiledSockets validates and canonicalizes migrated `sockets:`
+// entries exactly like LoadConfig does (endpoint grammar, bind, mode, uid/gid)
+// and rewrites the YAML nodes with the canonical values: `unix:` endpoints, an
+// explicit host|instance bind, a quoted octal mode and decimal uid/gid. This
+// keeps `lxm compile` from emitting a manifest that plan/apply would reject
+// (for example `mode: "0o660"`, `uid: 3000000000`, `unix://run/x.sock`, or an
+// unquoted integer mode). Both the top-level list and `replace.sockets` are
+// normalized: a non-empty replace list wins at plan/apply time, but the ignored
+// local list is still an authoring surface that must not be silently invalid.
+func normalizeCompiledSockets(cfg *Config, root *yaml.Node) (bool, error) {
+	if len(cfg.Sockets) == 0 && (cfg.Replace == nil || len(cfg.Replace.Sockets) == 0) {
+		return false, nil
+	}
+	if root == nil || len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		return false, fmt.Errorf("internal: migrated manifest root is not a mapping")
+	}
+
+	if len(cfg.Sockets) > 0 {
+		if err := normalizeCompiledSocketList(root.Content[0], "sockets", cfg.Sockets); err != nil {
+			return false, err
+		}
+	}
+	if cfg.Replace != nil && len(cfg.Replace.Sockets) > 0 {
+		replaceNode := mappingValue(root.Content[0], "replace")
+		if replaceNode == nil || replaceNode.Kind != yaml.MappingNode {
+			return false, fmt.Errorf("internal: replace node missing during socket normalization")
+		}
+		if err := normalizeCompiledSocketList(replaceNode, "sockets", cfg.Replace.Sockets); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
+}
+
+// normalizeCompiledSocketList validates and canonicalizes one socket list
+// (top-level `sockets:` or `replace.sockets`) in place.
+func normalizeCompiledSocketList(parent *yaml.Node, key string, socks []SocketConfig) error {
+	seq := mappingValue(parent, key)
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return fmt.Errorf("internal: %s node missing during socket normalization", key)
+	}
+	if len(seq.Content) != len(socks) {
+		return fmt.Errorf("internal: %s node count %d != decoded socket count %d", key, len(seq.Content), len(socks))
+	}
+	for i := range socks {
+		node := derefAliasNode(seq.Content[i])
+		if node == nil || node.Kind != yaml.MappingNode {
+			return fmt.Errorf("socket %q: entry is not a mapping", socks[i].Name)
+		}
+		if err := normalizeCompiledSocketEntry(&socks[i], node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// normalizeCompiledSocketEntry validates one socket and rewrites its mapping
+// node with canonical values. Alias entries are dereferenced by the caller, so
+// the anchor target is canonicalized once for every alias that shares it.
+func normalizeCompiledSocketEntry(sock *SocketConfig, node *yaml.Node) error {
+	bind, ok := sockets.ParseBind(sock.Bind)
+	if !ok {
+		return fmt.Errorf("socket %q: invalid bind %q (must be host or instance)", sock.Name, sock.Bind)
+	}
+	listen, err := sockets.ParseEndpoint(sock.Listen)
+	if err != nil {
+		return fmt.Errorf("socket %q: invalid listen %q: %w", sock.Name, sock.Listen, err)
+	}
+	connect, err := sockets.ParseEndpoint(sock.Connect)
+	if err != nil {
+		return fmt.Errorf("socket %q: invalid connect %q: %w", sock.Name, sock.Connect, err)
+	}
+	mode := ""
+	if sock.Mode != "" {
+		mode, err = sockets.ParseMode(string(sock.Mode))
+		if err != nil {
+			return fmt.Errorf("socket %q: %w", sock.Name, err)
+		}
+	}
+	if sock.UID != nil {
+		if err := sockets.ValidateID("uid", *sock.UID); err != nil {
+			return fmt.Errorf("socket %q: %w", sock.Name, err)
+		}
+	}
+	if sock.GID != nil {
+		if err := sockets.ValidateID("gid", *sock.GID); err != nil {
+			return fmt.Errorf("socket %q: %w", sock.Name, err)
+		}
+	}
+
+	setMappingString(node, "bind", bind)
+	setMappingString(node, "listen", listen.DeviceString())
+	setMappingString(node, "connect", connect.DeviceString())
+	if mode == "" {
+		removeMappingKey(node, "mode")
+	} else {
+		setMappingString(node, "mode", mode)
+	}
+	if sock.UID != nil {
+		setMappingInt(node, "uid", *sock.UID)
+	}
+	if sock.GID != nil {
+		setMappingInt(node, "gid", *sock.GID)
+	}
+	return nil
+}
+
+// setMappingInt writes a canonical decimal integer scalar.
+func setMappingInt(node *yaml.Node, key string, value int) {
+	setMappingNode(node, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(value)})
 }
 
 // applyIngressNormalization rewrites network_policy.ingress_allow nodes with
@@ -664,9 +787,22 @@ func setMappingString(node *yaml.Node, key, value string) {
 	setMappingNode(node, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
 }
 
+// derefAliasNode follows YAML alias nodes to their anchor target so
+// normalization/validation can inspect the real mapping. It returns nil for a
+// dangling alias.
+func derefAliasNode(node *yaml.Node) *yaml.Node {
+	for node != nil && node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	return node
+}
+
 func setMappingNode(node *yaml.Node, key string, value *yaml.Node) {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i].Value == key {
+			// Preserve the author's inline comment on rewritten values so
+			// `lxm compile` does not silently strip annotations.
+			value.LineComment = node.Content[i+1].LineComment
 			node.Content[i+1] = value
 			return
 		}

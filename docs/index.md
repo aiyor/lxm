@@ -1,6 +1,6 @@
 # lxm — Declarative LXD & Incus Fleet Manager
 
-`lxm` is a command-line tool for **declarative, reproducible management of LXD and Incus container and VM fleets**. You describe the containers and virtual machines you want in YAML manifests — their image, users, mounts, networks, published ports, and provisioning scripts — and `lxm` reconciles your live LXD or Incus host (locally over a UNIX socket, or remotely over HTTPS mTLS, across clusters and projects) to match.
+`lxm` is a command-line tool for **declarative, reproducible management of LXD and Incus container and VM fleets**. You describe the containers and virtual machines you want in YAML manifests — their image, users, mounts, networks, published ports, Unix-socket proxies, and provisioning scripts — and `lxm` reconciles your live LXD or Incus host (locally over a UNIX socket, or remotely over HTTPS mTLS, across clusters and projects) to match.
 
 Every mutation is **previewed first** as a pure, deterministic diff (`lxm plan`), then applied only when you say so (`lxm apply`). Reconcile as often as you like — `apply` only performs the steps your fleet actually needs to match what you declared.
 
@@ -15,6 +15,7 @@ Every mutation is **previewed first** as a pure, deterministic diff (`lxm plan`)
 * **Safe by default.** Snapshot-before-mutation, host-key-verified SSH, opt-in sudo and key injection, and scoped orphan pruning.
 * **Default-deny networks you can still reach.** Group ACLs reject by default; `host_access` keeps the host connected and `ingress_allow` grants specific external clients the exact ports they need.
 * **Port publishing under control.** Declare `ports:` host → instance mappings; lxm manages the native `proxy` devices idempotently, validates listeners fleet-wide, and supports VM DNAT.
+* **Host IPC under control.** Declare `sockets:` Unix-domain socket bridges between the host and containers — including the reverse direction (`bind: instance`) with socket `uid`/`gid`/`mode` ownership — reconciled as native `proxy` devices instead of hand-added drift.
 * **Automation-ready.** Every command emits structured JSON and categorized exit codes, and honors `LXM_*` environment variables.
 
 ## Where do you want to start?

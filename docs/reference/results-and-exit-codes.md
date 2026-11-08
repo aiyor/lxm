@@ -33,7 +33,7 @@ Pass `--format json` to any command (except the interactive `shell` and `ssh` ca
 | `ok` | bool | `true` if and only if `exit_code` is `0`. |
 | `target` | string | The first positional argument passed to the command, when any. |
 | `plan` | object | `summary` (per-action counts) and `steps` for `plan`/`apply`; otherwise an empty `summary`. |
-| `results` | array | Per-container operation results (`container`, `action`, `changed`, `ok`, `duration_ms`); `list`/`status` add the additive `published_ports` array |
+| `results` | array | Per-container operation results (`container`, `action`, `changed`, `ok`, `duration_ms`); `list`/`status` add the additive `published_ports` and `published_sockets` arrays |
 | `warnings` | array | Warning message strings emitted during execution. |
 | `errors` | array | Error objects (`code`, `container`, `message`, `retryable`) when `exit_code != 0`. |
 | `exit_code` | int | The categorized process exit code (0–7). |
@@ -234,6 +234,74 @@ lxm plan config/ --format json | jq '.plan.network_steps[] | [.kind, .name]'
 # Verify every network step applied cleanly:
 lxm apply config/ --format json | jq -e '.network_results[] | select(.ok != true)' > /dev/null \
   && echo "network failure" || echo "networks clean"
+```
+
+## Unix-socket proxy fields
+
+Fleets that declare [`sockets:`](manifest.md#unix-socket-proxies-sockets) add a second proxy
+surface without changing existing consumers:
+
+* **`results[].published_sockets`** (`array`, `omitempty`): present on `lxm list` and `lxm status`
+  results for every Unix-domain `proxy` device in the instance's effective device set (local +
+  profile-provided), sorted by device name:
+  `{device, name?, listen, connect, bind, uid?, gid?, mode?, managed}`.
+  `listen`/`connect` carry the canonical `unix:` form; `uid`/`gid` are numbers; `mode` is the
+  canonical quoted octal string when declared; `name` is derived from a `socket-<name>` device name
+  and omitted otherwise; `managed` reflects the `user.lxm.managed` marker (foreign Unix proxy
+  devices are included with `managed: false`). `uid`/`gid`/`mode` are omitted when the manifest does
+  not declare them — apply the daemon defaults (`uid`/`gid` `0`, `mode` `0644`) if you need the
+  effective DAC posture. TCP/UDP `proxy` devices stay in `published_ports`; malformed or non-Unix
+  `proxy` devices appear in neither array.
+* No envelope version bump; the field is omitted entirely when there are no Unix proxy devices, so
+  existing consumers see byte-identical envelopes for socket-free fleets.
+* `plan.steps[].diff` uses `sockets[<name>]` (add/remove) and
+  `sockets[<name>].listen|connect|bind|uid|gid|mode` (change) field names; create/update payloads
+  (`instances_post`/`instance_put`) carry the `socket-*` device maps. An anomalous marker-carrying
+  device under a non-`socket-<name>` name is retired with a `devices[<device>]` diff.
+* Socket plan warnings (`bind: host` host-local exposure, non-canonical device repair,
+  profile shadowing, host-side listener handoff) use the existing top-level `warnings` array; socket
+  config errors use the existing exit-3 `CONFIG_ERROR` path (messages catalogued in
+  [`SOCKETS-SPEC.md`](https://github.com/aiyor/lxm/blob/main/SOCKETS-SPEC.md) §14), and a missing
+  `proxy_unix` daemon capability is exit `4` (`PROVIDER_ERROR`).
+
+Verified excerpt from `lxm list --format json` on a fleet with one socket pair:
+
+```json
+{
+  "container": "sockets-demo",
+  "published_sockets": [
+    {
+      "device": "socket-agent",
+      "name": "agent",
+      "listen": "unix:/tmp/lxm-docs-demo/agent.sock",
+      "connect": "unix:/run/sshigit/agent.sock",
+      "bind": "host",
+      "uid": 1000,
+      "gid": 1000,
+      "mode": "0600",
+      "managed": true
+    },
+    {
+      "device": "socket-broker",
+      "name": "broker",
+      "listen": "unix:/var/tmp/sshigit-broker.sock",
+      "connect": "unix:/run/sshigit-broker/sockets-demo.sock",
+      "bind": "instance",
+      "uid": 1000,
+      "gid": 1000,
+      "mode": "0600",
+      "managed": true
+    }
+  ]
+}
+```
+
+A socket field change appears as an ordinary field diff, and `lxm diff` renders it the same way:
+
+```text
+$ lxm diff --provider lxd sockets-demo-changed.yaml sockets-demo
+Diff for container sockets-demo (action: update, changed: true):
+  - sockets[broker].mode: old=0600 -> new=0660
 ```
 
 ## Related

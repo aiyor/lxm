@@ -297,6 +297,8 @@ func appendManifestWarnings(p *Plan, manifest *config.Config, live *InstanceSnap
 			p.Warnings = append(p.Warnings, fmt.Sprintf("port %q of instance %q shadows a profile-provided device %q; profile devices are not managed by lxm", port.Name, manifest.Name, devName))
 		}
 	}
+
+	appendSocketWarnings(p, manifest, live)
 }
 
 // DetectListenerHandoffs reports listeners that move between instances (or are
@@ -405,6 +407,7 @@ func DetectListenerHandoffs(configs []*config.Config, live map[string]*InstanceS
 			warnings = append(warnings, msg)
 		}
 	}
+	warnings = append(warnings, detectSocketHandoffs(configs, live, steps)...)
 	slices.Sort(warnings)
 	return warnings
 }
