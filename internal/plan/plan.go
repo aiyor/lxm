@@ -12,9 +12,9 @@ import (
 	"strings"
 
 	"github.com/aiyor/lxm/internal/config"
-	"github.com/aiyor/lxm/internal/ports"
 	"github.com/aiyor/lxm/internal/provider"
 	"github.com/aiyor/lxm/internal/provider/common"
+	"github.com/aiyor/lxm/internal/proxydevice"
 	"github.com/aiyor/lxm/internal/recipe"
 )
 
@@ -561,6 +561,16 @@ func buildInstancesPost(manifest *config.Config, prov ...string) (*provider.Inst
 		post.Devices[name] = props
 	}
 
+	// 8. Unix-domain socket proxies (issue #17): native proxy devices in the
+	// sockets namespace.
+	socketDevices, err := buildSocketDevices(manifest)
+	if err != nil {
+		return nil, fmt.Errorf("building socket devices: %w", err)
+	}
+	for name, props := range socketDevices {
+		post.Devices[name] = props
+	}
+
 	return post, nil
 }
 
@@ -731,9 +741,9 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot, prov ...s
 			}
 			continue
 		}
-		// Managed port proxies are rebuilt from the manifest in step 9; omitting
-		// them here is what deletes ports removed from the manifest.
-		if ports.IsManagedProxy(dev, props) {
+		// Managed proxy devices (ports and sockets) are rebuilt from the
+		// manifest below; omitting them here is what deletes retired devices.
+		if proxydevice.IsManaged(props) {
 			continue
 		}
 		if props["type"] != "disk" && props["type"] != "nic" {
@@ -806,6 +816,15 @@ func buildInstancePut(manifest *config.Config, live *InstanceSnapshot, prov ...s
 		return nil, fmt.Errorf("building port devices: %w", err)
 	}
 	for name, props := range portDevices {
+		put.Devices[name] = props
+	}
+
+	// 10. Rebuild Unix-domain socket proxies (issue #17)
+	socketDevices, err := buildSocketDevices(manifest)
+	if err != nil {
+		return nil, fmt.Errorf("building socket devices: %w", err)
+	}
+	for name, props := range socketDevices {
 		put.Devices[name] = props
 	}
 
@@ -1055,6 +1074,13 @@ func computeDiffs(manifest *config.Config, live *InstanceSnapshot, volumes map[s
 		return nil, false, nil, err
 	}
 	diffs = append(diffs, portDiffs...)
+
+	// 7. Unix-domain socket proxies (issue #17)
+	socketDiffs, err := diffSockets(manifest, live)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	diffs = append(diffs, socketDiffs...)
 
 	return diffs, requiresRecreate, volumeOps, nil
 }

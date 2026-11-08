@@ -1,0 +1,67 @@
+# Proxy Unix-domain sockets between the host and a container.
+#
+#   lxm compile docs/examples/sockets-demo.yaml
+#   lxm plan docs/examples/sockets-demo.yaml
+#   lxm apply docs/examples/sockets-demo.yaml
+#   lxm status sockets-demo     # "Unix Sockets:" block
+#   lxm list                    # SOCKETS column
+#
+# Each entry compiles to a native LXD/Incus `proxy` device named
+# `socket-<name>` (marker-managed, reconciled like every other device). The
+# daemon creates the listening socket on one side and relays each connection
+# to the service on the other side; lxm never creates a socket itself.
+#
+# Two directions are declared below:
+#   broker  bind: instance  — listens INSIDE the container and forwards to a
+#           host-owned per-instance broker socket (per-instance host IPC).
+#   agent   bind: host      — listens ON THE HOST and forwards to a service
+#           inside the container.
+#
+# Before apply:
+#   * the host service for `broker.connect` must already be listening
+#     (/run/sshigit-broker is host-side; start your broker there);
+#   * the host parent directory for the `agent` listener must exist:
+#         mkdir -p /tmp/lxm-docs-demo
+#   * the container-side service for `agent.connect` (/run/sshigit/agent.sock)
+#     and its parent directory must exist in the image/cloud-init/recipe — the
+#     daemon creates the socket, never its parent directory.
+#
+# Unix-socket proxy traffic bypasses network_policy; the listening socket's
+# uid/gid/mode are the access control. `bind: host` makes the container
+# reachable from host-local processes and emits a plan warning by design.
+# See docs/howto/proxy-unix-sockets.md for the full walkthrough.
+schema: lxm/config/v2
+name: sockets-demo
+status: present
+image: ubuntu:24.04
+user: ubuntu
+sudo: false
+inject_ssh_keys: false
+
+networks:
+  - {name: eth0, parent: lxdbr0}
+
+sockets:
+  # Per-instance credential broker: the container process connects to
+  # /var/tmp/sshigit-broker.sock and the daemon relays it to the host-owned
+  # socket for this instance. The listening socket inside the container is
+  # owned by uid/gid 1000 with mode 0600.
+  - name: broker
+    listen: unix:/var/tmp/sshigit-broker.sock            # instance side (created by the daemon)
+    connect: unix:/run/sshigit-broker/sockets-demo.sock  # host side (service must be listening)
+    bind: instance
+    uid: 1000
+    gid: 1000
+    mode: "0600"
+
+  # Host-local client into a container service: the host listens on
+  # /tmp/lxm-docs-demo/agent.sock and forwards to the agent socket inside the
+  # container. Runs as a root-owned host path by default; mode 0600 restricts
+  # it to host uid/gid 1000.
+  - name: agent
+    listen: unix:/tmp/lxm-docs-demo/agent.sock  # host side (created by the daemon)
+    connect: unix:/run/sshigit/agent.sock       # instance side (service must be listening)
+    bind: host
+    uid: 1000
+    gid: 1000
+    mode: "0600"

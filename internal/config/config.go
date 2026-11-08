@@ -16,11 +16,14 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/aiyor/lxm/internal/ports"
+	"github.com/aiyor/lxm/internal/sockets"
 )
 
 var cpuRegex = regexp.MustCompile(`^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$`)
 
 var portNameRe = regexp.MustCompile(PortNameRegexp)
+
+var socketNameRe = regexp.MustCompile(SocketNameRegexp)
 
 // imageRemoteNameRe locks the image_remotes remote-name charset, mirroring the
 // remote part of #RemoteAlias (IMAGE-SPEC §2.2). CUE enforces the rule as the
@@ -165,6 +168,7 @@ type RemoveDirective struct {
 	Recipes  []string `yaml:"recipes,omitempty"`
 	Disks    []string `yaml:"disks,omitempty"`
 	Ports    []string `yaml:"ports,omitempty"`
+	Sockets  []string `yaml:"sockets,omitempty"`
 }
 
 // ReplaceDirective defines wholesale replacements for inherited lists.
@@ -174,6 +178,7 @@ type ReplaceDirective struct {
 	Recipes  []RecipeGroup   `yaml:"recipes,omitempty"`
 	Disks    []DiskConfig    `yaml:"disks,omitempty"`
 	Ports    []PortConfig    `yaml:"ports,omitempty"`
+	Sockets  []SocketConfig  `yaml:"sockets,omitempty"`
 }
 
 // RemoteConfig models remote daemon connection metadata declared in a manifest.
@@ -209,6 +214,7 @@ type Config struct {
 	Networks         []NetworkConfig         `yaml:"networks,omitempty"`
 	Disks            []DiskConfig            `yaml:"disks,omitempty"`
 	Ports            []PortConfig            `yaml:"ports,omitempty"`
+	Sockets          []SocketConfig          `yaml:"sockets,omitempty"`
 	VSwitches        []VSwitchConfig         `yaml:"vswitches,omitempty"`
 	NetworkPolicy    *NetworkPolicy          `yaml:"network_policy,omitempty"`
 	ImageRemotes     map[string]string       `yaml:"image_remotes,omitempty"`
@@ -367,6 +373,56 @@ func (p PortConfig) String() string {
 		nat = " (nat)"
 	}
 	return fmt.Sprintf("%s %s -> %s%s", p.Proto, p.Listen, p.Connect, nat)
+}
+
+// SocketConfig models one Unix-domain socket proxy (issue #17). Each entry
+// compiles to a native LXD/Incus proxy device named socket-<name>; the device
+// is also stamped with the sockets namespace marker so it can never be claimed
+// by the TCP/UDP ports reconciler.
+type SocketConfig struct {
+	Name    string     `yaml:"name" json:"name"`
+	Listen  string     `yaml:"listen" json:"listen"`   // canonical "unix:<abs path>"
+	Connect string     `yaml:"connect" json:"connect"` // canonical "unix:<abs path>"
+	Bind    string     `yaml:"bind" json:"bind"`       // materialized "host"|"instance"
+	UID     *int       `yaml:"uid,omitempty" json:"uid,omitempty"`
+	GID     *int       `yaml:"gid,omitempty" json:"gid,omitempty"`
+	Mode    SocketMode `yaml:"mode,omitempty" json:"mode,omitempty"` // canonical octal "0660"
+}
+
+// SocketNameRegexp constrains socket names to valid device names on both
+// daemons (the same rule as PortNameRegexp): names must start and end with an
+// alphanumeric character.
+const SocketNameRegexp = `^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$`
+
+// SocketMode is a Unix-socket file mode. It accepts either a quoted octal
+// string ("0660") or a YAML integer (0660) so unquoted authoring does not fail
+// in the YAML decoder; the loader canonicalizes it to a quoted octal string.
+type SocketMode string
+
+// UnmarshalYAML preserves the raw scalar spelling so "660", "0660" and 0660
+// are all normalized identically by LoadConfig (sockets.ParseMode is
+// authoritative).
+func (m *SocketMode) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.ScalarNode {
+		return fmt.Errorf("mode must be a scalar octal file mode (for example \"0660\")")
+	}
+	*m = SocketMode(strings.TrimSpace(value.Value))
+	return nil
+}
+
+// String renders a socket proxy for human-readable plan/diff output.
+func (s SocketConfig) String() string {
+	details := []string{"bind=" + s.Bind}
+	if s.UID != nil {
+		details = append(details, "uid="+strconv.Itoa(*s.UID))
+	}
+	if s.GID != nil {
+		details = append(details, "gid="+strconv.Itoa(*s.GID))
+	}
+	if s.Mode != "" {
+		details = append(details, "mode="+string(s.Mode))
+	}
+	return fmt.Sprintf("%s -> %s (%s)", s.Listen, s.Connect, strings.Join(details, ", "))
 }
 
 // DiskConfig models an additional managed storage disk (VMs only). The two
@@ -649,6 +705,10 @@ func (conf *Config) validateCommon(configBaseDir string) error {
 		return err
 	}
 
+	if err := conf.validateSockets(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -714,6 +774,20 @@ func ValidatePostMerge(conf *Config) error {
 			return fmt.Errorf("duplicate port name %q (port %d)", p.Name, i)
 		}
 		seenPorts[p.Name] = true
+	}
+
+	seenSockets := make(map[string]bool)
+	for i, sock := range conf.Sockets {
+		if sock.Name == "" {
+			return fmt.Errorf("socket %d: name is required", i)
+		}
+		if !socketNameRe.MatchString(sock.Name) {
+			return fmt.Errorf("socket %q: name must match %s", sock.Name, SocketNameRegexp)
+		}
+		if seenSockets[sock.Name] {
+			return fmt.Errorf("duplicate socket name %q (socket %d)", sock.Name, i)
+		}
+		seenSockets[sock.Name] = true
 	}
 
 	// image_remotes validation + canonicalization (§7.2): every value must be
@@ -1292,6 +1366,25 @@ func MergeConfigs(base, overlay *Config) (*Config, error) {
 		res.Ports = merged
 	}
 
+	// sockets: name-identity merge, mirroring ports (whole-entry replacement).
+	if overlay.Replace != nil && len(overlay.Replace.Sockets) > 0 {
+		// Validate the ignored local list too: a non-empty replace wins, but a
+		// malformed/duplicate local sockets list is still an authoring error.
+		if err := validateSocketLayer(overlay.Sockets); err != nil {
+			return nil, err
+		}
+		if err := validateSocketLayer(overlay.Replace.Sockets); err != nil {
+			return nil, err
+		}
+		res.Sockets = slices.Clone(overlay.Replace.Sockets)
+	} else {
+		merged, err := mergeSocketsByName(base.Sockets, overlay.Sockets)
+		if err != nil {
+			return nil, err
+		}
+		res.Sockets = merged
+	}
+
 	if overlay.Replace != nil && len(overlay.Replace.Recipes) > 0 {
 		res.Recipes = overlay.Replace.Recipes
 	} else {
@@ -1430,6 +1523,22 @@ func applyRemoveDirectives(res *Config, remove *RemoveDirective) error {
 		res.Ports = filtered
 	}
 
+	for _, dropName := range remove.Sockets {
+		matched := false
+		var filtered []SocketConfig
+		for _, sock := range res.Sockets {
+			if sock.Name == dropName {
+				matched = true
+			} else {
+				filtered = append(filtered, sock)
+			}
+		}
+		if !matched {
+			return fmt.Errorf("remove.sockets: name %q matched no socket", dropName)
+		}
+		res.Sockets = filtered
+	}
+
 	return nil
 }
 
@@ -1499,6 +1608,58 @@ func mergePortsByName(base, overlay []PortConfig) ([]PortConfig, error) {
 		}
 		indexByName[op.Name] = len(res)
 		res = append(res, op)
+	}
+	return res, nil
+}
+
+// validateSocketLayer rejects malformed or duplicate socket names within a
+// single source layer before merging. The merged list is name-deduplicated, so
+// this is the only place duplicates can be detected reliably.
+func validateSocketLayer(socks []SocketConfig) error {
+	seen := make(map[string]bool, len(socks))
+	for i, sock := range socks {
+		if sock.Name == "" {
+			return fmt.Errorf("socket %d: name is required", i)
+		}
+		if seen[sock.Name] {
+			return fmt.Errorf("duplicate socket name %q (socket %d)", sock.Name, i)
+		}
+		seen[sock.Name] = true
+	}
+	return nil
+}
+
+// mergeSocketsByName merges base and overlay socket proxies using name-identity:
+// an overlay entry whose Name matches a base entry replaces it wholesale, while
+// new entries are appended. Duplicate names within a source layer are rejected
+// by validateSocketLayer.
+func mergeSocketsByName(base, overlay []SocketConfig) ([]SocketConfig, error) {
+	// Validate both layers so direct MergeConfigs callers cannot smuggle
+	// duplicates in through the base (cheap idempotent guard).
+	if err := validateSocketLayer(base); err != nil {
+		return nil, err
+	}
+	if err := validateSocketLayer(overlay); err != nil {
+		return nil, err
+	}
+	if len(base) == 0 {
+		return slices.Clone(overlay), nil
+	}
+	if len(overlay) == 0 {
+		return slices.Clone(base), nil
+	}
+	res := slices.Clone(base)
+	indexByName := make(map[string]int, len(res))
+	for i, sock := range res {
+		indexByName[sock.Name] = i
+	}
+	for _, overlaySock := range overlay {
+		if idx, ok := indexByName[overlaySock.Name]; ok {
+			res[idx] = overlaySock
+			continue
+		}
+		indexByName[overlaySock.Name] = len(res)
+		res = append(res, overlaySock)
 	}
 	return res, nil
 }
@@ -1700,6 +1861,49 @@ func LoadConfig(configFile string) (*Config, error) {
 		p.Connect = connect.HostPort()
 	}
 
+	// socket default normalization + endpoint/mode canonicalization (mirrors
+	// #LXM_RESOLVED defaults so the strict resolved schema round-trips
+	// deterministically, and guarantees canonical strings for plan and fleet
+	// comparisons). Grammar errors are reported here even for v1 manifests and
+	// base fragments; cross-field rules run in validateSockets.
+	for i := range conf.Sockets {
+		sock := &conf.Sockets[i]
+		bind, ok := sockets.ParseBind(sock.Bind)
+		if !ok {
+			return nil, fmt.Errorf("socket %q of instance %q: invalid bind %q (must be host or instance)", sock.Name, conf.Name, sock.Bind)
+		}
+		sock.Bind = bind
+
+		listen, err := sockets.ParseEndpoint(sock.Listen)
+		if err != nil {
+			return nil, fmt.Errorf("socket %q of instance %q: invalid listen %q: %w", sock.Name, conf.Name, sock.Listen, err)
+		}
+		connect, err := sockets.ParseEndpoint(sock.Connect)
+		if err != nil {
+			return nil, fmt.Errorf("socket %q of instance %q: invalid connect %q: %w", sock.Name, conf.Name, sock.Connect, err)
+		}
+		sock.Listen = listen.DeviceString()
+		sock.Connect = connect.DeviceString()
+
+		if sock.Mode != "" {
+			mode, err := sockets.ParseMode(string(sock.Mode))
+			if err != nil {
+				return nil, fmt.Errorf("socket %q of instance %q: %w", sock.Name, conf.Name, err)
+			}
+			sock.Mode = SocketMode(mode)
+		}
+		if sock.UID != nil {
+			if err := sockets.ValidateID("uid", *sock.UID); err != nil {
+				return nil, fmt.Errorf("socket %q of instance %q: %w", sock.Name, conf.Name, err)
+			}
+		}
+		if sock.GID != nil {
+			if err := sockets.ValidateID("gid", *sock.GID); err != nil {
+				return nil, fmt.Errorf("socket %q of instance %q: %w", sock.Name, conf.Name, err)
+			}
+		}
+	}
+
 	// network_policy rule direction default ("both") and ingress grant
 	// canonicalization/validation.
 	if conf.NetworkPolicy != nil {
@@ -1806,6 +2010,15 @@ func loadConfigRecursive(configFile string, visited map[string]bool) (*Config, e
 	hasUnderscorePrefix := strings.HasPrefix(fileName, "_")
 	if hasUnderscorePrefix && !raw.Base {
 		return nil, fmt.Errorf("file %q has '_' prefix but base is not true; add 'base: true' to the file", fileName)
+	}
+
+	// Legacy (non-v2) manifests bypass CUE authoring validation, which is the
+	// only closed-object gate for sockets: entries. Reject unknown socket fields
+	// explicitly so nat/proto/proxy_protocol are never silently dropped.
+	if raw.Schema != "lxm/config/v2" {
+		if err := validateLegacySocketFields(&docNode); err != nil {
+			return nil, fmt.Errorf("config %q: %w", configFile, err)
+		}
 	}
 
 	// Schema detection (D13) & CUE Authoring validation (on expandedData so templates are substituted!)

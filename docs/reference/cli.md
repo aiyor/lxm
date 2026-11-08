@@ -137,7 +137,8 @@ Usage:
 * `plan` never mutates state. If LXD is unreachable it plans against an empty live state rather than failing, so you can preview what a fresh host would create.
 * With `--format json` the full step list is emitted in the envelope's `plan` field.
 * Published ports appear as `ports[<name>]` diffs (an anomalous marker-carrying device under a non-`proxy-<name>` name is retired with `devices[<device>]`); non-loopback listens, profile-shadowed proxy devices and listener handoffs add warnings.
-* A duplicate published listener across manifests, an unmarked `proxy-<name>` collision, or an invalid NAT/endpoint configuration exits `3` before any daemon mutation.
+* Unix-socket proxies appear as `sockets[<name>]` diffs (and `sockets[<name>].listen|connect|bind|uid|gid|mode` field changes); `bind: host` host-local exposure, non-canonical managed devices, profile-shadowed socket devices and host-side listener handoffs add warnings.
+* A duplicate published listener across manifests, an unmarked `proxy-<name>` collision, or an invalid NAT/endpoint configuration exits `3` before any daemon mutation. Sockets add their own exit-3 validation (duplicate host-side socket path, duplicate instance-side listen path, `sockets:` on a VM, invalid Unix endpoint, `uid`/`gid`/`mode`) and exit `4` when the daemon lacks the `proxy_unix` capability.
 
 Example (text):
 
@@ -167,7 +168,7 @@ Usage:
 
 **Exit codes:** `0` success · `2` invalid `--format` · `3` config error.
 
-**Notes:** `diff` loads one manifest, applies it to the named container, and prints the field-level differences for that container's first step. Port diffs use `ports[<name>]` and `ports[<name>].listen|connect|proto|nat` field names.
+**Notes:** `diff` loads one manifest, applies it to the named container, and prints the field-level differences for that container's first step. Port diffs use `ports[<name>]` and `ports[<name>].listen|connect|proto|nat` field names; socket diffs use `sockets[<name>]` and `sockets[<name>].listen|connect|bind|uid|gid|mode`.
 
 Example (text):
 
@@ -176,6 +177,14 @@ $ lxm diff docs/examples/dev-station.yaml dev-station
 Diff for container dev-station (action: create, changed: true):
   - status: old=absent -> new=present
   - image: old=<nil> -> new=ubuntu:22.04
+```
+
+A socket field change reports just that field (produced against LXD 6.10.1):
+
+```text
+$ lxm diff --provider lxd sockets-demo-changed.yaml sockets-demo
+Diff for container sockets-demo (action: update, changed: true):
+  - sockets[broker].mode: old=0600 -> new=0660
 ```
 
 ---
@@ -204,13 +213,28 @@ Example (text):
 
 ```text
 $ lxm list --name dev-station
-NAME         TYPE               STATUS   MANAGED  GROUPS  IMAGE   IP              PORTS
-dev-station  virtual-machine    Running  true     dev     ubuntu  10.171.13.47   127.0.0.1:8080->127.0.0.1:80
+NAME         TYPE               STATUS   MANAGED  GROUPS  IMAGE   IP              PORTS                          SOCKETS
+dev-station  virtual-machine    Running  true     dev     ubuntu  10.171.13.47   127.0.0.1:8080->127.0.0.1:80  -
 ```
 
 The `PORTS` column lists lxm-managed published ports only (`udp:`-prefixed for UDP, ` (nat)` for
 DNAT); `--format json` adds an additive `published_ports` array covering the effective proxy set
 (local + profile-provided devices).
+
+The `SOCKETS` column lists lxm-managed Unix-socket proxies only, as `<listen>-><connect>` entries
+(` (instance)` appended for `bind: instance`; comma-separated; `-` when none). A fleet that declares
+`sockets:` looks like this (abridged — only the socket instance's row is shown; produced against
+LXD 6.10.1):
+
+```text
+$ lxm list --provider lxd
+NAME            TYPE             STATUS   MANAGED  GROUPS  IMAGE    IP             PORTS  SOCKETS
+sockets-demo    container        Running  true     -       ubuntu   10.171.13.109  -      unix:/tmp/lxm-docs-demo/agent.sock->unix:/run/sshigit/agent.sock,unix:/var/tmp/sshigit-broker.sock->unix:/run/sshigit-broker/sockets-demo.sock (instance)
+```
+
+`--format json` adds the additive `published_sockets` array to each result, carrying
+`{device, name, listen, connect, bind, uid, gid, mode, managed}` per socket (see
+[Results & Exit Codes](results-and-exit-codes.md#unix-socket-proxy-fields)).
 
 ---
 
@@ -231,7 +255,7 @@ Usage:
 
 **Exit codes:** `0` success · `2` invalid `--format` · `4` LXD error · `5` container not found.
 
-**Notes:** the recipe hash trail lists the stored idempotency hashes lxm uses to decide whether a recipe needs to run again. The `Published Ports:` block lists the effective local + profile proxy devices with ownership and NAT markers; `--format json` carries the same data as `results[0].published_ports`.
+**Notes:** the recipe hash trail lists the stored idempotency hashes lxm uses to decide whether a recipe needs to run again. The `Published Ports:` block lists the effective local + profile proxy devices with ownership and NAT markers; the `Unix Sockets:` block lists the effective Unix-socket proxies with `bind=` and any declared `uid`/`gid`/`mode` plus ownership (or `(none)` when there are none). `--format json` carries the same data as `results[0].published_ports` and `results[0].published_sockets`.
 
 Example (text):
 
@@ -246,6 +270,31 @@ Groups:        dev
 
 Published Ports:
   - web: tcp 127.0.0.1:8080 -> 127.0.0.1:80 (managed)
+
+Unix Sockets:
+  (none)
+
+Recipe Hash Trail:
+  (none)
+```
+
+A container with both socket directions declared (produced against LXD 6.10.1):
+
+```text
+$ lxm status --provider lxd sockets-demo
+Container:     sockets-demo
+Status:        Running (Code 103)
+Architecture:  x86_64
+IP Address:    10.171.13.109
+Managed:       true
+Groups:
+
+Published Ports:
+  (none)
+
+Unix Sockets:
+  - agent: unix:/tmp/lxm-docs-demo/agent.sock -> unix:/run/sshigit/agent.sock (bind=host, uid=1000, gid=1000, mode=0600, managed)
+  - broker: unix:/var/tmp/sshigit-broker.sock -> unix:/run/sshigit-broker/sockets-demo.sock (bind=instance, uid=1000, gid=1000, mode=0600, managed)
 
 Recipe Hash Trail:
   (none)
@@ -504,7 +553,7 @@ Example (text):
 
 ```text
 $ lxm compile docs/examples/
-Successfully compiled 8 manifest(s):
+Successfully compiled 10 manifest(s):
   - docs/examples/.lxm/compiled/absent-demo.yaml
   - docs/examples/.lxm/compiled/cloud-init-demo.yaml
   - docs/examples/.lxm/compiled/dev-station.yaml
@@ -512,7 +561,9 @@ Successfully compiled 8 manifest(s):
   - docs/examples/.lxm/compiled/mounts-demo.yaml
   - docs/examples/.lxm/compiled/mounts-map.yaml
   - docs/examples/.lxm/compiled/ovn-network-demo.yaml
+  - docs/examples/.lxm/compiled/ports-demo.yaml
   - docs/examples/.lxm/compiled/recipes-demo.yaml
+  - docs/examples/.lxm/compiled/sockets-demo.yaml
 ```
 
 ---

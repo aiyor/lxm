@@ -31,11 +31,45 @@ All notable changes to this project will be documented in this file.
   - Enforce `host_access` and `ingress_allow` validation/canonicalization on the `lxm compile`
     path as well as plan/apply, so invalid sources, protocols, ports, or OVN/ungrouped
     `host_access` cannot pass the compile gate.
+- **sockets**: declarative Unix-domain socket proxying (`sockets:`) for containers (#17)
+  - Compile manifest `sockets:` entries to native LXD/Incus `proxy` devices (`socket-<name>`),
+    supporting both directions: `bind: host` (host listener → instance service) and
+    `bind: instance` (instance listener → host-owned socket, the per-instance host-IPC case).
+  - Expose the daemons' listening-socket ownership options `uid`/`gid`/`mode` (mode canonicalized
+    to quoted octal `0000`–`0777`; not `security.uid`/`security.gid`) with defaults documented.
+  - Validate Unix endpoints (`unix:<absolute clean path>`, 107-byte `sun_path` limit, no abstract
+    sockets or TCP/UDP), reject `sockets:` on virtual machines (proxy VMs are NAT-only), and
+    enforce host-side path uniqueness fleet-wide plus instance-side listen uniqueness per instance.
+  - Partition the shared `proxy` device type with a namespace marker (`user.lxm.kind=socket` on
+    top of `user.lxm.managed=true`), so ports and sockets never claim each other's devices; no
+    device adoption; malformed managed devices repaired/removed; non-canonical representations
+    rewritten with a warning.
+  - Surface sockets in plan/diff (`sockets[<name>]` and `.listen|.connect|.bind|.uid|.gid|.mode`),
+    `lxm list` (`SOCKETS` column), `lxm status` (`Unix Sockets:` block), and the additive
+    `published_sockets` `lxm/result/v1` field — no envelope version bump.
+  - Gate on the daemon `proxy_unix` / `proxy_unix_dac_properties` extensions (exit 4) and keep
+    socket-only changes hotpluggable (no restart); `bind: host` emits a host-exposure warning.
+  - Validate and canonicalize `sockets:` entries on the `lxm compile` path too (endpoints, `bind`,
+    quoted octal `mode`, decimal `uid`/`gid`), and reject unknown socket fields in legacy
+    schema-less/v1 manifests, so a compiled manifest is never one that plan/apply would reject.
+  - Recorded daemon limitation: removing a `bind: instance` device retires the relay but leaves the
+    instance-side socket file behind (both daemons); the stale file is harmless and is replaced on
+    the next device start. The live gate pins this documented behaviour.
+  - Live-verified on LXD 6.10.1 LTS via `simulation/scripts/test-sockets-e2e.sh` (11/11 scenarios
+    PASS: forwarding with DAC ownership, access control, broker absence/reconnect, idempotency,
+    output surfaces, per-instance isolation, `bind: host`, missing-parent error, validation matrix,
+    ownership collision, removal/noop). Incus coverage pending (daemon not reachable in the
+    verification environment).
 
 ### Documentation
 - **network**: document host access, external ingress grants, the IPv4/port validation matrix,
   the bridge-only OVN restriction, rule-level plan diffs, and a worked lab-behind-a-subnet-router
   example (`docs/examples/lab-ingress/lab-ingress-demo.yaml`).
+- **sockets**: add `SOCKETS-SPEC.md`, `docs/howto/proxy-unix-sockets.md`, a compile-clean
+  `docs/examples/sockets-demo.yaml`, manifest/CLI/result reference sections (including the
+  `published_sockets` field and `SOCKETS`/`Unix Sockets:` output), troubleshooting and
+  best-practice security guidance, architecture/package and testing-matrix updates, and the
+  provider-parameterized `test-sockets-e2e.sh` live gate.
 
 ### Maintenance
 - **release**: automate the release PR, changelog update, and tag via release-please

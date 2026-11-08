@@ -233,6 +233,40 @@ import (
 	nat:     bool
 })
 
+// Unix-domain socket proxies (issue #17): a native proxy device with unix
+// endpoints. #SocketEndpoint is a coarse authoring gate only;
+// internal/sockets.ParseEndpoint is authoritative (absolute clean path within
+// the Linux sun_path limit; no abstract sockets, no non-unix schemes).
+#SocketEndpoint: string & =~"^unix:/"
+// Socket names share the daemons' device-name rule with ports (a socket
+// compiles to the device name socket-<name>).
+#SocketName: #PortName
+#SocketBind: "host" | "instance"
+
+// uid/gid are range-checked Go-side against the daemons' uint32 parse; mode
+// accepts a string or integer spelling and is canonicalized Go-side by
+// internal/sockets.ParseMode (quoted octal "0660").
+#SocketObjAuthoring: close({
+	name:    #SocketName
+	listen:  #SocketEndpoint
+	connect: #SocketEndpoint
+	bind?:   #SocketBind | *"host"
+	uid?:    int & >=0
+	gid?:    int & >=0
+	mode?:   string | (int & >=0)
+})
+
+// Defaults are materialized Go-side in LoadConfig before this schema is used.
+#SocketObjResolved: close({
+	name:    #SocketName
+	listen:  string & =~"^unix:/"
+	connect: string & =~"^unix:/"
+	bind:    #SocketBind
+	uid?:    int & >=0 & <=2147483647
+	gid?:    int & >=0 & <=2147483647
+	mode?:   string & =~"^0[0-7]{3}$"
+})
+
 // One inter-group allowance in network_policy.
 #PolicyRuleAuthoring: close({
 	from:      string
@@ -302,6 +336,9 @@ import (
 	// Published host -> instance ports (issue #11)
 	ports?: [...#PortObjAuthoring]
 
+	// Unix-domain socket proxies (issue #17)
+	sockets?: [...#SocketObjAuthoring]
+
 	// Fleet-scoped managed virtual switches (unioned across loaded manifests)
 	vswitches?: [...#VSwitchObjAuthoring]
 
@@ -350,6 +387,7 @@ import (
 		recipes?:  [...string]
 		disks?:    [...string]
 		ports?:    [...string]
+		sockets?:  [...string]
 	})
 	replace?: close({
 		mounts?:   [...(#MountStr | #MountObjAuthoring)]
@@ -357,6 +395,7 @@ import (
 		recipes?:  [...]
 		disks?:    [...#DiskObjAuthoring]
 		ports?:    [...#PortObjAuthoring]
+		sockets?:  [...#SocketObjAuthoring]
 	})
 
 	groups?: [...string]
@@ -405,6 +444,8 @@ import (
 	disks?: [...#DiskObjResolved]
 
 	ports?: [...#PortObjResolved]
+
+	sockets?: [...#SocketObjResolved]
 
 	vswitches?: [...close({
 		name:      string

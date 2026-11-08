@@ -4,6 +4,11 @@ This guide shows you how to publish a host port to a service inside a container 
 machine. `ports:` entries compile to native LXD/Incus `proxy` devices — no extra daemons, no
 iptables scripts.
 
+!!! note
+
+    Looking for Unix-domain sockets rather than TCP/UDP ports? They use the separate `sockets:`
+    block — see [Proxying Unix Sockets](proxy-unix-sockets.md).
+
 ## Prerequisites
 
 * lxm installed ([Installation](../getting-started/installation.md))

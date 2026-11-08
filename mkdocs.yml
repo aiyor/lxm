@@ -89,6 +89,7 @@ nav:
       - Mounting Host Directories: howto/mount-host-dirs.md
       - Configuring Networking: howto/configure-networking.md
       - Publishing Ports: howto/publish-ports.md
+      - Proxying Unix Sockets: howto/proxy-unix-sockets.md
       - Provisioning with Recipes: howto/provision-with-recipes.md
       - Cloud-Init Bootstrapping: howto/cloud-init-bootstrapping.md
       - Snapshots & Rollback: howto/snapshots-and-rollback.md

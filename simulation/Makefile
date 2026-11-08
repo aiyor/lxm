@@ -19,7 +19,21 @@ test-ovn-lxd:
 test-ovn-incus:
 	PROVIDER_CLI=incus $(SRC)/simulation/scripts/test-ovn-e2e.sh
 
-test-all: test-lxd test-incus test-ovn
+# Unix-domain socket proxy e2e against whichever provider CLI is on PATH
+test-sockets:
+	$(SRC)/simulation/scripts/test-sockets-e2e.sh
+
+# Pin to a specific provider — run BOTH to satisfy the matrix (§2.1)
+test-sockets-lxd:
+	PROVIDER_CLI=lxc $(SRC)/simulation/scripts/test-sockets-e2e.sh
+
+test-sockets-incus:
+	PROVIDER_CLI=incus $(SRC)/simulation/scripts/test-sockets-e2e.sh
+
+test-ports:
+	$(SRC)/simulation/scripts/test-ports-e2e.sh
+
+test-all: test-lxd test-incus test-ovn test-ports test-sockets
 
 # --- Legacy LXD Lab Simulation Targets ---
 provision:

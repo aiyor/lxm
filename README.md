@@ -15,6 +15,7 @@
 * **Managed Virtual Switches & Network Segmentation**: Declare `vswitches:` (Linux bridges or multi-node OVN overlay switches) and a group-based `network_policy:` — compiled deterministically into network ACLs with automated CIDR prefix decomposition for isolated, mutually-communicating, and stateful one-way networks.
 * **Host Access & External Ingress Grants**: Keep the LXD host reachable under default-deny ACLs (`host_access: true`) and admit selected external IPv4 clients to specific protocols/ports (`network_policy.ingress_allow`), declaratively and revocably.
 * **Declarative Port Publishing**: Declare `ports:` host → instance mappings; lxm compiles them to native LXD/Incus `proxy` devices (marker-managed, idempotent, fleet-wide listener-conflict validation) and supports DNAT `nat: true` (required for virtual machines).
+* **Declarative Unix-Socket Proxying**: Declare `sockets:` Unix-domain socket bridges between the host and containers — including the reverse direction (`bind: instance`) with listening-socket `uid`/`gid`/`mode` ownership — compiled to native `proxy` devices (marker-managed, hotpluggable, per-instance isolation, container-only).
 * **Declarative & Idempotent**: State reconciliation automatically handles instance creation, hardware limits (CPU, memory, disk), VM hypervisor settings, device mounting, network configuration, and image rebuilds.
 * **Structured Machine Interface**: Every command (excluding TTY shells) supports `--format json` with standardized `lxm/result/v1` result envelopes and categorized exit codes (0–7).
 * **CUE Schema Validation**: Manifest authoring is checked against CUE schemas (`#LXM_AUTHORING` and `#LXM_RESOLVED`) for strict path and security compliance.
@@ -27,11 +28,12 @@
 ## Specifications
 
 * **[PORTS-SPEC.md](PORTS-SPEC.md)** — the authoritative spec for the `ports:` **feature**: endpoint grammar/canonicalization, proxy-device encoding, NAT/VM policy, listener-conflict semantics, ownership and reconciliation, output surfaces, and the verified LXD/Incus version matrix.
+* **[SOCKETS-SPEC.md](SOCKETS-SPEC.md)** — the authoritative spec for the `sockets:` **feature**: Unix-domain endpoint grammar, `bind: host|instance` direction semantics, listening-socket `uid`/`gid`/`mode` ownership, the shared proxy-device namespace, path-uniqueness/validation rules, daemon-verified socket lifecycle and relay behavior, output surfaces, and the live verification matrix.
 * **[NETWORK-SPEC.md](NETWORK-SPEC.md)** — the authoritative spec for the `vswitches:` / `network_policy:` **feature**: group-based traffic policy compiled into LXD network ACLs, the generator matrix, CIDR decomposition, reconciliation/execution model, and verified integration results.
 * **[STORAGE-SPEC.md](STORAGE-SPEC.md)** — the authoritative spec for the `disks:` **feature**: additional VM data disks in filesystem or block mode, the mode × ownership matrix, verified LXD constraints, and the reconciliation/execution model.
 * **[IMAGE-SPEC.md](IMAGE-SPEC.md)** — the authoritative spec for the `image:` `remote:alias` **feature**: cloud image lookup & fetch, the canonical type-qualified local alias, the cache probe, and the Phase −1 execution model.
 * **[VM-SPEC.md](VM-SPEC.md)** — the authoritative spec for virtual-machine fleet management: VM manifest fields, hardware limits, hypervisor settings, and the VM apply/verify lifecycle.
-* **[SPEC_MANIFEST.md](SPEC_MANIFEST.md)** — the canonical **manifest schema** contract (all fields, CUE validation, inheritance) — including the authoritative `vswitches:`/`network_policy:` (§3.6/§3.7), `disks:` (§3.9), `image:`/`image_remotes:` (§3.10), and `ports:` (§3.11) field tables that the feature specs reference.
+* **[SPEC_MANIFEST.md](SPEC_MANIFEST.md)** — the canonical **manifest schema** contract (all fields, CUE validation, inheritance) — including the authoritative `vswitches:`/`network_policy:` (§3.6/§3.7), `disks:` (§3.9), `image:`/`image_remotes:` (§3.10), `ports:` (§3.11), and `sockets:` (§3.12) field tables that the feature specs reference.
 
 ---
 

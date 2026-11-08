@@ -8,23 +8,25 @@ import (
 	"github.com/aiyor/lxm/internal/config"
 	"github.com/aiyor/lxm/internal/ports"
 	"github.com/aiyor/lxm/internal/provider"
+	"github.com/aiyor/lxm/internal/sockets"
 )
 
 // InstanceStatus contains high-level information about a container or virtual-machine instance.
 type InstanceStatus struct {
-	Name           string                `json:"name"`
-	Type           string                `json:"type"`
-	Status         string                `json:"status"`
-	StatusCode     int                   `json:"status_code"`
-	Architecture   string                `json:"architecture"`
-	Managed        bool                  `json:"managed"`
-	Groups         []string              `json:"groups,omitempty"`
-	Image          string                `json:"image"`
-	IPs            []string              `json:"ips,omitempty"`
-	RecipeHashes   map[string]string     `json:"recipe_hashes,omitempty"`
-	Snapshots      []string              `json:"snapshots,omitempty"`
-	Config         map[string]string     `json:"config,omitempty"`
-	PublishedPorts []ports.PublishedPort `json:"published_ports,omitempty"`
+	Name             string                    `json:"name"`
+	Type             string                    `json:"type"`
+	Status           string                    `json:"status"`
+	StatusCode       int                       `json:"status_code"`
+	Architecture     string                    `json:"architecture"`
+	Managed          bool                      `json:"managed"`
+	Groups           []string                  `json:"groups,omitempty"`
+	Image            string                    `json:"image"`
+	IPs              []string                  `json:"ips,omitempty"`
+	RecipeHashes     map[string]string         `json:"recipe_hashes,omitempty"`
+	Snapshots        []string                  `json:"snapshots,omitempty"`
+	Config           map[string]string         `json:"config,omitempty"`
+	PublishedPorts   []ports.PublishedPort     `json:"published_ports,omitempty"`
+	PublishedSockets []sockets.PublishedSocket `json:"published_sockets,omitempty"`
 }
 
 // FleetInventory holds full inventory information about the fleet.
@@ -55,14 +57,15 @@ func GetInventory(ctx context.Context, svc provider.Driver) (*FleetInventory, er
 			devices = full.Devices
 		}
 		status := InstanceStatus{
-			Name:           full.Name,
-			Type:           instType,
-			Status:         full.Status,
-			StatusCode:     full.StatusCode,
-			Architecture:   full.Architecture,
-			Config:         full.Config,
-			RecipeHashes:   make(map[string]string),
-			PublishedPorts: ports.Published(devices),
+			Name:             full.Name,
+			Type:             instType,
+			Status:           full.Status,
+			StatusCode:       full.StatusCode,
+			Architecture:     full.Architecture,
+			Config:           full.Config,
+			RecipeHashes:     make(map[string]string),
+			PublishedPorts:   ports.Published(devices),
+			PublishedSockets: sockets.Published(devices),
 		}
 
 		if status.Config == nil {

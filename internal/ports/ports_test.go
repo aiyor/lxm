@@ -260,3 +260,30 @@ func TestPublished(t *testing.T) {
 func netipHostPort(addr string, port uint16) string {
 	return net.JoinHostPort(addr, strconv.Itoa(int(port)))
 }
+
+func TestPublished_ExcludesSocketNamespaceDevices(t *testing.T) {
+	// A hand-edited sockets-namespace device with TCP endpoints must not leak
+	// into published_ports; that projection is TCP/UDP-ports-namespace only.
+	devices := map[string]map[string]string{
+		"proxy-web": {
+			"type":             "proxy",
+			"listen":           "tcp:127.0.0.1:8080",
+			"connect":          "tcp:127.0.0.1:80",
+			"user.lxm.managed": "true",
+		},
+		"socket-weird": {
+			"type":             "proxy",
+			"listen":           "tcp:127.0.0.1:9090",
+			"connect":          "tcp:127.0.0.1:90",
+			"user.lxm.managed": "true",
+			"user.lxm.kind":    "socket",
+		},
+	}
+	published := ports.Published(devices)
+	if len(published) != 1 {
+		t.Fatalf("Published returned %d entries, want 1: %+v", len(published), published)
+	}
+	if published[0].Device != "proxy-web" {
+		t.Fatalf("socket-namespace device leaked into published_ports: %+v", published)
+	}
+}

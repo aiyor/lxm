@@ -13,18 +13,20 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+
+	"github.com/aiyor/lxm/internal/proxydevice"
 )
 
 const (
 	// DevicePrefix is the device-name namespace for lxm-managed publishers.
 	DevicePrefix = "proxy-"
 	// ProxyType is the LXD/Incus device type used for port publishing.
-	ProxyType = "proxy"
+	ProxyType = proxydevice.Type
 	// ManagedKey is the per-device ownership marker key. Both daemons accept
 	// arbitrary user.* keys on devices and store them verbatim.
-	ManagedKey = "user.lxm.managed"
+	ManagedKey = proxydevice.ManagedKey
 	// ManagedValue is the marker value written by lxm.
-	ManagedValue = "true"
+	ManagedValue = proxydevice.ManagedValue
 )
 
 // Endpoint is a canonical, validated published-port endpoint.
@@ -162,11 +164,15 @@ type Device struct {
 	NAT     bool
 }
 
-// IsManagedProxy reports whether a device is owned by lxm. Ownership is
-// marker-based and independent of the device name: a marker-carrying proxy
-// device is lxm-managed even if it is malformed or not named proxy-<name>.
+// IsManagedProxy reports whether a device is owned by the ports namespace.
+// Ownership is marker-based and independent of the device name: a
+// marker-carrying proxy device is lxm-managed even if it is malformed or not
+// named proxy-<name>. Proxy devices carrying the sockets namespace marker
+// (user.lxm.kind: "socket") belong to internal/sockets instead and are
+// explicitly excluded here, so the two features never claim each other's
+// devices.
 func IsManagedProxy(deviceName string, props map[string]string) bool {
-	return props != nil && props["type"] == ProxyType && props[ManagedKey] == ManagedValue
+	return proxydevice.IsManaged(props) && !proxydevice.IsSocket(props)
 }
 
 // ParseProxy parses any proxy device (managed or foreign) into manifest form.
@@ -212,19 +218,11 @@ func ParseProxy(deviceName string, props map[string]string) (Device, bool) {
 	return Device{Name: name, Listen: listen, Connect: connect, NAT: nat}, true
 }
 
-// ParseBool mirrors the daemons' truthiness for hand-edited device values
-// (LXD shared.IsTrue / Incus util.IsTrue and their IsFalse counterparts).
-// Unknown values return ok=false so callers can treat the device as malformed
-// rather than silently reading it as false.
+// ParseBool mirrors the daemons' truthiness for hand-edited device values.
+// It is a thin alias for proxydevice.ParseBool, kept exported for callers that
+// already depend on the ports package.
 func ParseBool(raw string) (value bool, ok bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "0", "false", "no", "off":
-		return false, true
-	case "1", "true", "yes", "on":
-		return true, true
-	default:
-		return false, false
-	}
+	return proxydevice.ParseBool(raw)
 }
 
 // PublishedPort is the single JSON shape shared by inventory and command
@@ -256,8 +254,8 @@ func Published(devices map[string]map[string]string) []PublishedPort {
 	out := make([]PublishedPort, 0, len(names))
 	for _, name := range names {
 		props := devices[name]
-		if props == nil || props["type"] != ProxyType {
-			continue
+		if props == nil || props["type"] != ProxyType || proxydevice.IsSocket(props) {
+			continue // socket-namespace devices belong to published_sockets
 		}
 		dev, ok := ParseProxy(name, props)
 		if !ok {

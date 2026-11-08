@@ -56,6 +56,7 @@ All core LXM features must be validated across the supported hypervisors and con
 | **VSwitch (OVN)** | Supported | Supported | Supported (`ovn`) | `test-ovn-e2e.sh`, run per provider (§2.1) |
 | **Network ACLs / Policies** | Supported (`network_acl`) | Supported (`network_acl`) | Supported | Kernel / OVN packet drop & ping test |
 | **Published Ports (`ports:`)** | Supported (`proxy`, `nat`) | Supported (`proxy`, `nat`; ≥6.15 for `user.*` device-key semantics) | N/A | `test-ports-e2e.sh`; host-side TCP/UDP connect, device inspect, idempotency |
+| **Unix Sockets (`sockets:`)** | Supported (`proxy`, `proxy_unix`, `proxy_unix_dac_properties`); live-verified on LXD 6.10.1 | Implemented; **live gate pending** (Incus daemon not reachable in the verification environment) | N/A | `test-sockets-e2e.sh`; `bind=instance`/`bind=host` reachability, DAC ownership, per-instance isolation, idempotency |
 | **In-Guest Script Execution** | Supported | Supported | Supported | `lxm script` exit codes |
 | **Interactive Terminal Raw Mode** | Supported | Supported | Supported | `lxm shell` window resize / signals |
 | **Remote HTTPS / mTLS** | Supported | Supported | Supported | Token trust handoff & remote apply |
@@ -80,6 +81,7 @@ gate has passed live against **each** supported provider it touches.
 | OVN virtual switches & microsegmentation (`type: ovn`) | `internal/network` (G0/G8 golden + decomposition property), `internal/plan` (immutable drift), `internal/config` (parent/driver/MTU) | `simulation/scripts/test-ovn-e2e.sh` | LXD **and** Incus (run per provider) | §4 Step 2 / Step 3 |
 | VM data disks (`disks:`) | `internal/config`, `internal/apply` | `test-lxd-e2e.sh` (disk lifecycle steps) | LXD | §4 Step 2 |
 | Declarative port publishing (`ports:`) | `internal/ports`, `internal/config`, `internal/plan`, `internal/fleet`, `internal/network`, `cmd/lxm` | `simulation/scripts/test-ports-e2e.sh` | LXD **and** Incus (run per provider) | §4 Step 2 / Step 3 + Pillar 6 |
+| Declarative Unix-socket proxying (`sockets:`) | `internal/sockets`, `internal/proxydevice`, `internal/config`, `internal/plan`, `internal/fleet`, `internal/output`, `cmd/lxm` | `simulation/scripts/test-sockets-e2e.sh` | LXD verified (6.10.1, 11/11); Incus pending (run per provider) | §4 Step 2 / Step 3 + Pillar 7 |
 | Host access & external ingress grants (`host_access`, `ingress_allow`) | `internal/config`, `internal/network`, `internal/plan`, `cmd/lxm` | Live LXD 6.10.1 bridge run: default host block, `host_access` restore, tailnet-source TCP grant, removal/revocation, idempotent re-plan | LXD verified; Incus pending | §4 Step 2 / Step 3 |
 | Declarative deletion & `--prune` | `internal/plan`, `internal/apply` | **(gap — no E2E gate yet)** | — | Pillar 1 §3 scenario 4 |
 | Cloud images (`image_remotes`) | `internal/config/image.go` | **(gap — no E2E gate yet)** | — | — |
@@ -268,6 +270,28 @@ suites exercise the plan/apply/CLI surfaces deterministically (`internal/ports`,
 6. **Listener handoff warning**: move a listener from instance A to B in one plan; assert the warning in text/JSON; with default concurrency, allow `-j 1` to guarantee ordering, or re-run apply.
 7. **Output surfaces**: `lxm list`/`lxm status` text and `--format json` expose `published_ports`; `lxm diff` shows `ports[...]` fields; envelopes remain valid `lxm/result/v1` without a version bump.
 
+### Pillar 7: Declarative Unix-Socket Proxying (`sockets:`)
+
+Validates proxy-device reconciliation for Unix-domain sockets in both directions (`bind: instance`
+and `bind: host`), listening-socket DAC ownership, path-uniqueness constraints, and the shared
+ports/sockets ownership namespace. Live coverage lives in
+`simulation/scripts/test-sockets-e2e.sh`; the fake-driver suites exercise the plan/apply/CLI
+surfaces deterministically (`internal/sockets`, `internal/proxydevice`,
+`internal/config/sockets_test.go`, `internal/plan/sockets_test.go`, `internal/fleet`,
+`internal/output`, `cmd/lxm/sockets_test.go`). The gate passed **11/11 scenarios on LXD 6.10.1
+LTS** (exit 0); Incus coverage is pending (see §2).
+
+#### Test Scenarios:
+1. **`bind: instance` create/forward**: apply a container socket whose `listen` path is created inside the instance and whose `connect` path is a host-owned socket; assert the instance-side listener exists with the declared `uid`/`gid`/`mode` and that a client inside the container reaches the host service.
+2. **Access control**: with mode `0600` owned by uid 1000, assert the owner connects and a different uid is denied; a broker that is absent produces a clean client failure, and a restarted broker reconnects on the next connection (per-connection relay).
+3. **Idempotency**: re-plan after apply ⇒ `noop`; a socket field change applies as an online update with no restart.
+4. **Per-instance isolation**: two instances may declare the same instance-side `listen` path while reaching distinct host sockets through distinct per-instance devices.
+5. **`bind: host` direction**: a host-side listener with host DAC relays to a container-side service; the host-side socket appears with the declared `uid`/`gid`/`mode`.
+6. **Fleet & ownership constraints**: duplicate host-side path across manifests ⇒ plan exit 3 citing both files; duplicate instance-side listen path within one instance ⇒ exit 3; an unmarked `socket-<name>` device ⇒ plan/apply exit 3 (no adoption); a malformed marker-carrying device is repaired/removed rather than failing the plan.
+7. **Container-only & capability gates**: `sockets:` on a virtual machine ⇒ exit 3; a provider lacking `proxy_unix` (or `proxy_unix_dac_properties` with `uid`/`gid`/`mode`) ⇒ exit 4.
+8. **Lifecycle & failure modes**: a missing listening-side parent directory fails cleanly at apply (exit 4); device removal retires the device; the documented stale instance-side socket file remains (harmless, no longer relays) and is re-used when a socket is re-added on the same path; host-side cleanup is LXD `bind: host`-only and Incus never removes it; re-plan after removal is a noop.
+9. **Output surfaces**: `lxm list` `SOCKETS` column, `lxm status` `Unix Sockets:` block, `lxm diff` `sockets[...]` fields, and additive `published_sockets` in `--format json`; envelopes remain valid `lxm/result/v1` without a version bump.
+
 ---
 
 ## 4. Pre-Release Test Execution Procedures
@@ -307,6 +331,9 @@ Execute the end-to-end verification against the local Canonical LXD daemon:
 
 # 3. Execute automated OVN E2E test against the LXD host
 PROVIDER_CLI=lxc ./simulation/scripts/test-ovn-e2e.sh
+
+# 4. Execute automated Unix-socket proxy E2E test (bind=instance, bind=host, DAC, isolation, cleanup)
+PROVIDER_CLI=lxc ./simulation/scripts/test-sockets-e2e.sh
 ```
 
 > OVN on LXD requires the daemon to expose the `network_ovn` + `network_acl` extensions (the script
@@ -419,7 +446,12 @@ make -C simulation/incus test-ovn
 make -C simulation/incus cluster-2node
 make -C simulation/incus test-cluster-placement
 
-# 6. Verify in-guest script execution, snapshots, and idempotency
+# 6. Execute the Unix-socket proxy E2E suite against the Incus daemon
+#    (pending: Incus was not reachable in the verification environment; the
+#    script is provider-parameterized and must pass before Incus is claimed)
+PROVIDER_CLI=incus ./simulation/scripts/test-sockets-e2e.sh
+
+# 7. Verify in-guest script execution, snapshots, and idempotency
 lxc exec lxm-incus-lab -- su - lxm -c 'lxm plan /opt/lxm-src/simulation/incus/vm/lab/single-node'
 ```
 

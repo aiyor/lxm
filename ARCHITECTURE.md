@@ -32,9 +32,14 @@ graph TD
     CLI --> Remote["internal/provider/remote (mTLS, Trust & Remotes Config)"]
 
     Config --> Recipe["internal/recipe (Recipe Metadata & Script Validation)"]
-    Config --> Ports["internal/ports (Endpoint Rules & Proxy Device Encoding)"]
+    Config --> Proxy["internal/proxydevice (Shared Proxy Ownership & Namespace)"]
+    Config --> Ports["internal/ports (TCP/UDP Endpoint Rules & Proxy Encoding)"]
+    Config --> Sockets["internal/sockets (Unix-Socket Endpoint & Proxy Encoding)"]
     Plan --> Ports
+    Plan --> Sockets
+    Plan --> Proxy
     Fleet --> Ports
+    Fleet --> Sockets
     Plan --> Network
     Plan --> Provider["internal/provider (Driver Interface & Models)"]
     Apply --> Provider
@@ -51,8 +56,10 @@ graph TD
 ### Package Responsibilities
 
 * **`cmd/lxm`**: Serves as the CLI entry point and wiring layer. Parses cobra flags, wires signal contexts (`signal.NotifyContext`), handles version stamping (`version`, `commit`, `date`), routes commands (including `lxm remote`, `lxm doctor`, `lxm vswitch gc`), and emits structured results to `internal/output`.
-* **`internal/config`**: Owns manifest loading, presence-wins scalar merging, recursive struct merging, list inheritance directives (`remove`, `replace`), template parameter expansion (`{{ .Env.* }}`, `{{ .Vars.* }}`), remote routing (`provider`, `remote`, `target`, `project`, `remotes`), published-port validation (`ports:`), and CUE schema validation against `#LXM_AUTHORING` and `#LXM_RESOLVED`.
+* **`internal/config`**: Owns manifest loading, presence-wins scalar merging, recursive struct merging, list inheritance directives (`remove`, `replace`), template parameter expansion (`{{ .Env.* }}`, `{{ .Vars.* }}`), remote routing (`provider`, `remote`, `target`, `project`, `remotes`), published-port and Unix-socket proxy validation (`ports:`, `sockets:`), and CUE schema validation against `#LXM_AUTHORING` and `#LXM_RESOLVED`.
+* **`internal/proxydevice`**: Owns the shared LXD/Incus `proxy`-device primitives used by both declarative proxy features: the ownership marker (`user.lxm.managed`), the namespace marker (`user.lxm.kind`) that partitions the ports and sockets namespaces over the one daemon device type, and the endpoint scheme/boolean parsers the daemons use. Kept stdlib-only so config/plan/fleet/output can share it without cycles.
 * **`internal/ports`**: Dependency-free single source of truth for the published-port model: endpoint parse/canonicalization (`netip`, explicit IP literal, 1–65535, no hostnames/zones/4-in-6), dual-stack wildcard listener-conflict semantics, proxy-device encode/decode and marker-based ownership, daemon truthiness for `nat`, and the shared `PublishedPort` JSON projection.
+* **`internal/sockets`**: Dependency-free single source of truth for the Unix-socket proxy model: `unix:<absolute path>` parse/canonicalization within the Linux `sun_path` limit, `bind` host/instance direction parsing, listening-socket `uid`/`gid`/`mode` validation/canonicalization, `socket-<name>` device encode/decode, sockets-namespace ownership predicates, and the shared `PublishedSocket` JSON projection.
 * **`internal/network`**: Implements the deterministic network compilation and validation engine. Evaluates fleet-scoped virtual switch unions, compiles group-based `network_policy` into network ACLs via generators (G0 intra-switch rules, G1–G2 intra-group, G3–G4 inter-group allow, G5–G6 stateful return, G7 internet egress, G8 internal reject with multi-source DNS carveouts, G9 host gateway port guards, G10 opt-in host-access gateway ingress, G11 external ingress grants), performs CIDR prefix decomposition, and validates instance-NIC integrity.
 * **`internal/provider`**: Declares the unified `Driver` interface combining instance, network, storage, image, cluster, and project services with method scoping (`UseProject`, `UseTarget`).
 * **`internal/provider/incus`**: Implements `provider.Driver` wrapping the canonical Incus 7.x SDK (`github.com/lxc/incus/v7/client`).
@@ -60,9 +67,9 @@ graph TD
 * **`internal/provider/common`**: Single-sourced cross-provider mechanics shared by every driver — error/ETag classification, `boot.mode` ↔ `security.secureboot`/`security.csm` translation (VM-gated), byte-size parsing, user-env/UID resolution, IPv4 extraction, async-operation waiting, and interactive-terminal exec. Keeps the LXD and Incus drivers as thin SDK mappings.
 * **`internal/provider/fake`**: `FakeDriver`, the universal in-memory `provider.Driver` used by the entire test suite (instances, snapshots, volumes, networks, ACLs, images, cluster, projects) with thread safety and seeding helpers.
 * **`internal/provider/remote`**: Manages remote endpoints in `~/.config/lxm/remotes.yaml` with file locking (`remotes.lock`), generates client mTLS certificate pairs (`client.crt`/`client.key`), provides trust-token enrollment, and resolves target drivers dynamically.
-* **`internal/plan`**: Implements the reconciliation diff engine. Compares compiled `Manifest` objects against provider instance and network states to generate deterministic `Plan` objects comprising actionable `Step` items (`create`, `update`, `recreate`, `delete`, `start`, `stop`). Owns published-port device diffing/repair, unmarked-device collision errors, port plan warnings, and listener-handoff detection.
+* **`internal/plan`**: Implements the reconciliation diff engine. Compares compiled `Manifest` objects against provider instance and network states to generate deterministic `Plan` objects comprising actionable `Step` items (`create`, `update`, `recreate`, `delete`, `start`, `stop`). Owns published-port and Unix-socket proxy device diffing/repair, unmarked-device collision errors, proxy plan warnings, and listener-handoff detection for both `ports:` and `sockets:`.
 * **`internal/apply`**: Executes computed `Plan` steps against the provider driver. Enforces Optimistic Concurrency Control (OCC) via single-step ETag discipline, manages automatic snapshots, executes recipes, handles operation cancellation (`op.Cancel()`), orchestrates network creation with member staging and polling, and purges host keys on container deletion/recreate.
-* **`internal/fleet`**: Provides fleet inventory retrieval, selector evaluation (OR across repeated `-g`/`--group` flags, AND with `--name`), `KnownHostsManager` with advisory file locking (`syscall.Flock`), published-port inventory projection, and `--prune` orphan garbage collection.
+* **`internal/fleet`**: Provides fleet inventory retrieval, selector evaluation (OR across repeated `-g`/`--group` flags, AND with `--name`), `KnownHostsManager` with advisory file locking (`syscall.Flock`), published-port and published-socket inventory projection, and `--prune` orphan garbage collection.
 * **`internal/recipe`**: Loads script bodies and metadata files (`lxm/recipe/v1`), validates POSIX environment variable names, executes script logic inside containers, and manages path-qualified recipe hash metadata (`user.lxm.recipe.<cleaned-relative-path>.hash`).
 * **`internal/output`**: Standardizes stdout/stderr emission using the `lxm/result/v1` JSON envelope format (`schema`, `command`, `ok`, `target`, `plan`, `results`, `warnings`, `errors`, `exit_code`) and enforces the 1-to-1 exit code to error code mapping catalog (`ExitCodeToErrorCode`).
 
@@ -139,6 +146,7 @@ Current tagging status across every resource class:
 | Networks (vswitch bridges) | `user.lxm.managed=true` ✓ | plan reconcile only |
 | Network ACLs (`lxm-<name>`) | `user.lxm.managed=true` ✓ | plan reconcile only |
 | NIC devices | Managed as part of instance configuration (`internal/plan/plan.go`) | — |
+| Proxy devices (`proxy-*` ports, `socket-*` sockets) | `user.lxm.managed=true` ✓, plus `user.lxm.kind=socket` for the sockets namespace (`internal/proxydevice`) | `lxm list`/`lxm status` (`published_ports`, `published_sockets`) |
 | Mount devices | **no marker** | — |
 | Storage volumes (disks) | **no marker** (`config: {size}` only) | — |
 | Snapshots | name-prefix only (`user.lxm.snap.<inst>-<ts>`) | `lxm snapshot gc --prefix` |
