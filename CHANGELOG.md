@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.0](https://github.com/aiyor/lxm/compare/v1.7.0...v1.8.0) (2026-11-08)
+
+
+### Features
+
+* **sockets:** declarative Unix-domain socket proxying ([#18](https://github.com/aiyor/lxm/issues/18)) ([1fb534f](https://github.com/aiyor/lxm/commit/1fb534f8baa99103ec1314a380e698b8ff83804e)), closes [#17](https://github.com/aiyor/lxm/issues/17)
+
 ## [1.7.0](https://github.com/aiyor/lxm/compare/v1.6.0...v1.7.0) (2026-11-07)
 
 
